@@ -40,6 +40,8 @@ impl Default for VoxConfig {
 pub struct VoxContext {
     tts: Option<Arc<dyn TtsBackend>>,
     stats: Arc<Mutex<PipelineStats>>,
+    #[cfg(any(feature = "kokoro", feature = "tts"))]
+    audio_player: Option<Arc<crate::audio::AudioPlayer>>,
 }
 
 impl VoxContext {
@@ -62,8 +64,9 @@ impl VoxContext {
     #[cfg(any(feature = "kokoro", feature = "tts"))]
     pub async fn speak_and_play(&self, text: &str) -> Result<TtsOutput, VoxError> {
         let output = self.speak(text).await?;
-        let player = crate::audio::AudioPlayer::new()?;
-        player.play_blocking(&output.audio)?;
+        if let Some(player) = &self.audio_player {
+            player.play_blocking(&output.audio)?;
+        }
         Ok(output)
     }
 
@@ -155,6 +158,14 @@ impl VoxBuilder {
         // Wrap TTS in Arc so VoxContext can hold a reference.
         let tts: Option<Arc<dyn TtsBackend>> = self.tts.map(Arc::from);
 
+        // Create a persistent audio player for TTS playback.
+        #[cfg(any(feature = "kokoro", feature = "tts"))]
+        let audio_player = if tts.is_some() {
+            Some(Arc::new(crate::audio::AudioPlayer::new()?))
+        } else {
+            None
+        };
+
         Ok(Vox {
             config: self.config,
             vad,
@@ -165,6 +176,8 @@ impl VoxBuilder {
             _capture: capture,
             callback,
             stats: Arc::new(Mutex::new(PipelineStats::default())),
+            #[cfg(any(feature = "kokoro", feature = "tts"))]
+            audio_player,
         })
     }
 }
@@ -189,6 +202,8 @@ pub struct Vox {
     _capture: AudioCapture,
     callback: Box<dyn Fn(SttResult, VoxContext) + Send + Sync>,
     stats: Arc<Mutex<PipelineStats>>,
+    #[cfg(any(feature = "kokoro", feature = "tts"))]
+    audio_player: Option<Arc<crate::audio::AudioPlayer>>,
 }
 
 impl Vox {
@@ -310,6 +325,8 @@ impl Vox {
                             let ctx = VoxContext {
                                 tts: self.tts.clone(),
                                 stats: self.stats.clone(),
+                                #[cfg(any(feature = "kokoro", feature = "tts"))]
+                                audio_player: self.audio_player.clone(),
                             };
                             (self.callback)(stt_result, ctx);
                         }
