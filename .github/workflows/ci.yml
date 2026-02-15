@@ -10,8 +10,18 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  check:
-    name: ${{ matrix.os }}
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -19,40 +29,95 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: actions/cache@v4
+          components: clippy
+      - uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install ALSA dev (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy (default features)
+      - name: Clippy (default features)
         run: cargo clippy -- -D warnings
 
-      - name: cargo clippy (all portable features)
+      - name: Clippy (CLI + server)
+        run: cargo clippy --features cli,server -- -D warnings
+
+      - name: Clippy (all portable features)
         run: cargo clippy --features whisper,silero,kokoro,pocket,chatterbox -- -D warnings
 
-      - name: cargo test
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install ALSA dev (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Unit + integration tests
         run: cargo test
 
-      - name: cargo doc
-        run: cargo doc --no-deps
+      - name: Build CLI binary
+        run: cargo build --features cli --release
+
+      - name: CLI smoke test
+        run: |
+          ./target/release/vox --version
+          ./target/release/vox --help
+          ./target/release/vox models list
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install ALSA dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  python:
+    name: Python bindings
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install maturin and test deps
+        run: pip install maturin pytest
+
+      - name: Build Python wheel
+        working-directory: python
+        run: maturin develop --release
+
+      - name: Run Python tests
+        working-directory: python
+        run: pytest tests/ -v
