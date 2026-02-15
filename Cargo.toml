@@ -1,3 +1,6 @@
+[workspace]
+members = ["python"]
+
 [package]
 name = "vox"
 version = "0.1.0"
@@ -6,9 +9,16 @@ authors = ["Mert Ozoner"]
 description = "The open-source voice AI framework. Run Whisper + LLM + TTS locally. No cloud. No Python."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mrtozner/vox"
+homepage = "https://github.com/mrtozner/vox"
+documentation = "https://docs.rs/vox"
+readme = "README.md"
 keywords = ["voice", "speech", "whisper", "ai", "edge"]
 categories = ["multimedia::audio", "science::robotics"]
 rust-version = "1.85"
+exclude = [
+    "models/", "plans/", "research/", "scripts/", "vendor/",
+    "*.wav", "Dockerfile.static", ".cargo/", ".github/", "python/",
+]
 
 [dependencies]
 async-trait = "0.1"
@@ -29,6 +39,20 @@ thiserror = "2"
 anyhow = "1"
 rubato = "0.16"
 
+# CLI dependencies
+clap = { version = "4.5", features = ["derive"], optional = true }
+dirs = { version = "5.0", optional = true }
+indicatif = { version = "0.17", optional = true }
+reqwest = { version = "0.12", features = ["stream"], optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+
+# Server dependencies
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", optional = true, features = ["cors", "trace"] }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
 [features]
 default = ["whisper", "silero"]
 whisper = ["dep:whisper-rs"]
@@ -41,11 +65,25 @@ pocket-metal = ["pocket", "pocket-tts/metal", "candle-core/metal"]
 pocket-mkl = ["pocket", "pocket-tts/mkl"]
 chatterbox = ["dep:chatterbox-rs", "dep:ort", "dep:ndarray", "dep:rodio"]
 chatterbox-coreml = ["chatterbox", "chatterbox-rs/coreml"]
+cli = [
+    "dep:clap", "dep:dirs", "dep:indicatif", "dep:reqwest",
+    "dep:tracing-subscriber", "dep:tokio-util",
+    "whisper", "silero",
+]
+server = [
+    "dep:axum", "dep:tower-http", "dep:serde", "dep:serde_json",
+    "dep:dirs",
+]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = "0.3"
+
+[[bin]]
+name = "vox"
+path = "src/bin/vox.rs"
+required-features = ["cli"]
 
 [[bench]]
 name = "resampler_bench"

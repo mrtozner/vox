@@ -78,7 +78,10 @@ impl PocketTtsBackend {
     /// Create with a specific voice and voices directory.
     ///
     /// Built-in voices: alba, marius, javert, jean, fantine, cosette, eponine, azelma.
-    pub fn with_voice(voice: &str, voices_dir: impl Into<std::path::PathBuf>) -> Result<Self, VoxError> {
+    pub fn with_voice(
+        voice: &str,
+        voices_dir: impl Into<std::path::PathBuf>,
+    ) -> Result<Self, VoxError> {
         Self::with_config(PocketTtsConfig {
             default_voice: voice.into(),
             voices_dir: voices_dir.into(),
@@ -125,10 +128,7 @@ impl PocketTtsBackend {
     /// Built-in voices (alba, marius, etc.) are resolved from the voices directory.
     /// File paths ending in `.safetensors` are loaded as pre-computed embeddings.
     /// Other file paths (e.g. `.wav`) are used for voice cloning.
-    fn load_voice_state(
-        &self,
-        voice: &str,
-    ) -> Result<pocket_tts::ModelState, VoxError> {
+    fn load_voice_state(&self, voice: &str) -> Result<pocket_tts::ModelState, VoxError> {
         if BUILTIN_VOICES.contains(&voice) || !voice.contains('.') {
             // Resolve built-in voice name to embedding file in voices_dir.
             let embedding_path = self.config.voices_dir.join(format!("{voice}.safetensors"));
@@ -168,12 +168,10 @@ impl TtsBackend for PocketTtsBackend {
         let text = request.text.clone();
 
         // Pocket TTS is synchronous — run on a blocking thread pool.
-        let audio_tensor = tokio::task::spawn_blocking(move || {
-            model.generate(&text, &voice_state)
-        })
-        .await
-        .map_err(|e| VoxError::Tts(format!("pocket-tts task panicked: {e}")))?
-        .map_err(|e| VoxError::Tts(format!("pocket-tts synthesis failed: {e}")))?;
+        let audio_tensor = tokio::task::spawn_blocking(move || model.generate(&text, &voice_state))
+            .await
+            .map_err(|e| VoxError::Tts(format!("pocket-tts task panicked: {e}")))?
+            .map_err(|e| VoxError::Tts(format!("pocket-tts synthesis failed: {e}")))?;
 
         // Convert Candle Tensor to Vec<f32>.
         let samples: Vec<f32> = audio_tensor

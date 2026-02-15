@@ -674,10 +674,7 @@ fn session_builder(cfg: &SessionConfig) -> Result<ort::session::builder::Session
 
     #[cfg(feature = "coreml")]
     fn coreml_ep(cfg: &SessionConfig) -> ort::execution_providers::ExecutionProviderDispatch {
-        use ort::ep::coreml::{
-            ComputeUnits, CoreML, ModelFormat,
-            SpecializationStrategy,
-        };
+        use ort::ep::coreml::{ComputeUnits, CoreML, ModelFormat, SpecializationStrategy};
         let mut coreml = CoreML::default()
             .with_model_format(ModelFormat::MLProgram)
             .with_specialization_strategy(SpecializationStrategy::FastPrediction)

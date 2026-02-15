@@ -2,7 +2,7 @@
 // to be run with at least one of: kokoro, pocket, chatterbox.
 #![allow(unused_imports, unused_variables, dead_code)]
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 use vox::{TtsBackend, TtsRequest};
 
@@ -38,11 +38,9 @@ fn bench_tts_comparison(c: &mut Criterion) {
     {
         use vox::KokoroBackend;
 
-        if std::path::Path::new(MODEL_PATH).exists()
-            && std::path::Path::new(VOICES_PATH).exists()
-        {
-            let tts = rt
-                .block_on(async { KokoroBackend::new(MODEL_PATH, VOICES_PATH).await.unwrap() });
+        if std::path::Path::new(MODEL_PATH).exists() && std::path::Path::new(VOICES_PATH).exists() {
+            let tts =
+                rt.block_on(async { KokoroBackend::new(MODEL_PATH, VOICES_PATH).await.unwrap() });
 
             let mut group = c.benchmark_group("tts_synthesize/kokoro");
             group.sample_size(10);
@@ -58,9 +56,7 @@ fn bench_tts_comparison(c: &mut Criterion) {
                     &request,
                     |b, request| {
                         b.iter(|| {
-                            rt.block_on(async {
-                                tts.synthesize(black_box(request)).await.unwrap()
-                            })
+                            rt.block_on(async { tts.synthesize(black_box(request)).await.unwrap() })
                         });
                     },
                 );
@@ -166,11 +162,9 @@ fn bench_tts_rtf(c: &mut Criterion) {
     {
         use vox::KokoroBackend;
 
-        if std::path::Path::new(MODEL_PATH).exists()
-            && std::path::Path::new(VOICES_PATH).exists()
-        {
-            let tts = rt
-                .block_on(async { KokoroBackend::new(MODEL_PATH, VOICES_PATH).await.unwrap() });
+        if std::path::Path::new(MODEL_PATH).exists() && std::path::Path::new(VOICES_PATH).exists() {
+            let tts =
+                rt.block_on(async { KokoroBackend::new(MODEL_PATH, VOICES_PATH).await.unwrap() });
 
             let request = TtsRequest {
                 text: SHORT_TEXT.to_string(),
@@ -185,9 +179,8 @@ fn bench_tts_rtf(c: &mut Criterion) {
                     let mut total = Duration::ZERO;
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let output = rt.block_on(async {
-                            tts.synthesize(black_box(&request)).await.unwrap()
-                        });
+                        let output = rt
+                            .block_on(async { tts.synthesize(black_box(&request)).await.unwrap() });
                         let elapsed = start.elapsed();
                         let _rtf = rtf(elapsed, output.duration_ms);
                         total += elapsed;
@@ -218,9 +211,8 @@ fn bench_tts_rtf(c: &mut Criterion) {
                     let mut total = Duration::ZERO;
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let output = rt.block_on(async {
-                            tts.synthesize(black_box(&request)).await.unwrap()
-                        });
+                        let output = rt
+                            .block_on(async { tts.synthesize(black_box(&request)).await.unwrap() });
                         let elapsed = start.elapsed();
                         let _rtf = rtf(elapsed, output.duration_ms);
                         total += elapsed;

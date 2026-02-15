@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use vox::{AudioChunk, SttBackend, Utterance, WhisperBackend};
 
 const MODEL_PATH: &str = "models/ggml-tiny.en.bin";

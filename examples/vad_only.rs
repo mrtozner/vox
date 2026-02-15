@@ -9,9 +9,9 @@
 //! Run:
 //!   cargo run --example vad_only
 
+use vox::SileroVad;
 use vox::audio::{AudioCapture, AudioResampler};
 use vox::traits::{VadBackend, VadEvent};
-use vox::SileroVad;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

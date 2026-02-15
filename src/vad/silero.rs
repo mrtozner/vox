@@ -96,9 +96,8 @@ impl SileroVad {
             .map_err(|e| VoxError::Vad(format!("failed to create input tensor: {e}")))?;
 
         let sr_data: [i64; 1] = [SAMPLE_RATE as i64];
-        let input_sr =
-            TensorRef::from_array_view(([0usize; 0], &sr_data[..1]))
-                .map_err(|e| VoxError::Vad(format!("failed to create sr tensor: {e}")))?;
+        let input_sr = TensorRef::from_array_view(([0usize; 0], &sr_data[..1]))
+            .map_err(|e| VoxError::Vad(format!("failed to create sr tensor: {e}")))?;
 
         let input_state = TensorRef::from_array_view(([2usize, 1, 128], &self.state[..]))
             .map_err(|e| VoxError::Vad(format!("failed to create state tensor: {e}")))?;

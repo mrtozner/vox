@@ -207,8 +207,7 @@ impl TtsBackend for ChatterboxBackend {
                 .map_err(|e| VoxError::Tts(format!("chatterbox synthesis failed: {e}")))
         })
         .await
-        .map_err(|e| VoxError::Tts(format!("chatterbox task panicked: {e}")))?
-        ?;
+        .map_err(|e| VoxError::Tts(format!("chatterbox task panicked: {e}")))??;
 
         let duration_ms = (samples.len() as u64 * 1000) / u64::from(CHATTERBOX_SAMPLE_RATE);
 
@@ -240,9 +239,8 @@ fn copy_to_real_paths(paths: &hf::ChatterboxPaths) -> Result<hf::ChatterboxPaths
             .ok_or_else(|| VoxError::Tts("model path has no filename".into()))?;
         let dest = dest_dir.join(name);
         if !dest.exists() {
-            std::fs::copy(src, &dest).map_err(|e| {
-                VoxError::Tts(format!("failed to copy {}: {e}", src.display()))
-            })?;
+            std::fs::copy(src, &dest)
+                .map_err(|e| VoxError::Tts(format!("failed to copy {}: {e}", src.display())))?;
         }
         Ok(dest)
     }

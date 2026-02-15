@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use vox::{KokoroBackend, TtsBackend, TtsRequest};
 
 const MODEL_PATH: &str = "models/kokoro-v1.0.onnx";
@@ -41,9 +41,7 @@ fn bench_kokoro_synthesize(c: &mut Criterion) {
             BenchmarkId::new("af_heart", label),
             &request,
             |b, request| {
-                b.iter(|| {
-                    rt.block_on(async { tts.synthesize(black_box(request)).await.unwrap() })
-                });
+                b.iter(|| rt.block_on(async { tts.synthesize(black_box(request)).await.unwrap() }));
             },
         );
     }
@@ -59,9 +57,7 @@ fn bench_kokoro_synthesize(c: &mut Criterion) {
             BenchmarkId::new("voice_compare", voice),
             &request,
             |b, request| {
-                b.iter(|| {
-                    rt.block_on(async { tts.synthesize(black_box(request)).await.unwrap() })
-                });
+                b.iter(|| rt.block_on(async { tts.synthesize(black_box(request)).await.unwrap() }));
             },
         );
     }

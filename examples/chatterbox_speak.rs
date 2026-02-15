@@ -108,7 +108,9 @@ fn parse_args(args: &[String]) -> (Option<String>, String, String, bool) {
 
     if positional.is_empty() {
         eprintln!("Usage: chatterbox_speak [--model-dir DIR] [--coreml] <reference.wav> [text]");
-        eprintln!("  --coreml:        use CoreML acceleration (macOS, requires chatterbox-coreml feature)");
+        eprintln!(
+            "  --coreml:        use CoreML acceleration (macOS, requires chatterbox-coreml feature)"
+        );
         eprintln!("  reference.wav:   5-20s WAV of target voice for cloning");
         std::process::exit(1);
     }

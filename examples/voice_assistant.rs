@@ -27,12 +27,12 @@ async fn main() -> anyhow::Result<()> {
     let vad = SileroVad::new("silero_vad.onnx")?;
     let stt = WhisperBackend::from_model("ggml-tiny.en.bin")?;
 
-    let (kokoro_model, kokoro_voices) =
-        if std::path::Path::new("models/kokoro-v1.0.onnx").exists() {
-            ("models/kokoro-v1.0.onnx", "models/voices.bin")
-        } else {
-            ("kokoro-v1.0.onnx", "voices.bin")
-        };
+    let (kokoro_model, kokoro_voices) = if std::path::Path::new("models/kokoro-v1.0.onnx").exists()
+    {
+        ("models/kokoro-v1.0.onnx", "models/voices.bin")
+    } else {
+        ("kokoro-v1.0.onnx", "voices.bin")
+    };
 
     println!("Loading Kokoro TTS...");
     let tts = KokoroBackend::new(kokoro_model, kokoro_voices).await?;

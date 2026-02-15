@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "vox-voice"
+version = "0.1.0"
+description = "Local voice AI framework. Whisper + TTS + VAD. No cloud."
+requires-python = ">=3.9"
+license = "MIT OR Apache-2.0"
+keywords = ["voice", "speech", "whisper", "tts", "ai"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "vox_voice._vox_voice"

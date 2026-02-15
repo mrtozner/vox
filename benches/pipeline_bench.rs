@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use vox::{AudioChunk, SileroVad, SttBackend, Utterance, VadBackend, VadEvent, WhisperBackend};
 
 const VAD_MODEL: &str = "models/silero_vad.onnx";
@@ -59,9 +59,7 @@ fn bench_end_to_end(c: &mut Criterion) {
     };
 
     group.bench_function("stt_3s_utterance", |b| {
-        b.iter(|| {
-            rt.block_on(async { stt.transcribe(black_box(&utterance)).await.unwrap() })
-        });
+        b.iter(|| rt.block_on(async { stt.transcribe(black_box(&utterance)).await.unwrap() }));
     });
 
     // VAD + STT combined

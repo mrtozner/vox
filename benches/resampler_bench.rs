@@ -1,6 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use vox::audio::AudioResampler;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use vox::AudioChunk;
+use vox::audio::AudioResampler;
 
 fn bench_passthrough(c: &mut Criterion) {
     let mut resampler = AudioResampler::new(16000, 16000).unwrap();
@@ -12,13 +12,9 @@ fn bench_passthrough(c: &mut Criterion) {
             channels: 1,
         };
 
-        c.bench_with_input(
-            BenchmarkId::new("passthrough", size),
-            &chunk,
-            |b, chunk| {
-                b.iter(|| resampler.process(black_box(chunk)).unwrap());
-            },
-        );
+        c.bench_with_input(BenchmarkId::new("passthrough", size), &chunk, |b, chunk| {
+            b.iter(|| resampler.process(black_box(chunk)).unwrap());
+        });
     }
 }
 

@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use vox::{ChatterboxBackend, TtsBackend, TtsRequest};
 
 const REFERENCE_WAV: &str = "reference.wav";
@@ -40,9 +40,7 @@ fn bench_chatterbox_synthesize(c: &mut Criterion) {
             BenchmarkId::new("voice_clone", label),
             &request,
             |b, request| {
-                b.iter(|| {
-                    rt.block_on(async { tts.synthesize(black_box(request)).await.unwrap() })
-                });
+                b.iter(|| rt.block_on(async { tts.synthesize(black_box(request)).await.unwrap() }));
             },
         );
     }
@@ -65,5 +63,9 @@ fn bench_chatterbox_model_load(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_chatterbox_synthesize, bench_chatterbox_model_load);
+criterion_group!(
+    benches,
+    bench_chatterbox_synthesize,
+    bench_chatterbox_model_load
+);
 criterion_main!(benches);

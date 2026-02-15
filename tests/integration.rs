@@ -111,9 +111,7 @@ impl TtsBackend for MockTts {
 /// Builder should fail when no VAD is configured.
 #[test]
 fn build_fails_without_vad() {
-    let result = Vox::builder()
-        .stt(MockStt::new("hello"))
-        .build();
+    let result = Vox::builder().stt(MockStt::new("hello")).build();
 
     match result {
         Err(err) => assert!(
@@ -127,9 +125,7 @@ fn build_fails_without_vad() {
 /// Builder should fail when no STT is configured.
 #[test]
 fn build_fails_without_stt() {
-    let result = Vox::builder()
-        .vad(MockVad::new(1))
-        .build();
+    let result = Vox::builder().vad(MockVad::new(1)).build();
 
     match result {
         Err(err) => assert!(

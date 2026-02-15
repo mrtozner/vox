@@ -397,9 +397,7 @@ pub fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // ORT uses global initialization.
-    ort::init()
-        .with_name("cbx")
-        .commit();
+    ort::init().with_name("cbx").commit();
 
     let default_threads = std::thread::available_parallelism()
         .map(|n| n.get())

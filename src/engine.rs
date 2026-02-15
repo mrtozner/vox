@@ -40,7 +40,12 @@ impl Default for VoxConfig {
 pub struct VoxContext {
     tts: Option<Arc<dyn TtsBackend>>,
     stats: Arc<Mutex<PipelineStats>>,
-    #[cfg(any(feature = "kokoro", feature = "pocket", feature = "chatterbox", feature = "tts"))]
+    #[cfg(any(
+        feature = "kokoro",
+        feature = "pocket",
+        feature = "chatterbox",
+        feature = "tts"
+    ))]
     audio_player: Option<Arc<crate::audio::AudioPlayer>>,
 }
 
@@ -61,7 +66,12 @@ impl VoxContext {
     /// Speak text and play through speakers.
     ///
     /// Synthesizes TTS then plays the audio through the default output device.
-    #[cfg(any(feature = "kokoro", feature = "pocket", feature = "chatterbox", feature = "tts"))]
+    #[cfg(any(
+        feature = "kokoro",
+        feature = "pocket",
+        feature = "chatterbox",
+        feature = "tts"
+    ))]
     pub async fn speak_and_play(&self, text: &str) -> Result<TtsOutput, VoxError> {
         let output = self.speak(text).await?;
         if let Some(player) = &self.audio_player {
@@ -72,7 +82,7 @@ impl VoxContext {
 
     /// Get current pipeline statistics.
     pub fn stats(&self) -> PipelineStats {
-        self.stats.lock().unwrap().clone()
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -147,8 +157,7 @@ impl VoxBuilder {
         });
 
         // Initialize audio capture at the configured sample rate and channels.
-        let (capture, audio_rx) =
-            AudioCapture::new(self.config.sample_rate, self.config.channels)?;
+        let (capture, audio_rx) = AudioCapture::new(self.config.sample_rate, self.config.channels)?;
 
         // The VAD expects 16kHz mono. Create a resampler from the capture's
         // configured rate to 16kHz. If they match, the resampler is a passthrough.
@@ -159,7 +168,12 @@ impl VoxBuilder {
         let tts: Option<Arc<dyn TtsBackend>> = self.tts.map(Arc::from);
 
         // Create a persistent audio player for TTS playback.
-        #[cfg(any(feature = "kokoro", feature = "pocket", feature = "chatterbox", feature = "tts"))]
+        #[cfg(any(
+            feature = "kokoro",
+            feature = "pocket",
+            feature = "chatterbox",
+            feature = "tts"
+        ))]
         let audio_player = if tts.is_some() {
             Some(Arc::new(crate::audio::AudioPlayer::new()?))
         } else {
@@ -176,7 +190,12 @@ impl VoxBuilder {
             _capture: capture,
             callback,
             stats: Arc::new(Mutex::new(PipelineStats::default())),
-            #[cfg(any(feature = "kokoro", feature = "pocket", feature = "chatterbox", feature = "tts"))]
+            #[cfg(any(
+                feature = "kokoro",
+                feature = "pocket",
+                feature = "chatterbox",
+                feature = "tts"
+            ))]
             audio_player,
         })
     }
@@ -202,7 +221,12 @@ pub struct Vox {
     _capture: AudioCapture,
     callback: Box<dyn Fn(SttResult, VoxContext) + Send + Sync>,
     stats: Arc<Mutex<PipelineStats>>,
-    #[cfg(any(feature = "kokoro", feature = "pocket", feature = "chatterbox", feature = "tts"))]
+    #[cfg(any(
+        feature = "kokoro",
+        feature = "pocket",
+        feature = "chatterbox",
+        feature = "tts"
+    ))]
     audio_player: Option<Arc<crate::audio::AudioPlayer>>,
 }
 
@@ -312,7 +336,8 @@ impl Vox {
 
                             // Update stats.
                             {
-                                let mut stats = self.stats.lock().unwrap();
+                                let mut stats =
+                                    self.stats.lock().unwrap_or_else(|e| e.into_inner());
                                 stats.utterance_count += 1;
                                 let n = stats.utterance_count as f64;
                                 stats.avg_stt_latency_ms = stats.avg_stt_latency_ms
@@ -325,7 +350,12 @@ impl Vox {
                             let ctx = VoxContext {
                                 tts: self.tts.clone(),
                                 stats: self.stats.clone(),
-                                #[cfg(any(feature = "kokoro", feature = "pocket", feature = "chatterbox", feature = "tts"))]
+                                #[cfg(any(
+                                    feature = "kokoro",
+                                    feature = "pocket",
+                                    feature = "chatterbox",
+                                    feature = "tts"
+                                ))]
                                 audio_player: self.audio_player.clone(),
                             };
                             (self.callback)(stt_result, ctx);

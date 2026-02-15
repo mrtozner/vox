@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use vox::{AudioChunk, SileroVad, VadBackend, VadConfig};
 
 const MODEL_PATH: &str = "models/silero_vad.onnx";
@@ -21,9 +21,7 @@ fn bench_vad_frame(c: &mut Criterion) {
 
     c.bench_function("vad_frame_silence", |b| {
         b.iter(|| {
-            rt.block_on(async {
-                vad.process_frame(black_box(&silence_frame)).await.unwrap()
-            })
+            rt.block_on(async { vad.process_frame(black_box(&silence_frame)).await.unwrap() })
         });
     });
 
@@ -38,9 +36,7 @@ fn bench_vad_frame(c: &mut Criterion) {
 
     c.bench_function("vad_frame_speech", |b| {
         b.iter(|| {
-            rt.block_on(async {
-                vad.process_frame(black_box(&speech_frame)).await.unwrap()
-            })
+            rt.block_on(async { vad.process_frame(black_box(&speech_frame)).await.unwrap() })
         });
     });
 

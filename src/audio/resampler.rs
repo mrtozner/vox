@@ -1,6 +1,8 @@
 //! Sample rate conversion using `rubato`.
 
-use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 
 use crate::error::VoxError;
 use crate::types::AudioChunk;

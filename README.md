@@ -1,5 +1,8 @@
 # Vox
 
+[![CI](https://github.com/mrtozner/vox/actions/workflows/ci.yml/badge.svg)](https://github.com/mrtozner/vox/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
+
 **The open-source voice AI framework for Rust.**
 
 Run Whisper + LLM + TTS on your Raspberry Pi. One crate. No cloud. No Python.
@@ -87,9 +90,78 @@ speak back via TTS.
 |------|---------|-------------|
 | `whisper` | yes | Whisper STT via whisper-rs |
 | `silero` | yes | Silero VAD via ONNX Runtime |
-| `kokoro` | no | Kokoro TTS (82M, 24kHz, near-studio quality) |
-| `piper` | no | Piper TTS (coming soon) |
+| `kokoro` | no | Kokoro TTS (82M params, near-studio quality) |
+| `pocket` | no | Pocket TTS for edge/embedded (82M, pure Rust) |
+| `pocket-metal` | no | Pocket TTS with Apple Metal GPU |
+| `chatterbox` | no | Chatterbox Turbo TTS (350M, voice cloning) |
+| `chatterbox-coreml` | no | Chatterbox with CoreML (macOS) |
+| `cli` | no | CLI binary (`vox listen`, `vox speak`, `vox serve`) |
+| `server` | no | HTTP API server (`vox serve`) |
 | `tts` | no | Audio playback for TTS output |
+
+## Platform
+
+Vox is more than a library. Use it from the CLI, HTTP API, or Python.
+
+### CLI
+
+```bash
+# Install the binary
+cargo install vox --features cli
+
+# Download required models
+vox models download silero-vad
+vox models download whisper-tiny.en
+
+# Listen and transcribe from your microphone
+vox listen
+
+# Text-to-speech (requires kokoro feature)
+cargo install vox --features cli,kokoro
+vox models download kokoro
+vox models download kokoro-voices
+vox speak "Hello from Vox!" --voice af_heart
+
+# See all available models
+vox models list
+```
+
+### HTTP API
+
+```bash
+# Start server
+vox serve --port 3000
+
+# Transcribe audio
+curl -X POST http://localhost:3000/v1/transcribe \
+  -H "Content-Type: audio/wav" \
+  --data-binary @audio.wav
+
+# Synthesize speech
+curl -X POST http://localhost:3000/v1/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello from Vox!"}'
+```
+
+### Python
+
+```bash
+pip install vox-voice
+```
+
+```python
+from vox_voice import Vox, SileroVad, WhisperStt, KokoroTts
+
+# Transcribe from microphone
+vox = Vox(vad=SileroVad(), stt=WhisperStt("tiny.en"))
+for result in vox.listen():
+    print(result.text)
+
+# Text-to-speech
+tts = KokoroTts()
+audio = tts.synthesize("Hello from Vox!")
+audio.save("output.wav")
+```
 
 ## Hardware Support
 
