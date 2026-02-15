@@ -51,6 +51,21 @@ pub struct TtsOutput {
     pub duration_ms: u64,
 }
 
+/// Information about a TTS voice available from a backend.
+#[derive(Debug, Clone)]
+pub struct VoiceInfo {
+    /// Voice identifier (e.g. "af_heart").
+    pub id: String,
+    /// Human-readable voice name (e.g. "Heart").
+    pub name: String,
+    /// Gender: "female" or "male".
+    pub gender: String,
+    /// Language code (e.g. "en-US", "ja", "zh").
+    pub language: String,
+    /// Accent or style label (e.g. "American", "British").
+    pub accent: String,
+}
+
 /// Pipeline runtime statistics.
 #[derive(Debug, Clone, Default)]
 pub struct PipelineStats {

@@ -115,6 +115,26 @@ body {
 .mic-btn svg { width: 28px; height: 28px; fill: currentColor; }
 .listen-status { font-size: 12px; color: var(--text-muted); min-height: 18px; }
 .listen-status.active { color: var(--accent); }
+.listen-status.transcribing { color: var(--warning); animation: transcribe-pulse 1s ease-in-out infinite; }
+@keyframes transcribe-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.audio-meter {
+    width: 120px;
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+.audio-meter.visible { opacity: 1; }
+.audio-meter-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.1s;
+}
 
 .transcript-area {
     flex: 1;
@@ -132,6 +152,26 @@ body {
 }
 .transcript-text { font-size: 14px; word-break: break-word; }
 .transcript-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.transcript-placeholder .transcript-text { animation: dot-pulse 1.5s ease-in-out infinite; }
+@keyframes dot-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+.transcript-copy-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: none;
+    border: 1px solid var(--bg-tertiary);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 2px 6px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s, color 0.2s, border-color 0.2s;
+    font-family: var(--font-mono);
+    line-height: 1;
+}
+.transcript-entry:hover .transcript-copy-btn { opacity: 1; }
+.transcript-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
 .transcript-clear {
     align-self: flex-end;
     margin-right: 20px;
@@ -412,6 +452,8 @@ body {
     .mic-btn.recording, .chat-mic-btn.recording { animation: none; }
     .toast { animation: none; }
     .toast.dismissing { animation: none; opacity: 0; }
+    .listen-status.transcribing { animation: none; }
+    .transcript-placeholder .transcript-text { animation: none; }
 }
 </style>
 </head>
@@ -441,6 +483,7 @@ body {
             <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
         </button>
         <div class="listen-status" id="listenStatus">Press to start listening</div>
+        <div class="audio-meter" id="audioMeter"><div class="audio-meter-fill" id="audioMeterFill"></div></div>
     </div>
     <button class="btn btn-sm btn-ghost transcript-clear" id="clearTranscript">Clear</button>
     <div class="transcript-area" id="transcriptArea"></div>
@@ -697,6 +740,7 @@ async function startListening() {
             if (S.listenWs && S.listenWs.readyState === WebSocket.OPEN) {
                 S.listenWs.send(chunk.buffer);
             }
+            updateAudioMeter(chunk);
         });
         if (!ok) {
             S.listenWs.close();
@@ -707,6 +751,7 @@ async function startListening() {
         btn.classList.add('recording');
         status.textContent = 'Listening...';
         status.classList.add('active');
+        $('audioMeter').classList.add('visible');
     };
 
     S.listenWs.onerror = () => {
@@ -741,7 +786,46 @@ function stopListening() {
     }
     $('listenMicBtn').classList.remove('recording');
     $('listenStatus').textContent = 'Press to start listening';
-    $('listenStatus').classList.remove('active');
+    $('listenStatus').className = 'listen-status';
+    $('audioMeter').classList.remove('visible');
+    $('audioMeterFill').style.width = '0%';
+    removeTranscriptPlaceholder();
+}
+
+function formatTimestamp() {
+    const d = new Date();
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0');
+}
+
+function showTranscriptPlaceholder() {
+    removeTranscriptPlaceholder();
+    const area = $('transcriptArea');
+    const entry = document.createElement('div');
+    entry.className = 'transcript-entry transcript-placeholder';
+    entry.innerHTML = '<div class="transcript-text" style="color:var(--text-muted)">...</div>';
+    entry.id = 'transcriptPlaceholder';
+    area.appendChild(entry);
+    area.scrollTop = area.scrollHeight;
+}
+
+function updateTranscriptPlaceholder(text) {
+    const ph = $('transcriptPlaceholder');
+    if (ph) {
+        ph.querySelector('.transcript-text').textContent = text;
+    }
+}
+
+function removeTranscriptPlaceholder() {
+    const ph = $('transcriptPlaceholder');
+    if (ph) ph.remove();
+}
+
+function updateAudioMeter(samples) {
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+    const rms = Math.sqrt(sum / samples.length);
+    const level = Math.min(100, rms * 500);
+    $('audioMeterFill').style.width = level + '%';
 }
 
 function handleListenEvent(data) {
@@ -749,16 +833,28 @@ function handleListenEvent(data) {
     switch (data.type) {
         case 'speech_start':
             S.speechActive = true;
-            status.textContent = 'Listening...';
-            status.classList.add('active');
+            status.textContent = 'Speaking...';
+            status.className = 'listen-status active';
+            showTranscriptPlaceholder();
+            break;
+        case 'transcribing':
+            status.textContent = 'Transcribing...';
+            status.className = 'listen-status transcribing';
+            updateTranscriptPlaceholder('Transcribing...');
             break;
         case 'transcript':
+            removeTranscriptPlaceholder();
             appendTranscript(data.text, data.duration_ms, data.processing_time_ms);
+            if (S.listening) {
+                status.textContent = 'Listening...';
+                status.className = 'listen-status active';
+            }
             break;
         case 'speech_end':
             S.speechActive = false;
             if (S.listening) {
                 status.textContent = 'Listening...';
+                status.className = 'listen-status active';
             }
             break;
         case 'error':
@@ -768,12 +864,22 @@ function handleListenEvent(data) {
 }
 
 function appendTranscript(text, durationMs, processingMs) {
+    removeTranscriptPlaceholder();
     const area = $('transcriptArea');
     const entry = document.createElement('div');
     entry.className = 'transcript-entry';
+    entry.style.position = 'relative';
     entry.innerHTML =
+        '<button class="transcript-copy-btn" aria-label="Copy" title="Copy text">&#x2398;</button>' +
         '<div class="transcript-text">' + escapeHtml(text) + '</div>' +
-        '<div class="transcript-meta">' + durationMs + 'ms audio, ' + processingMs + 'ms processing</div>';
+        '<div class="transcript-meta">' + formatTimestamp() + ' \u00b7 ' + durationMs + 'ms audio, ' + processingMs + 'ms processing</div>';
+    const copyBtn = entry.querySelector('.transcript-copy-btn');
+    copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(text).then(() => {
+            copyBtn.textContent = '\u2713';
+            setTimeout(() => { copyBtn.innerHTML = '&#x2398;'; }, 1500);
+        });
+    });
     area.appendChild(entry);
     area.scrollTop = area.scrollHeight;
 }

@@ -25,6 +25,11 @@ pub trait VadBackend: Send + Sync {
 
     /// Expected sample rate in Hz.
     fn sample_rate(&self) -> u32;
+
+    /// Return a copy of the current speech audio buffer (if speech is in progress).
+    fn current_speech_buffer(&self) -> Option<AudioChunk> {
+        None
+    }
 }
 
 /// Speech-to-Text backend.
@@ -43,6 +48,16 @@ pub trait SttBackend: Send + Sync {
 pub trait TtsBackend: Send + Sync {
     /// Synthesize text to audio.
     async fn synthesize(&self, request: &TtsRequest) -> Result<TtsOutput, VoxError>;
+
+    /// List all voices supported by this backend.
+    fn list_voices(&self) -> Vec<crate::types::VoiceInfo> {
+        vec![]
+    }
+
+    /// The backend name (e.g. "kokoro", "pocket", "chatterbox").
+    fn backend_name(&self) -> &str {
+        "unknown"
+    }
 }
 
 /// Events emitted by a [`VadBackend`].

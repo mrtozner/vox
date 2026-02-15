@@ -10,6 +10,8 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use super::ServerState;
 use super::error::ServerError;
@@ -23,6 +25,16 @@ enum WsEvent {
     #[serde(rename = "transcript")]
     Transcript {
         text: String,
+        duration_ms: u64,
+        processing_time_ms: u64,
+    },
+    #[serde(rename = "transcribing")]
+    Transcribing,
+    #[serde(rename = "partial")]
+    Partial {
+        text: String,
+        is_final: bool,
+        stability: f32,
         duration_ms: u64,
         processing_time_ms: u64,
     },
@@ -93,87 +105,156 @@ async fn handle_ws(
 
         tracing::info!("WebSocket client connected, VAD frame_size={frame_size}");
 
-        while let Some(msg) = ws_rx.next().await {
-            match msg {
-                Ok(Message::Binary(data)) => {
-                    let samples = bytes_to_f32_samples(&data);
-                    let chunk = vox::AudioChunk {
-                        samples,
-                        sample_rate: 16000,
-                        channels: 1,
-                    };
+        // Channel for partial transcription results from background tasks.
+        let (partial_tx, mut partial_rx) = mpsc::channel::<WsEvent>(4);
 
-                    for frame_samples in chunk.samples.chunks(frame_size) {
-                        if frame_samples.len() < frame_size {
-                            continue;
-                        }
+        // Partial transcription state.
+        let mut in_speech = false;
+        let mut last_partial_time = Instant::now();
+        let mut partial_running = false;
 
-                        let frame = vox::AudioChunk {
-                            samples: frame_samples.to_vec(),
-                            sample_rate: 16000,
-                            channels: 1,
-                        };
+        /// Minimum interval between partial transcription attempts.
+        const PARTIAL_INTERVAL_MS: u64 = 1000;
 
-                        match vad.process_frame(&frame).await {
-                            Ok(events) => {
-                                for event in events {
-                                    let json = match event {
-                                        vox::VadEvent::SpeechStart => {
-                                            serde_json::to_string(&WsEvent::SpeechStart)
-                                        }
-                                        vox::VadEvent::SpeechEnd(utterance) => {
-                                            match stt.transcribe(&utterance).await {
-                                                Ok(result) if !result.text.is_empty() => {
-                                                    // Send transcript
-                                                    let transcript_json = serde_json::to_string(
-                                                        &WsEvent::Transcript {
-                                                            text: result.text,
-                                                            duration_ms: result.duration_ms,
-                                                            processing_time_ms: result
-                                                                .processing_time_ms,
-                                                        },
-                                                    )
-                                                    .unwrap_or_default();
-                                                    let _ = ws_tx
-                                                        .send(Message::Text(transcript_json.into()))
-                                                        .await;
+        loop {
+            tokio::select! {
+                ws_msg = ws_rx.next() => {
+                    let Some(msg) = ws_msg else { break };
+                    match msg {
+                        Ok(Message::Binary(data)) => {
+                            let samples = bytes_to_f32_samples(&data);
+                            let chunk = vox::AudioChunk {
+                                samples,
+                                sample_rate: 16000,
+                                channels: 1,
+                            };
 
-                                                    // Then send speech_end
-                                                    serde_json::to_string(&WsEvent::SpeechEnd)
+                            for frame_samples in chunk.samples.chunks(frame_size) {
+                                if frame_samples.len() < frame_size {
+                                    continue;
+                                }
+
+                                let frame = vox::AudioChunk {
+                                    samples: frame_samples.to_vec(),
+                                    sample_rate: 16000,
+                                    channels: 1,
+                                };
+
+                                match vad.process_frame(&frame).await {
+                                    Ok(events) => {
+                                        for event in events {
+                                            let json = match event {
+                                                vox::VadEvent::SpeechStart => {
+                                                    in_speech = true;
+                                                    last_partial_time = Instant::now();
+                                                    partial_running = false;
+                                                    serde_json::to_string(&WsEvent::SpeechStart)
                                                 }
-                                                Ok(_) => {
-                                                    // Empty transcription, just send speech_end
-                                                    serde_json::to_string(&WsEvent::SpeechEnd)
+                                                vox::VadEvent::SpeechEnd(utterance) => {
+                                                    in_speech = false;
+                                                    partial_running = false;
+                                                    // Notify client that transcription is in progress
+                                                    if let Ok(t_json) = serde_json::to_string(&WsEvent::Transcribing) {
+                                                        let _ = ws_tx.send(Message::Text(t_json.into())).await;
+                                                    }
+                                                    match stt.transcribe(&utterance).await {
+                                                        Ok(result) if !result.text.is_empty() => {
+                                                            // Send transcript
+                                                            let transcript_json = serde_json::to_string(
+                                                                &WsEvent::Transcript {
+                                                                    text: result.text,
+                                                                    duration_ms: result.duration_ms,
+                                                                    processing_time_ms: result
+                                                                        .processing_time_ms,
+                                                                },
+                                                            )
+                                                            .unwrap_or_default();
+                                                            let _ = ws_tx
+                                                                .send(Message::Text(transcript_json.into()))
+                                                                .await;
+
+                                                            // Then send speech_end
+                                                            serde_json::to_string(&WsEvent::SpeechEnd)
+                                                        }
+                                                        Ok(_) => {
+                                                            // Empty transcription, just send speech_end
+                                                            serde_json::to_string(&WsEvent::SpeechEnd)
+                                                        }
+                                                        Err(e) => serde_json::to_string(&WsEvent::Error {
+                                                            message: format!("STT error: {e}"),
+                                                        }),
+                                                    }
                                                 }
-                                                Err(e) => serde_json::to_string(&WsEvent::Error {
-                                                    message: format!("STT error: {e}"),
-                                                }),
+                                                vox::VadEvent::Silence => continue,
+                                            };
+
+                                            if let Ok(json) = json {
+                                                if ws_tx.send(Message::Text(json.into())).await.is_err() {
+                                                    return; // client disconnected
+                                                }
                                             }
                                         }
-                                        vox::VadEvent::Silence => continue,
-                                    };
-
-                                    if let Ok(json) = json {
-                                        if ws_tx.send(Message::Text(json.into())).await.is_err() {
-                                            return; // client disconnected
-                                        }
+                                    }
+                                    Err(e) => {
+                                        let msg = serde_json::to_string(&WsEvent::Error {
+                                            message: format!("VAD error: {e}"),
+                                        })
+                                        .unwrap_or_default();
+                                        let _ = ws_tx.send(Message::Text(msg.into())).await;
+                                        return;
                                     }
                                 }
                             }
-                            Err(e) => {
-                                let msg = serde_json::to_string(&WsEvent::Error {
-                                    message: format!("VAD error: {e}"),
-                                })
-                                .unwrap_or_default();
-                                let _ = ws_tx.send(Message::Text(msg.into())).await;
-                                return;
+
+                            // After processing frames, check if we should fire a partial transcription.
+                            if in_speech
+                                && !partial_running
+                                && last_partial_time.elapsed().as_millis() >= PARTIAL_INTERVAL_MS as u128
+                            {
+                                if let Some(buffer) = vad.current_speech_buffer() {
+                                    partial_running = true;
+                                    last_partial_time = Instant::now();
+                                    let stt_clone = Arc::clone(&stt);
+                                    let tx = partial_tx.clone();
+                                    tokio::spawn(async move {
+                                        let start = Instant::now();
+                                        let duration_ms = (buffer.samples.len() as u64 * 1000)
+                                            / u64::from(buffer.sample_rate);
+                                        let utterance = vox::Utterance {
+                                            audio: buffer,
+                                            duration_ms,
+                                        };
+                                        match stt_clone.transcribe(&utterance).await {
+                                            Ok(result) if !result.text.is_empty() => {
+                                                let _ = tx.send(WsEvent::Partial {
+                                                    text: result.text,
+                                                    is_final: false,
+                                                    stability: 0.5,
+                                                    duration_ms: result.duration_ms,
+                                                    processing_time_ms: start.elapsed().as_millis() as u64,
+                                                }).await;
+                                            }
+                                            _ => {
+                                                // Empty or error -- silently skip partial.
+                                            }
+                                        }
+                                    });
+                                }
                             }
+                        }
+                        Ok(Message::Close(_)) => break,
+                        Err(_) => break,
+                        _ => {} // ignore text, ping, pong
+                    }
+                }
+                Some(partial_event) = partial_rx.recv() => {
+                    partial_running = false;
+                    if let Ok(json) = serde_json::to_string(&partial_event) {
+                        if ws_tx.send(Message::Text(json.into())).await.is_err() {
+                            return; // client disconnected
                         }
                     }
                 }
-                Ok(Message::Close(_)) => break,
-                Err(_) => break,
-                _ => {} // ignore text, ping, pong
             }
         }
 

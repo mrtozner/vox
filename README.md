@@ -176,6 +176,7 @@ vox models download kokoro-voices       # 27MB
 | macOS (Apple Silicon) | Tested |
 | macOS (Intel) | Tested |
 | Linux (x86_64) | CI tested |
+| Windows (x86_64) | CI tested |
 
 <br>
 

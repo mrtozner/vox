@@ -39,7 +39,7 @@ pub mod vad;
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
 pub use traits::{SttBackend, TtsBackend, VadBackend, VadEvent};
-pub use types::{AudioChunk, PipelineStats, SttResult, TtsOutput, TtsRequest, Utterance};
+pub use types::{AudioChunk, PipelineStats, SttResult, TtsOutput, TtsRequest, Utterance, VoiceInfo};
 
 // Conditional backend re-exports for convenience
 #[cfg(feature = "silero")]

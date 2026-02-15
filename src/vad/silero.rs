@@ -190,4 +190,16 @@ impl VadBackend for SileroVad {
     fn sample_rate(&self) -> u32 {
         SAMPLE_RATE
     }
+
+    fn current_speech_buffer(&self) -> Option<crate::types::AudioChunk> {
+        if self.is_speaking && !self.speech_buffer.is_empty() {
+            Some(crate::types::AudioChunk {
+                samples: self.speech_buffer.clone(),
+                sample_rate: SAMPLE_RATE,
+                channels: 1,
+            })
+        } else {
+            None
+        }
+    }
 }
