@@ -51,5 +51,8 @@ pub use stt::{WhisperBackend, WhisperConfig, WhisperModel};
 #[cfg(feature = "kokoro")]
 pub use tts::{KokoroBackend, KokoroConfig};
 
-#[cfg(any(feature = "kokoro", feature = "tts"))]
+#[cfg(feature = "pocket")]
+pub use tts::{PocketTtsBackend, PocketTtsConfig};
+
+#[cfg(any(feature = "kokoro", feature = "pocket", feature = "tts"))]
 pub use audio::AudioPlayer;

@@ -9,12 +9,12 @@ mod buffer;
 mod capture;
 mod resampler;
 
-#[cfg(any(feature = "kokoro", feature = "tts"))]
+#[cfg(any(feature = "kokoro", feature = "pocket", feature = "tts"))]
 mod playback;
 
 pub use buffer::AudioBuffer;
 pub use capture::AudioCapture;
 pub use resampler::AudioResampler;
 
-#[cfg(any(feature = "kokoro", feature = "tts"))]
+#[cfg(any(feature = "kokoro", feature = "pocket", feature = "tts"))]
 pub use playback::AudioPlayer;
