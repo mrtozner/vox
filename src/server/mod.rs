@@ -25,6 +25,8 @@ pub struct ServerState {
     pub vad_model_path: Option<std::path::PathBuf>,
     pub stats: Arc<std::sync::Mutex<ServerStats>>,
     pub start_time: std::time::Instant,
+    pub ollama_host: String,
+    pub http_client: reqwest::Client,
 }
 
 /// Cumulative request counters.
@@ -107,6 +109,9 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
     };
 
     // --- Build state and router ------------------------------------------------
+    let ollama_host =
+        std::env::var("VOX_OLLAMA_HOST").unwrap_or_else(|_| "localhost:11434".to_string());
+
     let state = Arc::new(ServerState {
         stt,
         tts,
@@ -117,9 +122,15 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
             syntheses: 0,
         })),
         start_time: std::time::Instant::now(),
+        ollama_host,
+        http_client: reqwest::Client::new(),
     });
 
     let app = Router::new()
+        .route("/", get(handlers::index))
+        .route("/v1/chat", post(handlers::chat))
+        .route("/v1/voices", get(handlers::voices))
+        .route("/v1/ollama-models", get(handlers::ollama_models))
         .route("/v1/transcribe", post(handlers::transcribe))
         .route("/v1/synthesize", post(handlers::synthesize))
         .route("/v1/models", get(handlers::models))
@@ -136,8 +147,13 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
     println!();
     println!("  vox server v{}", env!("CARGO_PKG_VERSION"));
     println!("  listening on http://{addr}");
+    println!("  open http://{addr}/ in your browser for the web interface");
     println!();
     println!("  endpoints:");
+    println!("    GET  /            — web interface");
+    println!("    POST /v1/chat        — LLM chat via Ollama");
+    println!("    GET  /v1/voices      — list TTS voices");
+    println!("    GET  /v1/ollama-models — list Ollama models");
     println!("    POST /v1/transcribe  — speech-to-text (WAV body)");
     println!("    POST /v1/synthesize  — text-to-speech (JSON body)");
     println!("    GET  /v1/models      — list loaded backends");

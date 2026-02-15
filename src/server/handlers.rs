@@ -7,7 +7,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::header;
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse};
 
 use vox::types::{AudioChunk, TtsRequest, Utterance};
 
@@ -175,4 +175,275 @@ pub async fn health() -> impl IntoResponse {
     Json(HealthResponse {
         status: "ok".to_string(),
     })
+}
+
+/// GET / — serve the WebUI.
+pub async fn index() -> Html<&'static str> {
+    Html(include_str!("ui.html"))
+}
+
+/// GET /v1/voices — list available TTS voices.
+pub async fn voices(State(state): State<AppState>) -> impl IntoResponse {
+    let voices = if state.tts.is_some() {
+        vec![
+            VoiceInfo {
+                id: "af_heart".into(),
+                name: "Heart".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_alloy".into(),
+                name: "Alloy".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_aoede".into(),
+                name: "Aoede".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_bella".into(),
+                name: "Bella".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_jessica".into(),
+                name: "Jessica".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_kore".into(),
+                name: "Kore".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_nicole".into(),
+                name: "Nicole".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_nova".into(),
+                name: "Nova".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_river".into(),
+                name: "River".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_sarah".into(),
+                name: "Sarah".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "af_sky".into(),
+                name: "Sky".into(),
+                gender: "female".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "am_adam".into(),
+                name: "Adam".into(),
+                gender: "male".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "am_echo".into(),
+                name: "Echo".into(),
+                gender: "male".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "am_eric".into(),
+                name: "Eric".into(),
+                gender: "male".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "am_liam".into(),
+                name: "Liam".into(),
+                gender: "male".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "am_michael".into(),
+                name: "Michael".into(),
+                gender: "male".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "am_onyx".into(),
+                name: "Onyx".into(),
+                gender: "male".into(),
+                accent: "American".into(),
+            },
+            VoiceInfo {
+                id: "bf_emma".into(),
+                name: "Emma".into(),
+                gender: "female".into(),
+                accent: "British".into(),
+            },
+            VoiceInfo {
+                id: "bf_isabella".into(),
+                name: "Isabella".into(),
+                gender: "female".into(),
+                accent: "British".into(),
+            },
+            VoiceInfo {
+                id: "bm_george".into(),
+                name: "George".into(),
+                gender: "male".into(),
+                accent: "British".into(),
+            },
+            VoiceInfo {
+                id: "bm_lewis".into(),
+                name: "Lewis".into(),
+                gender: "male".into(),
+                accent: "British".into(),
+            },
+        ]
+    } else {
+        vec![]
+    };
+    Json(VoicesResponse { voices })
+}
+
+/// Ollama generate request (internal).
+#[derive(serde::Serialize)]
+struct OllamaRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+}
+
+/// Ollama generate response (internal).
+#[derive(serde::Deserialize)]
+struct OllamaResponse {
+    response: String,
+}
+
+/// POST /v1/chat — proxy a chat message through Ollama.
+pub async fn chat(
+    State(state): State<AppState>,
+    Json(req): Json<ChatRequest>,
+) -> Result<impl IntoResponse, ServerError> {
+    {
+        let mut stats = state.stats.lock().unwrap_or_else(|e| e.into_inner());
+        stats.requests += 1;
+    }
+
+    let host = req.host.unwrap_or_else(|| state.ollama_host.clone());
+    let model = req.model.unwrap_or_else(|| "llama3.2".to_string());
+
+    let url = format!("http://{host}/api/generate");
+    let body = OllamaRequest {
+        model: model.clone(),
+        prompt: req.text,
+        stream: false,
+    };
+
+    let resp = state
+        .http_client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            ServerError::service_unavailable(format!(
+                "Ollama request failed: {e}\n\nIs Ollama running? Start it with: ollama serve"
+            ))
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ServerError::service_unavailable(format!(
+            "Ollama returned HTTP {status}: {text}"
+        )));
+    }
+
+    let ollama_resp: OllamaResponse = resp
+        .json()
+        .await
+        .map_err(|e| ServerError::bad_request(format!("invalid Ollama response: {e}")))?;
+
+    Ok(Json(ChatResponse {
+        response: ollama_resp.response,
+        model,
+    }))
+}
+
+/// GET /v1/ollama-models — list locally available Ollama models.
+pub async fn ollama_models(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ServerError> {
+    let url = format!("http://{}/api/tags", state.ollama_host);
+
+    let resp = state.http_client.get(&url).send().await.map_err(|e| {
+        ServerError::service_unavailable(format!(
+            "Ollama not reachable: {e}\n\nStart it with: ollama serve"
+        ))
+    })?;
+
+    if !resp.status().is_success() {
+        return Err(ServerError::service_unavailable("Ollama returned an error"));
+    }
+
+    // Ollama /api/tags returns { "models": [{ "name": "llama3.2:latest", "size": 123456, ... }] }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| ServerError::bad_request(format!("invalid Ollama response: {e}")))?;
+
+    // Filter to only generative (chat) models by checking if the model has a
+    // prompt template via /api/show.  Embedding models never have one.
+    let show_url = format!("http://{}/api/show", state.ollama_host);
+    let mut models = Vec::new();
+    if let Some(arr) = body["models"].as_array() {
+        for m in arr {
+            let name = m["name"].as_str().unwrap_or("unknown");
+            let size = m["size"].as_u64();
+
+            let has_template = match state
+                .http_client
+                .post(&show_url)
+                .json(&serde_json::json!({ "name": name }))
+                .send()
+                .await
+            {
+                Ok(r) => r
+                    .json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .map(|info| {
+                        // Chat models have rich templates with role markers.
+                        // Embedding models have only "{{ .Prompt }}" or empty.
+                        let tmpl = info["template"].as_str().unwrap_or("");
+                        tmpl.len() > 50
+                    })
+                    .unwrap_or(true),
+                Err(_) => true, // include if we can't determine
+            };
+
+            if has_template {
+                models.push(OllamaModelInfo {
+                    name: name.to_string(),
+                    size,
+                });
+            }
+        }
+    }
+
+    Ok(Json(OllamaModelsResponse { models }))
 }

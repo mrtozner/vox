@@ -46,3 +46,46 @@ pub struct StatsResponse {
 pub struct HealthResponse {
     pub status: String,
 }
+
+/// Request body for the chat endpoint (Ollama proxy).
+#[derive(Debug, Deserialize)]
+pub struct ChatRequest {
+    pub text: String,
+    pub model: Option<String>,
+    pub host: Option<String>,
+}
+
+/// Response from the chat endpoint.
+#[derive(Debug, Serialize)]
+pub struct ChatResponse {
+    pub response: String,
+    pub model: String,
+}
+
+/// Response listing available TTS voices.
+#[derive(Debug, Serialize)]
+pub struct VoicesResponse {
+    pub voices: Vec<VoiceInfo>,
+}
+
+/// Info about a TTS voice.
+#[derive(Debug, Serialize)]
+pub struct VoiceInfo {
+    pub id: String,
+    pub name: String,
+    pub gender: String,
+    pub accent: String,
+}
+
+/// Response listing available Ollama models.
+#[derive(Debug, Serialize)]
+pub struct OllamaModelsResponse {
+    pub models: Vec<OllamaModelInfo>,
+}
+
+/// Info about an available Ollama model.
+#[derive(Debug, Serialize)]
+pub struct OllamaModelInfo {
+    pub name: String,
+    pub size: Option<u64>,
+}
