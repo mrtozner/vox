@@ -54,5 +54,8 @@ pub use tts::{KokoroBackend, KokoroConfig};
 #[cfg(feature = "pocket")]
 pub use tts::{PocketTtsBackend, PocketTtsConfig};
 
-#[cfg(any(feature = "kokoro", feature = "pocket", feature = "tts"))]
+#[cfg(feature = "chatterbox")]
+pub use tts::{ChatterboxBackend, ChatterboxConfig};
+
+#[cfg(any(feature = "kokoro", feature = "pocket", feature = "chatterbox", feature = "tts"))]
 pub use audio::AudioPlayer;

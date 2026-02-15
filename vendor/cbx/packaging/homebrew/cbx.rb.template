@@ -1,0 +1,33 @@
+class Cbx < Formula
+  desc "Local TTS CLI for Chatterbox Turbo ONNX"
+  homepage "https://github.com/srv1n/cbx"
+  license "Apache-2.0 OR MIT"
+
+  # This is a template:
+  # - Update `url` and `sha256` for each platform after publishing a release.
+  # - Formulas are typically hosted in a separate tap repo, e.g. `srv1n/homebrew-tap`.
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://github.com/srv1n/cbx/releases/download/v0.0.1/cbx-v0.0.1-aarch64-apple-darwin.tar.gz"
+      sha256 "<sha256>"
+    else
+      url "https://github.com/srv1n/cbx/releases/download/v0.0.1/cbx-v0.0.1-x86_64-apple-darwin.tar.gz"
+      sha256 "<sha256>"
+    end
+  end
+
+  on_linux do
+    url "https://github.com/srv1n/cbx/releases/download/v0.0.1/cbx-v0.0.1-x86_64-unknown-linux-gnu.tar.gz"
+    sha256 "<sha256>"
+  end
+
+  def install
+    bin.install "cbx"
+  end
+
+  test do
+    system "#{bin}/cbx", "--help"
+  end
+end
+

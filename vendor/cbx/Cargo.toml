@@ -1,0 +1,38 @@
+[package]
+name = "chatterbox-rs"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+
+[features]
+# Enable optional ONNX Runtime execution providers.
+# Note: Some EPs require building/using a compatible ONNX Runtime build for your platform.
+coreml = ["ort/coreml"]
+directml = ["ort/directml"]
+cuda = ["ort/cuda"]
+
+[[bin]]
+name = "cbx"
+path = "src/bin/cbx.rs"
+
+[[bin]]
+name = "chatterbox-onnx"
+path = "src/bin/chatterbox_onnx.rs"
+
+[dependencies]
+anyhow = "1.0.95"
+clap = { version = "4.5.27", features = ["derive"] }
+bincode = "1.3.3"
+half = "2.7.1"
+hf-hub = "0.4.3"
+hound = "3.5.1"
+ndarray = "0.16.1"
+ort = { version = "2.0.0-rc.11", features = ["half"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.145"
+tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }
+ureq = "2.12.1"
+urlencoding = "2.1.3"
+
+[dev-dependencies]
+tempfile = "3.14.0"

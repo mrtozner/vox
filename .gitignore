@@ -34,3 +34,10 @@ Thumbs.db
 
 # Generated audio output
 output.wav
+output_*.wav
+
+# Reference audio for TTS voice cloning
+reference_voice.wav
+
+# Research notes (not shipped)
+/research/
