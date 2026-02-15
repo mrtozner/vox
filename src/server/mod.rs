@@ -11,6 +11,7 @@ mod ws;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
@@ -125,6 +126,7 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/v1/stats", get(handlers::stats))
         .route("/health", get(handlers::health))
         .route("/v1/listen", get(ws::listen_ws))
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB max request body
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

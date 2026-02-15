@@ -31,16 +31,11 @@ Mic --> VAD (Silero) --> STT (Whisper) --> Your Code --> TTS (Kokoro) --> Speake
 
 ## Quick Start
 
-### Homebrew (macOS)
-
-```bash
-brew install vox
-```
-
 ### Cargo
 
 ```bash
-cargo install vox --features cli
+# Install from git (recommended for now)
+cargo install --git https://github.com/mrtozner/vox --features cli
 ```
 
 ### Python
@@ -121,6 +116,8 @@ audio.save("output.wav")
 ### HTTP API
 
 ```bash
+# Requires the server feature
+cargo install --git https://github.com/mrtozner/vox --features cli,server
 vox serve --port 3000
 ```
 
@@ -287,10 +284,10 @@ Measured on Apple M1 MacBook Pro with Whisper `tiny.en`:
 ## Examples
 
 ```bash
-cargo run --example simple_listen                  # mic to text
-cargo run --example vad_only                       # speech detection only
-cargo run --example voice_assistant                # LLM voice assistant
-cargo run --example tts_speak --features kokoro    # text to speech
+cargo run --example simple_listen --features whisper,silero       # mic to text
+cargo run --example vad_only --features silero                    # speech detection only
+cargo run --example voice_assistant --features whisper,silero,kokoro  # LLM voice assistant
+cargo run --example tts_speak --features kokoro                   # text to speech
 ```
 
 <br>

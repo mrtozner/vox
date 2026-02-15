@@ -24,14 +24,14 @@ fi
 if [ ! -f "$MODELS_DIR/kokoro-v1.0.onnx" ]; then
     echo "  Downloading Kokoro v1.0..."
     curl -L -o "$MODELS_DIR/kokoro-v1.0.onnx" \
-        "https://github.com/mzdk100/kokoro/releases/download/V1.0/kokoro-v1.0.onnx"
+        "https://github.com/hexgrad/kokoro/releases/download/v1.0/kokoro-v1.0.onnx"
 fi
 
 # Kokoro voices (~27MB)
 if [ ! -f "$MODELS_DIR/voices.bin" ]; then
     echo "  Downloading Kokoro voices..."
     curl -L -o "$MODELS_DIR/voices.bin" \
-        "https://github.com/mzdk100/kokoro/releases/download/V1.0/voices.bin"
+        "https://github.com/hexgrad/kokoro/releases/download/v1.0/voices-v1.0.bin"
 fi
 
 echo "Done. Models in $MODELS_DIR:"

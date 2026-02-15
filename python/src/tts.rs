@@ -1,5 +1,8 @@
 //! Python wrapper for the Kokoro TTS backend.
 
+use std::sync::Arc;
+
+use once_cell::sync::OnceCell;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
@@ -75,18 +78,20 @@ impl AudioOutput {
 ///
 /// Uses the Kokoro-82M ONNX model for high-quality local speech synthesis.
 /// Model loading is lazy -- the ONNX model is loaded on first call to
-/// `synthesize()`.
+/// `synthesize()` and cached for subsequent calls.
 ///
 /// Args:
 ///     model_path: Path to the Kokoro ONNX model file.
-///                 Defaults to `~/.vox/models/kokoro-v1.0.onnx`.
+///                 Defaults to `<data_dir>/vox/models/kokoro-v1.0.onnx`.
 ///     voices_path: Path to the voices binary file.
-///                  Defaults to `~/.vox/models/voices-v1.0.bin`.
+///                  Defaults to `<data_dir>/vox/models/voices.bin`.
 #[pyclass]
 #[derive(Clone)]
 pub struct KokoroTts {
     pub(crate) model_path: String,
     pub(crate) voices_path: String,
+    /// Lazily-initialized backend, shared across clones.
+    backend: Arc<OnceCell<vox::KokoroBackend>>,
 }
 
 #[pymethods]
@@ -103,13 +108,14 @@ impl KokoroTts {
         });
         let vp = voices_path.unwrap_or_else(|| {
             model_dir
-                .join("voices-v1.0.bin")
+                .join("voices.bin")
                 .to_string_lossy()
                 .into_owned()
         });
         Ok(Self {
             model_path: mp,
             voices_path: vp,
+            backend: Arc::new(OnceCell::new()),
         })
     }
 
@@ -132,11 +138,15 @@ impl KokoroTts {
         let model_path = self.model_path.clone();
         let voices_path = self.voices_path.clone();
         let text = text.to_string();
+        let backend_cell = Arc::clone(&self.backend);
 
         py.allow_threads(|| {
-            let backend = RUNTIME
-                .block_on(vox::KokoroBackend::new(&model_path, &voices_path))
-                .map_err(to_py_err)?;
+            // Lazily initialise the backend on first call; reuse on subsequent calls.
+            let backend = backend_cell.get_or_try_init(|| {
+                RUNTIME
+                    .block_on(vox::KokoroBackend::new(&model_path, &voices_path))
+                    .map_err(to_py_err)
+            })?;
 
             let request = vox::TtsRequest { text, voice };
 

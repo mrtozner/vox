@@ -29,7 +29,7 @@ pub async fn transcribe(
 
     // Bump request counters
     {
-        let mut stats = state.stats.lock().unwrap();
+        let mut stats = state.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.requests += 1;
         stats.transcriptions += 1;
     }
@@ -98,7 +98,7 @@ pub async fn synthesize(
 
     // Bump request counters
     {
-        let mut stats = state.stats.lock().unwrap();
+        let mut stats = state.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.requests += 1;
         stats.syntheses += 1;
     }
@@ -140,7 +140,7 @@ pub async fn synthesize(
 /// GET /v1/models — list loaded backends.
 pub async fn models(State(state): State<AppState>) -> impl IntoResponse {
     {
-        let mut stats = state.stats.lock().unwrap();
+        let mut stats = state.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.requests += 1;
     }
 
@@ -158,7 +158,7 @@ pub async fn models(State(state): State<AppState>) -> impl IntoResponse {
 
 /// GET /v1/stats — server statistics.
 pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
-    let mut s = state.stats.lock().unwrap();
+    let mut s = state.stats.lock().unwrap_or_else(|e| e.into_inner());
     s.requests += 1;
     let uptime_secs = state.start_time.elapsed().as_secs();
 
