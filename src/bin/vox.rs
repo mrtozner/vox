@@ -32,6 +32,9 @@ enum Commands {
         /// Whisper model size (tiny.en, base.en, small.en)
         #[arg(long, default_value = "tiny.en")]
         model: String,
+        /// Auto-download missing models without prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Speak text aloud using Kokoro TTS
     Speak {
@@ -40,6 +43,24 @@ enum Commands {
         /// TTS voice name (e.g. af_heart, am_adam, bf_emma)
         #[arg(long, default_value = "af_heart")]
         voice: String,
+        /// Auto-download missing models without prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Chat with an LLM using your voice
+    Chat {
+        /// Whisper model size (tiny.en, base.en, small.en)
+        #[arg(long, default_value = "tiny.en")]
+        model: String,
+        /// Ollama model name
+        #[arg(long, default_value = "llama3.2")]
+        llm: String,
+        /// Ollama host:port
+        #[arg(long, default_value = "localhost:11434")]
+        ollama_host: String,
+        /// Auto-download missing models without prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Start the HTTP API server
     #[cfg(feature = "server")]
@@ -81,11 +102,19 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Listen { model } => {
-            cli::listen::run(&model).await?;
+        Commands::Listen { model, yes } => {
+            cli::listen::run(&model, yes).await?;
         }
-        Commands::Speak { text, voice } => {
-            cli::speak::run(&text, &voice).await?;
+        Commands::Speak { text, voice, yes } => {
+            cli::speak::run(&text, &voice, yes).await?;
+        }
+        Commands::Chat {
+            model,
+            llm,
+            ollama_host,
+            yes,
+        } => {
+            cli::chat::run(&model, &llm, &ollama_host, yes).await?;
         }
         #[cfg(feature = "server")]
         Commands::Serve { host, port } => {

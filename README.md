@@ -1,44 +1,162 @@
-# Vox
+<p align="center">
+  <h1 align="center">Vox</h1>
+  <p align="center"><strong>Local voice AI framework. Ollama for voice.</strong></p>
+</p>
 
-[![CI](https://github.com/mrtozner/vox/actions/workflows/ci.yml/badge.svg)](https://github.com/mrtozner/vox/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
+<p align="center">
+  <a href="https://github.com/mrtozner/vox/actions/workflows/ci.yml"><img src="https://github.com/mrtozner/vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/vox"><img src="https://img.shields.io/crates/v/vox.svg" alt="crates.io"></a>
+  <a href="https://pypi.org/project/vox-voice/"><img src="https://img.shields.io/pypi/v/vox-voice.svg" alt="PyPI"></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg" alt="License"></a>
+</p>
 
-**The open-source voice AI framework for Rust.**
+<p align="center">
+  <img src="demo.gif" alt="Vox demo" width="600">
+  <br>
+  <sub><a href="demo.tape">View demo source</a> &mdash; recorded with <a href="https://github.com/charmbracelet/vhs">VHS</a></sub>
+</p>
 
-Run Whisper + LLM + TTS on your Raspberry Pi. One crate. No cloud. No Python.
+---
 
-```text
-Audio In --> VAD (Silero) --> STT (Whisper) --> Your Code --> TTS --> Audio Out
+Speech-to-text, text-to-speech, and voice chat &mdash; all running locally on your hardware. No API keys, no cloud, no data leaving your machine.
+
+```
+Mic --> VAD (Silero) --> STT (Whisper) --> Your Code --> TTS (Kokoro) --> Speaker
 ```
 
-## Why Vox?
+<br>
 
-- **Local & private** -- your voice never leaves your device
-- **Fast** -- Rust performance, no Python runtime overhead
-- **Simple** -- 10 lines to transcribe speech from your microphone
-- **Modular** -- swap VAD, STT, TTS backends via traits
-- **Cross-platform** -- macOS, Linux, Raspberry Pi
+|  | Cloud APIs | Vox |
+|--|-----------|-----|
+| **Privacy** | Data sent to third-party servers | 100% local, nothing leaves your device |
+| **Cost** | Per-request pricing | Free and open source |
+| **Latency** | Network round-trip | Sub-250ms end-to-end |
+| **Offline** | Requires internet | Works anywhere |
+
+<br>
 
 ## Quick Start
 
-Add to your `Cargo.toml`:
+### Homebrew (macOS)
+
+```bash
+brew tap mrtozner/tap
+brew install vox
+```
+
+### Cargo
+
+```bash
+cargo install vox --features cli
+```
+
+### Python
+
+```bash
+pip install vox-voice
+```
+
+Then get started:
+
+```bash
+vox listen                              # real-time mic transcription
+vox speak "Hello from Vox!"             # text-to-speech
+vox chat --llm llama3.2                 # voice chat with an LLM
+```
+
+Models auto-download on first run. Add `--yes` to skip the confirmation prompt.
+
+<br>
+
+## Features
+
+**Speech-to-Text** &mdash; Real-time transcription from your microphone using Whisper (tiny to large, English or multilingual).
+
+**Text-to-Speech** &mdash; Near-studio quality synthesis with Kokoro (82M), Pocket (pure Rust), or Chatterbox (voice cloning).
+
+**Voice Chat** &mdash; Full voice conversations with any Ollama model. Speak, get a response, hear it spoken back.
+
+**WebSocket Streaming** &mdash; Real-time transcription over WebSocket for web and mobile apps.
+
+**Use It Your Way** &mdash; CLI, Python library, HTTP API, or embed as a Rust crate.
+
+**Pluggable Backends** &mdash; Swap VAD, STT, or TTS engines by implementing a trait. Bring your own models.
+
+<br>
+
+## Usage
+
+### CLI
+
+```bash
+# Transcribe speech from your microphone
+vox listen
+
+# Use a larger model for better accuracy
+vox listen --model base.en
+
+# Text-to-speech
+cargo install vox --features cli,kokoro
+vox speak "Hello from Vox!" --voice af_heart
+
+# Voice chat with Ollama
+vox chat --llm llama3.2
+
+# Manage models
+vox models list
+vox models download whisper-base.en
+```
+
+### Python
+
+```python
+from vox_voice import Vox, SileroVad, WhisperStt
+
+vox = Vox(vad=SileroVad(), stt=WhisperStt("tiny.en"))
+for result in vox.listen():
+    print(result.text)
+```
+
+```python
+from vox_voice import KokoroTts
+
+tts = KokoroTts()
+audio = tts.synthesize("Hello from Vox!")
+audio.save("output.wav")
+```
+
+### HTTP API
+
+```bash
+vox serve --port 3000
+```
+
+```bash
+# Transcribe audio
+curl -X POST http://localhost:3000/v1/transcribe \
+  -H "Content-Type: audio/wav" \
+  --data-binary @audio.wav
+
+# Synthesize speech
+curl -X POST http://localhost:3000/v1/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello from Vox!"}'
+```
+
+**WebSocket** &mdash; connect to `ws://localhost:3000/v1/listen`, send raw PCM f32 LE frames at 16kHz mono, receive JSON events:
+
+```json
+{"type": "speech_start"}
+{"type": "transcript", "text": "hello world", "duration_ms": 1200, "processing_time_ms": 180}
+{"type": "speech_end"}
+```
+
+### Rust Library
 
 ```toml
 [dependencies]
-vox = "0.1"
+vox = "0.2"
 ```
-
-Download models:
-
-```bash
-# Whisper tiny.en (~75MB)
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
-
-# Silero VAD (~2MB)
-wget https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx
-```
-
-Listen and transcribe:
 
 ```rust
 use vox::{Vox, SileroVad, WhisperBackend};
@@ -58,9 +176,11 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+<br>
+
 ## Architecture
 
-```text
+```
 +--------+     +-----+     +-----+     +-----------+     +-----+
 |  Mic   | --> | VAD | --> | STT | --> | Callback  | --> | TTS |
 | (cpal) |     |     |     |     |     | (your fn) |     |     |
@@ -70,11 +190,30 @@ async fn main() -> anyhow::Result<()> {
             v5 model                  access to speak()
 ```
 
-Audio is captured from the default microphone via `cpal`, resampled to 16kHz mono,
-and fed frame-by-frame to the VAD backend. When the VAD detects a complete utterance
-(speech followed by silence), it hands the audio to the STT backend for transcription.
-The result is passed to your callback along with a `VoxContext` that can optionally
-speak back via TTS.
+Audio captured via `cpal`, resampled to 16kHz mono, fed frame-by-frame to VAD. On speech end, the utterance goes to STT. Your callback gets the text and a `VoxContext` for optional TTS reply.
+
+<br>
+
+## Models
+
+| Component | Model | Size | Notes |
+|-----------|-------|------|-------|
+| **VAD** | Silero VAD v5 | 2MB | Speech detection |
+| **STT** | Whisper tiny.en | 75MB | Fast, English |
+| | Whisper base.en | 142MB | Better accuracy |
+| | Whisper small.en | 466MB | High accuracy |
+| | Whisper medium.en | 1.5GB | Highest accuracy |
+| **TTS** | Kokoro | 88MB (int8) | Near-studio quality, 50+ voices |
+| | Pocket | 82MB | Pure Rust, edge/embedded |
+| | Chatterbox | 350MB | Voice cloning |
+
+```bash
+vox models download silero-vad          # ~2MB
+vox models download whisper-tiny.en     # ~75MB
+vox models download kokoro              # ~88MB
+```
+
+<br>
 
 ## Backends
 
@@ -82,177 +221,10 @@ speak back via TTS.
 |-----------|---------|-------------|
 | VAD | Silero VAD v5 | Implement `VadBackend` trait |
 | STT | Whisper (via whisper.cpp) | Implement `SttBackend` trait |
-| TTS | Kokoro (82M, near-studio quality) | Implement `TtsBackend` trait |
+| TTS | Kokoro (82M) | Pocket, Chatterbox, or implement `TtsBackend` trait |
 
-## Feature Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `whisper` | yes | Whisper STT via whisper-rs |
-| `silero` | yes | Silero VAD via ONNX Runtime |
-| `kokoro` | no | Kokoro TTS (82M params, near-studio quality) |
-| `pocket` | no | Pocket TTS for edge/embedded (82M, pure Rust) |
-| `pocket-metal` | no | Pocket TTS with Apple Metal GPU |
-| `chatterbox` | no | Chatterbox Turbo TTS (350M, voice cloning) |
-| `chatterbox-coreml` | no | Chatterbox with CoreML (macOS) |
-| `cli` | no | CLI binary (`vox listen`, `vox speak`, `vox serve`) |
-| `server` | no | HTTP API server (`vox serve`) |
-| `tts` | no | Audio playback for TTS output |
-
-## Platform
-
-Vox is more than a library. Use it from the CLI, HTTP API, or Python.
-
-### CLI
-
-```bash
-# Install the binary
-cargo install vox --features cli
-
-# Download required models
-vox models download silero-vad
-vox models download whisper-tiny.en
-
-# Listen and transcribe from your microphone
-vox listen
-
-# Text-to-speech (requires kokoro feature)
-cargo install vox --features cli,kokoro
-vox models download kokoro
-vox models download kokoro-voices
-vox speak "Hello from Vox!" --voice af_heart
-
-# See all available models
-vox models list
-```
-
-### HTTP API
-
-```bash
-# Start server
-vox serve --port 3000
-
-# Transcribe audio
-curl -X POST http://localhost:3000/v1/transcribe \
-  -H "Content-Type: audio/wav" \
-  --data-binary @audio.wav
-
-# Synthesize speech
-curl -X POST http://localhost:3000/v1/synthesize \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Hello from Vox!"}'
-```
-
-### Python
-
-```bash
-pip install vox-voice
-```
-
-```python
-from vox_voice import Vox, SileroVad, WhisperStt, KokoroTts
-
-# Transcribe from microphone
-vox = Vox(vad=SileroVad(), stt=WhisperStt("tiny.en"))
-for result in vox.listen():
-    print(result.text)
-
-# Text-to-speech
-tts = KokoroTts()
-audio = tts.synthesize("Hello from Vox!")
-audio.save("output.wav")
-```
-
-## Hardware Support
-
-| Platform | Status |
-|----------|--------|
-| macOS (Apple Silicon) | Tested |
-| Linux (x86_64) | Tested |
-| Raspberry Pi 5 | Supported |
-| NVIDIA Jetson | Supported |
-
-## Models
-
-### Whisper
-
-Vox uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) GGML models.
-Pick a size based on your hardware:
-
-| Model | Size | RAM | Speed | Quality |
-|-------|------|-----|-------|---------|
-| `ggml-tiny.en.bin` | 75MB | ~125MB | Fastest | Good for English |
-| `ggml-base.en.bin` | 142MB | ~210MB | Fast | Better accuracy |
-| `ggml-small.en.bin` | 466MB | ~600MB | Medium | High accuracy |
-| `ggml-medium.en.bin` | 1.5GB | ~1.7GB | Slow | Highest accuracy |
-
-Download from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main):
-
-```bash
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
-```
-
-Or load by model size from a directory:
-
-```rust
-use vox::{WhisperBackend, WhisperModel};
-
-let stt = WhisperBackend::from_dir("./models", WhisperModel::TinyEn)?;
-```
-
-### Silero VAD
-
-Download the ONNX model (~2MB):
-
-```bash
-wget https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx
-```
-
-Tune detection sensitivity:
-
-```rust
-use vox::{SileroVad, VadConfig};
-
-let vad = SileroVad::with_config("silero_vad.onnx", VadConfig {
-    speech_threshold: 0.5,    // probability threshold
-    silence_duration_ms: 500, // silence before end-of-speech
-    min_speech_ms: 250,       // ignore very short sounds
-})?;
-```
-
-### Kokoro TTS
-
-Download the ONNX model (~88MB int8 or ~310MB fp32) and voices file:
-
-```bash
-# Kokoro model (int8, recommended)
-wget https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/kokoro-v1.0-int8.onnx
-
-# Voice embeddings (~10MB)
-wget https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices-v1.0.bin
-```
-
-Synthesize speech:
-
-```rust
-use vox::{KokoroBackend, TtsBackend, TtsRequest};
-
-let tts = KokoroBackend::new("kokoro-v1.0-int8.onnx", "voices-v1.0.bin").await?;
-
-let output = tts.synthesize(&TtsRequest {
-    text: "Hello from Vox!".into(),
-    voice: Some("af_heart".into()),
-}).await?;
-// output.audio.samples contains f32 PCM at 24kHz
-```
-
-Available voices include `af_heart`, `af_sky`, `af_sarah`, `am_adam`, `am_michael`,
-`bf_alice`, `bm_daniel`, and many more. See the
-[Kokoro model card](https://huggingface.co/hexgrad/Kokoro-82M) for the full list.
-
-## Custom Backends
-
-Implement the backend traits to plug in your own engines:
+<details>
+<summary>Custom backend example</summary>
 
 ```rust
 use async_trait::async_trait;
@@ -263,7 +235,6 @@ struct MyVad { /* ... */ }
 #[async_trait]
 impl VadBackend for MyVad {
     async fn process_frame(&mut self, frame: &AudioChunk) -> Result<Vec<VadEvent>, VoxError> {
-        // your VAD logic
         Ok(vec![VadEvent::Silence])
     }
 
@@ -275,38 +246,63 @@ impl VadBackend for MyVad {
 
 The same pattern applies to `SttBackend` and `TtsBackend`.
 
+</details>
+
+<br>
+
+## Feature Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `cli` | no | CLI binary (`vox listen`, `vox speak`, `vox chat`, `vox serve`) |
+| `server` | no | HTTP/WebSocket API server |
+| `whisper` | yes | Whisper STT via whisper-rs |
+| `silero` | yes | Silero VAD via ONNX Runtime |
+| `kokoro` | no | Kokoro TTS (82M, near-studio quality) |
+| `pocket` | no | Pocket TTS (pure Rust, edge/embedded) |
+| `pocket-metal` | no | Pocket TTS with Apple Metal GPU |
+| `chatterbox` | no | Chatterbox Turbo TTS (350M, voice cloning) |
+| `chatterbox-coreml` | no | Chatterbox with CoreML (macOS) |
+| `tts` | no | Audio playback for TTS output |
+
+<br>
+
+## Platform Support
+
+| Platform | Status |
+|----------|--------|
+| macOS (Apple Silicon) | Tested |
+| Linux (x86_64) | Tested |
+| Raspberry Pi 5 | Supported |
+| NVIDIA Jetson | Supported |
+
+<br>
+
 ## Performance
 
-Benchmarks measured on Apple M1 MacBook Pro, Whisper `tiny.en` model:
+Measured on Apple M1 MacBook Pro with Whisper `tiny.en`:
 
 | Metric | Value |
 |--------|-------|
-| VAD frame latency (Silero) | ~1ms per 32ms frame |
-| STT latency (tiny.en, 3s utterance) | ~200ms |
-| End-to-end (speech end -> text) | ~250ms |
+| VAD frame latency | ~1ms per 32ms frame |
+| STT latency (3s utterance) | ~200ms |
+| End-to-end (speech end to text) | ~250ms |
 | Memory (idle pipeline) | ~150MB |
 
-_Benchmarks are approximate and vary by hardware. Formal benchmarks coming soon._
+<br>
 
 ## Examples
 
 ```bash
-# Simple mic-to-text
-cargo run --example simple_listen
-
-# VAD-only (speech detection without transcription)
-cargo run --example vad_only
-
-# Voice assistant with LLM placeholder
-cargo run --example voice_assistant
-
-# Text-to-speech with Kokoro
-cargo run --example tts_speak --features kokoro
+cargo run --example simple_listen                  # mic to text
+cargo run --example vad_only                       # speech detection only
+cargo run --example voice_assistant                # LLM voice assistant
+cargo run --example tts_speak --features kokoro    # text to speech
 ```
 
-## Contributing
+<br>
 
-Contributions are welcome! Here's how to get started:
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feat/my-feature`)
@@ -314,7 +310,9 @@ Contributions are welcome! Here's how to get started:
 4. Run `cargo test` and `cargo clippy`
 5. Submit a pull request
 
-Please keep PRs focused on a single change. For larger features, open an issue first to discuss the approach.
+For larger features, open an issue first to discuss the approach.
+
+<br>
 
 ## License
 

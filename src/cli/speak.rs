@@ -1,52 +1,14 @@
 //! Handler for `vox speak` — text-to-speech synthesis and playback.
 
-#[cfg(feature = "kokoro")]
-use std::path::PathBuf;
-
-#[cfg(feature = "kokoro")]
-use super::models::models_dir;
-
-/// Resolve a model file from `~/.vox/models/` or the current directory.
-#[cfg(feature = "kokoro")]
-fn resolve_model(filename: &str) -> Option<PathBuf> {
-    let models = models_dir();
-    let candidate = models.join(filename);
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    let local = PathBuf::from(filename);
-    if local.exists() {
-        return Some(local);
-    }
-    None
-}
-
 /// Run the speak command.
 #[cfg(feature = "kokoro")]
-pub async fn run(text: &str, voice: &str) -> anyhow::Result<()> {
+pub async fn run(text: &str, voice: &str, yes: bool) -> anyhow::Result<()> {
+    use super::models::ensure_model;
     use vox::traits::TtsBackend;
     use vox::types::TtsRequest;
 
-    let model_file = "kokoro-v1.0.onnx";
-    let voices_file = "voices.bin";
-
-    // Resolve Kokoro model
-    let model_path = resolve_model(model_file).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Kokoro model not found: {model_file}\n\n\
-             Download it with:\n\
-             \n  vox models download kokoro\n"
-        )
-    })?;
-
-    // Resolve voices file
-    let voices_path = resolve_model(voices_file).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Kokoro voices not found: {voices_file}\n\n\
-             Download it with:\n\
-             \n  vox models download kokoro-voices\n"
-        )
-    })?;
+    let model_path = ensure_model("kokoro", "kokoro-v1.0.onnx", yes).await?;
+    let voices_path = ensure_model("kokoro-voices", "voices.bin", yes).await?;
 
     println!("Loading Kokoro TTS...");
     let tts = vox::KokoroBackend::new(&model_path, &voices_path).await?;
@@ -77,7 +39,7 @@ pub async fn run(text: &str, voice: &str) -> anyhow::Result<()> {
 
 /// Run the speak command (stub when kokoro feature is disabled).
 #[cfg(not(feature = "kokoro"))]
-pub async fn run(_text: &str, _voice: &str) -> anyhow::Result<()> {
+pub async fn run(_text: &str, _voice: &str, _yes: bool) -> anyhow::Result<()> {
     anyhow::bail!(
         "TTS requires the 'kokoro' feature.\n\n\
          Rebuild with:\n\

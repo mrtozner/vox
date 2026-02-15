@@ -6,6 +6,7 @@
 mod error;
 mod handlers;
 mod models;
+mod ws;
 
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use tracing::info;
 pub struct ServerState {
     pub stt: Option<Arc<dyn vox::traits::SttBackend>>,
     pub tts: Option<Arc<dyn vox::traits::TtsBackend>>,
+    pub vad_model_path: Option<std::path::PathBuf>,
     pub stats: Arc<std::sync::Mutex<ServerStats>>,
     pub start_time: std::time::Instant,
 }
@@ -91,10 +93,23 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
     // --- Load TTS backend (optional) -------------------------------------------
     let tts: Option<Arc<dyn vox::traits::TtsBackend>> = load_tts(&models_dir).await;
 
+    // --- Detect VAD model for WebSocket endpoint --------------------------------
+    let vad_model_path = {
+        let path = models_dir.join("silero_vad.onnx");
+        if path.exists() {
+            info!(model = %path.display(), "VAD model found for WebSocket endpoint");
+            Some(path)
+        } else {
+            tracing::warn!("VAD model not found, WebSocket /v1/listen will be unavailable");
+            None
+        }
+    };
+
     // --- Build state and router ------------------------------------------------
     let state = Arc::new(ServerState {
         stt,
         tts,
+        vad_model_path,
         stats: Arc::new(std::sync::Mutex::new(ServerStats {
             requests: 0,
             transcriptions: 0,
@@ -109,8 +124,7 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/v1/models", get(handlers::models))
         .route("/v1/stats", get(handlers::stats))
         .route("/health", get(handlers::health))
-        // TODO: WebSocket streaming endpoint for real-time voice in v2
-        // .route("/v1/listen", get(handlers::listen_ws))
+        .route("/v1/listen", get(ws::listen_ws))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -126,6 +140,7 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
     println!("    POST /v1/synthesize  — text-to-speech (JSON body)");
     println!("    GET  /v1/models      — list loaded backends");
     println!("    GET  /v1/stats       — server statistics");
+    println!("    WS   /v1/listen       — real-time voice transcription");
     println!("    GET  /health         — health check");
     println!();
 

@@ -214,3 +214,89 @@ pub fn path() -> anyhow::Result<()> {
     println!("{}", models_dir().display());
     Ok(())
 }
+
+/// Resolve a model file: check ~/.vox/models/ first, then cwd.
+pub fn resolve_model(filename: &str) -> Option<PathBuf> {
+    let models = models_dir();
+    let candidate = models.join(filename);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    let local = PathBuf::from(filename);
+    if local.exists() {
+        return Some(local);
+    }
+    None
+}
+
+/// Map user-facing Whisper model name to GGML filename.
+pub fn model_filename(model: &str) -> String {
+    match model {
+        "tiny" => "ggml-tiny.bin".into(),
+        "tiny.en" => "ggml-tiny.en.bin".into(),
+        "base" => "ggml-base.bin".into(),
+        "base.en" => "ggml-base.en.bin".into(),
+        "small" => "ggml-small.bin".into(),
+        "small.en" => "ggml-small.en.bin".into(),
+        "medium" => "ggml-medium.bin".into(),
+        "medium.en" => "ggml-medium.en.bin".into(),
+        other => {
+            if other.ends_with(".bin") {
+                other.to_string()
+            } else {
+                format!("ggml-{other}.bin")
+            }
+        }
+    }
+}
+
+/// Map user model name to the download registry name.
+pub fn whisper_download_name(model: &str) -> String {
+    match model {
+        "tiny.en" => "whisper-tiny.en".into(),
+        "base.en" => "whisper-base.en".into(),
+        "small.en" => "whisper-small.en".into(),
+        other => format!("whisper-{other}"),
+    }
+}
+
+/// Prompt user to download a missing model. Returns true if yes.
+pub fn prompt_download(model_name: &str, filename: &str, auto_yes: bool) -> anyhow::Result<bool> {
+    if auto_yes {
+        println!("Model '{model_name}' not found. Downloading automatically...");
+        return Ok(true);
+    }
+
+    use std::io::Write;
+    print!("Model '{model_name}' ({filename}) not found. Download now? [Y/n] ");
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let input = input.trim().to_lowercase();
+
+    Ok(input.is_empty() || input == "y" || input == "yes")
+}
+
+/// Resolve a model, offering to download if missing.
+pub async fn ensure_model(
+    model_name: &str,
+    filename: &str,
+    auto_yes: bool,
+) -> anyhow::Result<PathBuf> {
+    if let Some(p) = resolve_model(filename) {
+        return Ok(p);
+    }
+    if prompt_download(model_name, filename, auto_yes)? {
+        download(model_name).await?;
+        resolve_model(filename).ok_or_else(|| {
+            anyhow::anyhow!("Download of '{model_name}' succeeded but file not found")
+        })
+    } else {
+        anyhow::bail!(
+            "Required model '{model_name}' not found.\n\n\
+             Download with:\n\
+             \n  vox models download {model_name}\n"
+        );
+    }
+}

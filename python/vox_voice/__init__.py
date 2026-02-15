@@ -21,7 +21,7 @@ from vox_voice._vox_voice import (
     WhisperStt,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "AudioOutput",
     "KokoroTts",

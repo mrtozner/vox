@@ -31,7 +31,7 @@ def test_version():
     """Package version should be set."""
     import vox_voice
 
-    assert vox_voice.__version__ == "0.1.0"
+    assert vox_voice.__version__ == "0.2.0"
 
 
 def test_silero_vad_default():

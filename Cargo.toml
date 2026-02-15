@@ -3,7 +3,7 @@ members = ["python"]
 
 [package]
 name = "vox"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Mert Ozoner"]
 description = "The open-source voice AI framework. Run Whisper + LLM + TTS locally. No cloud. No Python."
@@ -43,12 +43,13 @@ rubato = "0.16"
 clap = { version = "4.5", features = ["derive"], optional = true }
 dirs = { version = "5.0", optional = true }
 indicatif = { version = "0.17", optional = true }
-reqwest = { version = "0.12", features = ["stream"], optional = true }
+reqwest = { version = "0.12", features = ["stream", "json"], optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
 tokio-util = { version = "0.7", features = ["io"], optional = true }
 
 # Server dependencies
-axum = { version = "0.8", optional = true }
+axum = { version = "0.8", optional = true, features = ["ws"] }
+futures-util = { version = "0.3", optional = true }
 tower-http = { version = "0.6", optional = true, features = ["cors", "trace"] }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
@@ -68,11 +69,12 @@ chatterbox-coreml = ["chatterbox", "chatterbox-rs/coreml"]
 cli = [
     "dep:clap", "dep:dirs", "dep:indicatif", "dep:reqwest",
     "dep:tracing-subscriber", "dep:tokio-util",
+    "dep:serde", "dep:serde_json",
     "whisper", "silero",
 ]
 server = [
     "dep:axum", "dep:tower-http", "dep:serde", "dep:serde_json",
-    "dep:dirs",
+    "dep:dirs", "dep:futures-util",
 ]
 
 [dev-dependencies]
