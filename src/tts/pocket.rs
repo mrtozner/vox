@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
+use candle_core::Device;
 use pocket_tts::TTSModel;
 
 use crate::error::VoxError;
@@ -87,11 +88,17 @@ impl PocketTtsBackend {
 
     /// Create with custom configuration.
     pub fn with_config(config: PocketTtsConfig) -> Result<Self, VoxError> {
-        let model = TTSModel::load_with_params(
+        // Select the best available device: Metal > CUDA > CPU.
+        let device = Self::select_device()?;
+        tracing::info!("pocket-tts using device: {:?}", device);
+
+        let model = TTSModel::load_with_params_device(
             &config.variant,
             config.temperature,
             config.lsd_decode_steps,
             config.eos_threshold,
+            None,
+            &device,
         )
         .map_err(|e| VoxError::Tts(format!("failed to load pocket-tts model: {e}")))?;
 
@@ -99,6 +106,18 @@ impl PocketTtsBackend {
             model: Arc::new(model),
             config,
         })
+    }
+
+    /// Select the best available compute device.
+    fn select_device() -> Result<Device, VoxError> {
+        #[cfg(feature = "pocket-metal")]
+        {
+            if let Ok(device) = Device::new_metal(0) {
+                return Ok(device);
+            }
+        }
+        // CUDA and CPU fallback
+        Ok(Device::Cpu)
     }
 
     /// Load a voice state from a voice name or file path.
