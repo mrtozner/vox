@@ -144,15 +144,41 @@ pub async fn models(State(state): State<AppState>) -> impl IntoResponse {
         stats.requests += 1;
     }
 
+    // Check Ollama connectivity
+    let ollama = {
+        let url = format!("http://{}/api/tags", state.ollama_host);
+        match state.http_client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                let count = body["models"].as_array().map(|a| a.len()).unwrap_or(0);
+                Some(OllamaStatus {
+                    connected: true,
+                    host: state.ollama_host.clone(),
+                    model_count: count,
+                })
+            }
+            _ => Some(OllamaStatus {
+                connected: false,
+                host: state.ollama_host.clone(),
+                model_count: 0,
+            }),
+        }
+    };
+
     Json(ModelsResponse {
         stt: state.stt.as_ref().map(|_| BackendInfo {
             name: "whisper".to_string(),
             loaded: true,
+            model: state.stt_model_name.clone(),
+            size_mb: state.stt_model_size,
         }),
         tts: state.tts.as_ref().map(|_| BackendInfo {
             name: "kokoro".to_string(),
             loaded: true,
+            model: state.tts_model_name.clone(),
+            size_mb: state.tts_model_size,
         }),
+        ollama,
     })
 }
 
@@ -184,135 +210,19 @@ pub async fn index() -> Html<&'static str> {
 
 /// GET /v1/voices — list available TTS voices.
 pub async fn voices(State(state): State<AppState>) -> impl IntoResponse {
-    let voices = if state.tts.is_some() {
-        vec![
-            VoiceInfo {
-                id: "af_heart".into(),
-                name: "Heart".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_alloy".into(),
-                name: "Alloy".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_aoede".into(),
-                name: "Aoede".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_bella".into(),
-                name: "Bella".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_jessica".into(),
-                name: "Jessica".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_kore".into(),
-                name: "Kore".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_nicole".into(),
-                name: "Nicole".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_nova".into(),
-                name: "Nova".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_river".into(),
-                name: "River".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_sarah".into(),
-                name: "Sarah".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "af_sky".into(),
-                name: "Sky".into(),
-                gender: "female".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "am_adam".into(),
-                name: "Adam".into(),
-                gender: "male".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "am_echo".into(),
-                name: "Echo".into(),
-                gender: "male".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "am_eric".into(),
-                name: "Eric".into(),
-                gender: "male".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "am_liam".into(),
-                name: "Liam".into(),
-                gender: "male".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "am_michael".into(),
-                name: "Michael".into(),
-                gender: "male".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "am_onyx".into(),
-                name: "Onyx".into(),
-                gender: "male".into(),
-                accent: "American".into(),
-            },
-            VoiceInfo {
-                id: "bf_emma".into(),
-                name: "Emma".into(),
-                gender: "female".into(),
-                accent: "British".into(),
-            },
-            VoiceInfo {
-                id: "bf_isabella".into(),
-                name: "Isabella".into(),
-                gender: "female".into(),
-                accent: "British".into(),
-            },
-            VoiceInfo {
-                id: "bm_george".into(),
-                name: "George".into(),
-                gender: "male".into(),
-                accent: "British".into(),
-            },
-            VoiceInfo {
-                id: "bm_lewis".into(),
-                name: "Lewis".into(),
-                gender: "male".into(),
-                accent: "British".into(),
-            },
-        ]
+    let voices = if let Some(tts) = state.tts.as_ref() {
+        let backend = tts.backend_name().to_string();
+        tts.list_voices()
+            .into_iter()
+            .map(|v| VoiceInfo {
+                id: v.id,
+                name: v.name,
+                gender: v.gender,
+                language: v.language,
+                accent: v.accent,
+                backend: backend.clone(),
+            })
+            .collect()
     } else {
         vec![]
     };

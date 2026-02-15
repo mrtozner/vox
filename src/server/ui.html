@@ -546,6 +546,7 @@ body {
 <div class="status-bar">
     <span id="statusStt">stt: --</span>
     <span id="statusTts">tts: --</span>
+    <span id="statusOllama">ollama: --</span>
     <span id="statusUptime">uptime: --</span>
 </div>
 
@@ -1169,13 +1170,23 @@ async function refreshDashboard() {
         const renderBackend = (label, info) => {
             if (info) {
                 const cls = info.loaded ? 'loaded' : 'not-loaded';
-                html += '<div class="dash-row"><span class="label">' + label + '</span><span><span class="dash-indicator ' + cls + '"></span>' + escapeHtml(info.name) + '</span></div>';
+                const detail = info.model ? info.model : info.name;
+                const size = info.size_mb ? ' (' + info.size_mb + 'MB)' : '';
+                html += '<div class="dash-row"><span class="label">' + label + '</span><span><span class="dash-indicator ' + cls + '"></span>' + escapeHtml(detail) + size + '</span></div>';
             } else {
                 html += '<div class="dash-row"><span class="label">' + label + '</span><span><span class="dash-indicator not-loaded"></span>not loaded</span></div>';
             }
         };
         renderBackend('stt', data.stt);
         renderBackend('tts', data.tts);
+
+        // Ollama status
+        if (data.ollama) {
+            const cls = data.ollama.connected ? 'loaded' : 'not-loaded';
+            const status = data.ollama.connected ? data.ollama.model_count + ' models' : 'offline';
+            html += '<div class="dash-row"><span class="label">ollama</span><span><span class="dash-indicator ' + cls + '"></span>' + status + '</span></div>';
+        }
+
         $('dashModels').innerHTML = html;
         updateStatusBar(data, null);
     }
@@ -1203,8 +1214,16 @@ function formatUptime(secs) {
 // ─── 10. STATUS BAR ─────────────────────────────────────────
 function updateStatusBar(modelsData, statsData) {
     if (modelsData) {
-        $('statusStt').textContent = 'stt: ' + (modelsData.stt ? modelsData.stt.name : 'none');
-        $('statusTts').textContent = 'tts: ' + (modelsData.tts ? modelsData.tts.name : 'none');
+        const sttLabel = modelsData.stt ? (modelsData.stt.model || modelsData.stt.name) : 'none';
+        $('statusStt').textContent = 'stt: ' + sttLabel;
+        const ttsLabel = modelsData.tts ? (modelsData.tts.model || modelsData.tts.name) : 'none';
+        $('statusTts').textContent = 'tts: ' + ttsLabel;
+        if (modelsData.ollama) {
+            const ollamaLabel = modelsData.ollama.connected
+                ? modelsData.ollama.model_count + ' models'
+                : 'offline';
+            $('statusOllama').textContent = 'ollama: ' + ollamaLabel;
+        }
     }
     if (statsData) {
         $('statusUptime').textContent = 'uptime: ' + formatUptime(statsData.uptime_secs);

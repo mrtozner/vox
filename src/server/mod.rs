@@ -27,6 +27,10 @@ pub struct ServerState {
     pub start_time: std::time::Instant,
     pub ollama_host: String,
     pub http_client: reqwest::Client,
+    pub stt_model_name: Option<String>,
+    pub stt_model_size: Option<u64>,
+    pub tts_model_name: Option<String>,
+    pub tts_model_size: Option<u64>,
 }
 
 /// Cumulative request counters.
@@ -53,7 +57,7 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
 
     // --- Load STT backend (optional) -------------------------------------------
     #[cfg(feature = "whisper")]
-    let stt: Option<Arc<dyn vox::traits::SttBackend>> = {
+    let (stt, stt_model_name, stt_model_size): (Option<Arc<dyn vox::traits::SttBackend>>, Option<String>, Option<u64>) = {
         // Try common whisper model names in preference order
         let candidates = [
             "ggml-base.en.bin",
@@ -64,12 +68,23 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
             "ggml-small.bin",
         ];
         let mut loaded = None;
+        let mut model_name = None;
+        let mut model_size = None;
         for name in &candidates {
             let path = models_dir.join(name);
             if path.exists() {
                 match vox::stt::WhisperBackend::from_model(&path) {
                     Ok(backend) => {
                         info!(model = %path.display(), "loaded whisper STT backend");
+                        // Extract model variant from filename: "ggml-base.en.bin" -> "base.en"
+                        let variant = name
+                            .strip_prefix("ggml-")
+                            .unwrap_or(name)
+                            .strip_suffix(".bin")
+                            .unwrap_or(name)
+                            .to_string();
+                        model_name = Some(variant);
+                        model_size = std::fs::metadata(&path).ok().map(|m| m.len() / (1024 * 1024));
                         loaded = Some(Arc::new(backend) as Arc<dyn vox::traits::SttBackend>);
                         break;
                     }
@@ -85,16 +100,16 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
                 models_dir.display()
             );
         }
-        loaded
+        (loaded, model_name, model_size)
     };
     #[cfg(not(feature = "whisper"))]
-    let stt: Option<Arc<dyn vox::traits::SttBackend>> = {
+    let (stt, stt_model_name, stt_model_size): (Option<Arc<dyn vox::traits::SttBackend>>, Option<String>, Option<u64>) = {
         tracing::warn!("STT disabled (compiled without 'whisper' feature)");
-        None
+        (None, None, None)
     };
 
     // --- Load TTS backend (optional) -------------------------------------------
-    let tts: Option<Arc<dyn vox::traits::TtsBackend>> = load_tts(&models_dir).await;
+    let (tts, tts_model_name, tts_model_size) = load_tts(&models_dir).await;
 
     // --- Detect VAD model for WebSocket endpoint --------------------------------
     let vad_model_path = {
@@ -124,6 +139,10 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         start_time: std::time::Instant::now(),
         ollama_host,
         http_client: reqwest::Client::new(),
+        stt_model_name,
+        stt_model_size,
+        tts_model_name,
+        tts_model_size,
     });
 
     let app = Router::new()
@@ -169,18 +188,36 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "kokoro")]
-async fn load_tts(models_dir: &std::path::Path) -> Option<Arc<dyn vox::traits::TtsBackend>> {
+async fn load_tts(
+    models_dir: &std::path::Path,
+) -> (
+    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<String>,
+    Option<u64>,
+) {
     let model_path = models_dir.join("kokoro-v1.0.onnx");
     let voices_path = models_dir.join("voices.bin");
     if model_path.exists() && voices_path.exists() {
         match vox::tts::KokoroBackend::new(&model_path, &voices_path).await {
             Ok(backend) => {
                 info!("loaded kokoro TTS backend");
-                Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>)
+                // Extract model name from filename: "kokoro-v1.0.onnx" -> "kokoro v1.0"
+                let model_name = model_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.replace('-', " "))
+                    .unwrap_or_else(|| "kokoro".to_string());
+                let model_size =
+                    std::fs::metadata(&model_path).ok().map(|m| m.len() / (1024 * 1024));
+                (
+                    Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
+                    Some(model_name),
+                    model_size,
+                )
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to load kokoro TTS backend");
-                None
+                (None, None, None)
             }
         }
     } else {
@@ -188,15 +225,21 @@ async fn load_tts(models_dir: &std::path::Path) -> Option<Arc<dyn vox::traits::T
             "kokoro model files not found in {}, TTS disabled",
             models_dir.display()
         );
-        None
+        (None, None, None)
     }
 }
 
 #[cfg(not(feature = "kokoro"))]
-async fn load_tts(models_dir: &std::path::Path) -> Option<Arc<dyn vox::traits::TtsBackend>> {
+async fn load_tts(
+    models_dir: &std::path::Path,
+) -> (
+    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<String>,
+    Option<u64>,
+) {
     tracing::warn!(
         "TTS disabled (compiled without 'kokoro' feature); models dir: {}",
         models_dir.display()
     );
-    None
+    (None, None, None)
 }

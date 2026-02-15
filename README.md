@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">Vox</h1>
-  <p align="center"><strong>Local voice framework for Rust. Ollama for voice.</strong></p>
+  <p align="center"><strong>Local-first voice AI framework. Speech-to-text, text-to-speech, and voice chat.</strong></p>
 </p>
 
 <p align="center">
@@ -42,11 +42,14 @@ Models auto-download on first run. Pass `-y` to skip prompts.
 
 ## What It Does
 
-- **Speech-to-Text** &mdash; Microphone transcription using Whisper (tiny to medium, English or multilingual)
-- **Text-to-Speech** &mdash; Synthesis with Kokoro (50+ voices), Pocket (pure Rust), or Chatterbox (voice cloning)
-- **Voice Chat** &mdash; Conversations with any Ollama model. Speak, get a response, hear it back.
-- **HTTP/WebSocket API** &mdash; Serve transcription and TTS over HTTP. WebSocket streaming for real-time apps.
-- **Pluggable Backends** &mdash; Swap VAD, STT, or TTS engines by implementing a trait
+- **Speech-to-Text** &mdash; Microphone transcription with Whisper (tiny to medium, English or multilingual)
+- **Text-to-Speech** &mdash; Natural synthesis with Kokoro (50+ voices), Pocket (pure Rust, edge-ready), or Chatterbox (voice cloning)
+- **Voice Chat** &mdash; Talk to any Ollama LLM and hear responses
+- **Web Interface** &mdash; Browser UI for demos and testing (`vox serve`)
+- **Python &amp; Rust APIs** &mdash; Use from Python via pip or Rust via cargo
+- **HTTP/WebSocket Server** &mdash; Integrate into any stack with REST or streaming WebSocket API
+- **Fully Local** &mdash; No API keys, no cloud, no data leaves your machine
+- **Pluggable Backends** &mdash; Swap VAD, STT, or TTS engines via traits
 
 <br>
 
@@ -64,14 +67,18 @@ vox models list                         # show downloaded models
 vox models download whisper-base.en     # download a specific model
 ```
 
-### HTTP API
+### Web UI
 
 ```bash
 cargo install --git https://github.com/mrtozner/vox --features cli,server,kokoro
 vox serve --port 3000
 ```
 
-Open `http://localhost:3000` for the web interface, or use the REST API:
+Opens a browser interface at `http://localhost:3000` with real-time mic transcription, TTS synthesis, voice chat with Ollama, and a status dashboard. No separate frontend build.
+
+### HTTP API
+
+Use the same server's REST endpoints directly:
 
 ```bash
 # Transcribe audio
@@ -111,6 +118,22 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+### Python Library
+
+```bash
+pip install vox-voice
+```
+
+```python
+from vox_voice import Vox, SileroVad, WhisperStt
+
+vox = Vox(vad=SileroVad(), stt=WhisperStt("tiny.en"))
+for result in vox.listen():
+    print(result.text)
+```
+
+Built with PyO3 and maturin. Same pipeline, Pythonic API. Build from source in the `python/` directory.
 
 <br>
 

@@ -12,7 +12,7 @@ use chatterbox_rs::hf::{self, ModelVariant};
 
 use crate::error::VoxError;
 use crate::traits::TtsBackend;
-use crate::types::{AudioChunk, TtsOutput, TtsRequest};
+use crate::types::{AudioChunk, TtsOutput, TtsRequest, VoiceInfo};
 
 const CHATTERBOX_SAMPLE_RATE: u32 = 24_000;
 const DEFAULT_REPO_ID: &str = "ResembleAI/chatterbox-turbo-ONNX";
@@ -219,6 +219,20 @@ impl TtsBackend for ChatterboxBackend {
             },
             duration_ms,
         })
+    }
+
+    fn list_voices(&self) -> Vec<VoiceInfo> {
+        vec![VoiceInfo {
+            id: "custom".to_string(),
+            name: "Custom (Voice Cloning)".to_string(),
+            gender: "any".to_string(),
+            language: "en".to_string(),
+            accent: "Cloned".to_string(),
+        }]
+    }
+
+    fn backend_name(&self) -> &str {
+        "chatterbox"
     }
 }
 

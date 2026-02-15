@@ -23,6 +23,15 @@ pub struct SynthesizeRequest {
 pub struct ModelsResponse {
     pub stt: Option<BackendInfo>,
     pub tts: Option<BackendInfo>,
+    pub ollama: Option<OllamaStatus>,
+}
+
+/// Ollama connectivity status.
+#[derive(Debug, Serialize)]
+pub struct OllamaStatus {
+    pub connected: bool,
+    pub host: String,
+    pub model_count: usize,
 }
 
 /// Info about a loaded backend.
@@ -30,6 +39,8 @@ pub struct ModelsResponse {
 pub struct BackendInfo {
     pub name: String,
     pub loaded: bool,
+    pub model: Option<String>,
+    pub size_mb: Option<u64>,
 }
 
 /// Server statistics response.
@@ -74,7 +85,9 @@ pub struct VoiceInfo {
     pub id: String,
     pub name: String,
     pub gender: String,
+    pub language: String,
     pub accent: String,
+    pub backend: String,
 }
 
 /// Response listing available Ollama models.

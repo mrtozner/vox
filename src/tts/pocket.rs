@@ -11,7 +11,7 @@ use pocket_tts::TTSModel;
 
 use crate::error::VoxError;
 use crate::traits::TtsBackend;
-use crate::types::{AudioChunk, TtsOutput, TtsRequest};
+use crate::types::{AudioChunk, TtsOutput, TtsRequest, VoiceInfo};
 
 /// Pocket TTS output sample rate.
 const POCKET_SAMPLE_RATE: u32 = 24_000;
@@ -190,5 +190,32 @@ impl TtsBackend for PocketTtsBackend {
             },
             duration_ms,
         })
+    }
+
+    fn list_voices(&self) -> Vec<VoiceInfo> {
+        BUILTIN_VOICES
+            .iter()
+            .map(|&name| VoiceInfo {
+                id: name.to_string(),
+                name: {
+                    let mut c = name.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    }
+                },
+                gender: match name {
+                    "alba" | "fantine" | "cosette" | "eponine" | "azelma" => "female",
+                    _ => "male",
+                }
+                .to_string(),
+                language: "en".to_string(),
+                accent: "Neutral".to_string(),
+            })
+            .collect()
+    }
+
+    fn backend_name(&self) -> &str {
+        "pocket"
     }
 }
