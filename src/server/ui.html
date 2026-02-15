@@ -838,6 +838,11 @@ function handleListenEvent(data) {
             status.className = 'listen-status active';
             showTranscriptPlaceholder();
             break;
+        case 'partial':
+            status.textContent = 'Speaking...';
+            status.className = 'listen-status active';
+            updateTranscriptPlaceholder(data.text || '...');
+            break;
         case 'transcribing':
             status.textContent = 'Transcribing...';
             status.className = 'listen-status transcribing';
