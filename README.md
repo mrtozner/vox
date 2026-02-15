@@ -10,12 +10,6 @@
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg" alt="License"></a>
 </p>
 
-<p align="center">
-  <img src="demo.gif" alt="Vox demo" width="600">
-  <br>
-  <sub><a href="demo.tape">View demo source</a> &mdash; recorded with <a href="https://github.com/charmbracelet/vhs">VHS</a></sub>
-</p>
-
 ---
 
 Speech-to-text, text-to-speech, and voice chat &mdash; all running locally on your hardware. No API keys, no cloud, no data leaving your machine.
@@ -40,7 +34,6 @@ Mic --> VAD (Silero) --> STT (Whisper) --> Your Code --> TTS (Kokoro) --> Speake
 ### Homebrew (macOS)
 
 ```bash
-brew tap mrtozner/tap
 brew install vox
 ```
 

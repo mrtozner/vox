@@ -42,8 +42,9 @@ reference_voice.wav
 # Research notes (not shipped)
 /research/
 
-# Generated demo GIF (rebuild with: vhs demo.tape)
+# Demo assets
 demo.gif
+demo.tape
 
 # Python bindings
 python/.venv/
