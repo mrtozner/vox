@@ -83,7 +83,7 @@ def test_kokoro_tts_default():
     tts = KokoroTts()
     assert tts is not None
     assert "kokoro-v1.0.onnx" in repr(tts)
-    assert "voices-v1.0.bin" in repr(tts)
+    assert "voices.bin" in repr(tts)
 
 
 def test_kokoro_tts_custom_paths():

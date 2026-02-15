@@ -106,12 +106,8 @@ impl KokoroTts {
                 .to_string_lossy()
                 .into_owned()
         });
-        let vp = voices_path.unwrap_or_else(|| {
-            model_dir
-                .join("voices.bin")
-                .to_string_lossy()
-                .into_owned()
-        });
+        let vp = voices_path
+            .unwrap_or_else(|| model_dir.join("voices.bin").to_string_lossy().into_owned());
         Ok(Self {
             model_path: mp,
             voices_path: vp,

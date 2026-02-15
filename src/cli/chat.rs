@@ -59,8 +59,6 @@ pub async fn run(
     ollama_host: &str,
     yes: bool,
 ) -> anyhow::Result<()> {
-    use vox::traits::TtsBackend;
-
     // Resolve all required models (auto-download if --yes)
     let vad_path = ensure_model("silero-vad", "silero_vad.onnx", yes).await?;
 
@@ -101,6 +99,9 @@ pub async fn run(
         }
     }
 
+    // Clone model name for the println after the closure captures it.
+    let model_display = ollama_model.clone();
+
     // Build pipeline
     let pipeline = vox::Vox::builder()
         .vad(vad)
@@ -133,7 +134,7 @@ pub async fn run(
 
     println!(
         "\nChat ready -- speak into your mic, I'll respond via {} (Ctrl+C to stop)\n",
-        ollama_model
+        model_display
     );
     pipeline.listen().await?;
 

@@ -1,3 +1,14 @@
+// Vendored crate — suppress clippy lints that are impractical to fix upstream.
+#![allow(
+    clippy::needless_borrow,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::redundant_closure,
+    clippy::print_literal
+)]
+
 mod audio;
 pub mod chatterbox;
 pub mod hf;
