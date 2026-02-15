@@ -27,6 +27,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    env:
+      # Disable native CPU feature detection so whisper-rs-sys (ggml)
+      # doesn't emit i8mm intrinsics unsupported on GitHub's M1 runners.
+      CMAKE_ARGS: "-DGGML_NATIVE=OFF"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,7 +56,7 @@ jobs:
         run: cargo clippy --features cli,server -- -D warnings
 
       - name: Clippy (all portable features)
-        run: cargo clippy --features whisper,silero,kokoro,pocket,chatterbox -- -D warnings
+        run: cargo clippy --features whisper,silero,kokoro,pocket,chatterbox,cli,server -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -61,6 +65,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    env:
+      CMAKE_ARGS: "-DGGML_NATIVE=OFF"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -104,6 +110,8 @@ jobs:
   python:
     name: Python bindings
     runs-on: macos-latest
+    env:
+      CMAKE_ARGS: "-DGGML_NATIVE=OFF"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -111,13 +119,20 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install maturin and test deps
-        run: pip install maturin pytest
+      - name: Create virtualenv and install deps
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install maturin pytest
 
       - name: Build Python wheel
         working-directory: python
-        run: maturin develop --release
+        run: |
+          source ../.venv/bin/activate
+          maturin develop --release
 
       - name: Run Python tests
         working-directory: python
-        run: pytest tests/ -v
+        run: |
+          source ../.venv/bin/activate
+          pytest tests/ -v
