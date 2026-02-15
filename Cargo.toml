@@ -40,6 +40,7 @@ pocket = ["dep:pocket-tts", "dep:candle-core", "dep:rodio"]
 pocket-metal = ["pocket", "pocket-tts/metal", "candle-core/metal"]
 pocket-mkl = ["pocket", "pocket-tts/mkl"]
 chatterbox = ["dep:chatterbox-rs", "dep:ort", "dep:ndarray", "dep:rodio"]
+chatterbox-coreml = ["chatterbox", "chatterbox-rs/coreml"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -74,6 +75,10 @@ required-features = ["whisper", "silero"]
 name = "chatterbox_bench"
 harness = false
 required-features = ["chatterbox"]
+
+[[bench]]
+name = "tts_comparison_bench"
+harness = false
 
 [[example]]
 name = "simple_listen"

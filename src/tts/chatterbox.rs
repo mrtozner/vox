@@ -31,6 +31,9 @@ pub struct ChatterboxConfig {
     pub repetition_penalty: f32,
     /// Number of intra-op threads for ONNX Runtime (default: 4).
     pub intra_threads: usize,
+    /// Use CoreML execution provider for Apple Neural Engine / GPU acceleration.
+    /// Requires the `chatterbox-coreml` feature (default: false).
+    pub coreml: bool,
 }
 
 impl Default for ChatterboxConfig {
@@ -41,6 +44,7 @@ impl Default for ChatterboxConfig {
             max_new_tokens: 256,
             repetition_penalty: 1.2,
             intra_threads: 4,
+            coreml: false,
         }
     }
 }
@@ -143,11 +147,18 @@ impl ChatterboxBackend {
         paths: hf::ChatterboxPaths,
         config: ChatterboxConfig,
     ) -> Result<Self, VoxError> {
+        let execution_provider = if config.coreml {
+            tracing::info!("CoreML execution provider requested");
+            chatterbox_rs::chatterbox::ExecutionProvider::CoreML
+        } else {
+            chatterbox_rs::chatterbox::ExecutionProvider::Auto
+        };
+
         let session_config = chatterbox_rs::chatterbox::SessionConfig {
             intra_threads: Some(config.intra_threads),
             inter_threads: None,
             parallel_execution: false,
-            execution_provider: chatterbox_rs::chatterbox::ExecutionProvider::Auto,
+            execution_provider,
             coreml_cache_dir: None,
         };
 

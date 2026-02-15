@@ -1,0 +1,34 @@
+# Cargo configuration for cross-compilation targets.
+#
+# musl targets produce fully static binaries suitable for embedded/container
+# deployment. The linker and compiler settings below work with both:
+#   - Host toolchain (musl-gcc installed locally)
+#   - Docker-based builds (see Dockerfile.static)
+#   - `cross` tool (https://github.com/cross-rs/cross)
+
+# --- x86_64 musl (primary static target) ---
+[target.x86_64-unknown-linux-musl]
+# Use musl-gcc as the linker. On Alpine this is just "gcc".
+# On Debian/Ubuntu, install: apt install musl-tools
+linker = "musl-gcc"
+
+# whisper-rs and ort build C/C++ code via cc/cmake crates.
+# These env vars ensure the C/C++ toolchain targets musl.
+[target.x86_64-unknown-linux-musl.env]
+CC_x86_64_unknown_linux_musl = "musl-gcc"
+CXX_x86_64_unknown_linux_musl = "g++"
+AR_x86_64_unknown_linux_musl = "ar"
+
+# Static linking flags for native libraries (ALSA, etc.)
+# ALSA is required by cpal even in headless builds.
+RUSTFLAGS = "-C target-feature=+crt-static"
+
+# --- aarch64 musl (Raspberry Pi, Jetson) ---
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+
+[target.aarch64-unknown-linux-musl.env]
+CC_aarch64_unknown_linux_musl = "aarch64-linux-musl-gcc"
+CXX_aarch64_unknown_linux_musl = "aarch64-linux-musl-g++"
+AR_aarch64_unknown_linux_musl = "aarch64-linux-musl-ar"
+RUSTFLAGS = "-C target-feature=+crt-static"

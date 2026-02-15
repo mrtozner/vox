@@ -674,14 +674,14 @@ fn session_builder(cfg: &SessionConfig) -> Result<ort::session::builder::Session
 
     #[cfg(feature = "coreml")]
     fn coreml_ep(cfg: &SessionConfig) -> ort::execution_providers::ExecutionProviderDispatch {
-        use ort::execution_providers::coreml::{
-            CoreMLComputeUnits, CoreMLExecutionProvider, CoreMLModelFormat,
-            CoreMLSpecializationStrategy,
+        use ort::ep::coreml::{
+            ComputeUnits, CoreML, ModelFormat,
+            SpecializationStrategy,
         };
-        let mut coreml = CoreMLExecutionProvider::default()
-            .with_model_format(CoreMLModelFormat::MLProgram)
-            .with_specialization_strategy(CoreMLSpecializationStrategy::FastPrediction)
-            .with_compute_units(CoreMLComputeUnits::CPUAndNeuralEngine);
+        let mut coreml = CoreML::default()
+            .with_model_format(ModelFormat::MLProgram)
+            .with_specialization_strategy(SpecializationStrategy::FastPrediction)
+            .with_compute_units(ComputeUnits::CPUAndNeuralEngine);
         if let Some(dir) = &cfg.coreml_cache_dir {
             coreml = coreml.with_model_cache_dir(dir.display().to_string());
         }
@@ -708,8 +708,8 @@ fn session_builder(cfg: &SessionConfig) -> Result<ort::session::builder::Session
         ExecutionProvider::CoreML => {
             #[cfg(feature = "coreml")]
             {
-                use ort::execution_providers::ExecutionProvider as _;
-                if !ort::execution_providers::coreml::CoreMLExecutionProvider::default()
+                use ort::ep::ExecutionProvider as _;
+                if !ort::ep::coreml::CoreML::default()
                     .is_available()
                     .unwrap_or(false)
                 {
@@ -771,8 +771,8 @@ fn session_builder(cfg: &SessionConfig) -> Result<ort::session::builder::Session
         ExecutionProvider::Auto => {
             #[cfg(all(feature = "coreml", target_os = "macos"))]
             {
-                use ort::execution_providers::ExecutionProvider as _;
-                if ort::execution_providers::coreml::CoreMLExecutionProvider::default()
+                use ort::ep::ExecutionProvider as _;
+                if ort::ep::coreml::CoreML::default()
                     .is_available()
                     .unwrap_or(false)
                 {

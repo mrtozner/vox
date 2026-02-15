@@ -3,6 +3,7 @@
 //! Usage:
 //!   cargo run --example chatterbox_speak --features chatterbox -- <reference.wav> [text]
 //!   cargo run --example chatterbox_speak --features chatterbox -- --model-dir models/chatterbox <reference.wav> [text]
+//!   cargo run --example chatterbox_speak --features chatterbox-coreml -- --coreml <reference.wav> [text]
 //!
 //! The reference WAV should be 5-20 seconds of clean speech from the target
 //! voice. Use a real human recording — TTS-generated audio won't clone well.
@@ -10,19 +11,35 @@
 //! Default model is fp16 (~1.66GB), auto-downloads from HuggingFace on first run.
 //! Voices: English only.
 
-use vox::{AudioPlayer, ChatterboxBackend, TtsBackend, TtsRequest};
+use vox::{AudioPlayer, ChatterboxBackend, ChatterboxConfig, TtsBackend, TtsRequest};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
-    let (model_dir, reference_wav, text) = parse_args(&args);
+    let (model_dir, reference_wav, text, coreml) = parse_args(&args);
 
     println!("Loading Chatterbox Turbo (first run downloads ~720MB model)...");
     let tts = if let Some(dir) = &model_dir {
         println!("Using local models: {dir}");
-        ChatterboxBackend::from_model_dir(dir, &reference_wav)?
+        if coreml {
+            let config = ChatterboxConfig {
+                reference_audio: reference_wav.clone().into(),
+                coreml: true,
+                ..Default::default()
+            };
+            ChatterboxBackend::from_model_dir_with_config(dir, config)?
+        } else {
+            ChatterboxBackend::from_model_dir(dir, &reference_wav)?
+        }
+    } else if coreml {
+        let config = ChatterboxConfig {
+            reference_audio: reference_wav.clone().into(),
+            coreml: true,
+            ..Default::default()
+        };
+        ChatterboxBackend::with_config(config)?
     } else {
         ChatterboxBackend::new(&reference_wav)?
     };
@@ -70,8 +87,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn parse_args(args: &[String]) -> (Option<String>, String, String) {
+fn parse_args(args: &[String]) -> (Option<String>, String, String, bool) {
     let mut model_dir = None;
+    let mut coreml = false;
     let mut positional = Vec::new();
 
     let mut i = 1;
@@ -79,6 +97,9 @@ fn parse_args(args: &[String]) -> (Option<String>, String, String) {
         if args[i] == "--model-dir" && i + 1 < args.len() {
             model_dir = Some(args[i + 1].clone());
             i += 2;
+        } else if args[i] == "--coreml" {
+            coreml = true;
+            i += 1;
         } else {
             positional.push(args[i].clone());
             i += 1;
@@ -86,8 +107,9 @@ fn parse_args(args: &[String]) -> (Option<String>, String, String) {
     }
 
     if positional.is_empty() {
-        eprintln!("Usage: chatterbox_speak [--model-dir DIR] <reference.wav> [text]");
-        eprintln!("  reference.wav: 5-20s WAV of target voice for cloning");
+        eprintln!("Usage: chatterbox_speak [--model-dir DIR] [--coreml] <reference.wav> [text]");
+        eprintln!("  --coreml:        use CoreML acceleration (macOS, requires chatterbox-coreml feature)");
+        eprintln!("  reference.wav:   5-20s WAV of target voice for cloning");
         std::process::exit(1);
     }
 
@@ -99,5 +121,5 @@ fn parse_args(args: &[String]) -> (Option<String>, String, String) {
             .into()
     };
 
-    (model_dir, reference_wav, text)
+    (model_dir, reference_wav, text, coreml)
 }

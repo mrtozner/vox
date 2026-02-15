@@ -1,0 +1,133 @@
+# Dockerfile.static — Reproducible static musl build for Vox.
+#
+# Produces a fully static binary suitable for scratch/distroless containers,
+# embedded devices, or any Linux system without shared library dependencies.
+#
+# Usage:
+#   # Default: silero (VAD) feature only, smallest binary
+#   docker build -f Dockerfile.static -t vox-static .
+#
+#   # Custom features
+#   docker build -f Dockerfile.static -t vox-static \
+#     --build-arg FEATURES="silero,piper" .
+#
+#   # Build for aarch64
+#   docker build -f Dockerfile.static -t vox-static \
+#     --build-arg TARGET="aarch64-unknown-linux-musl" .
+#
+#   # Extract binary
+#   docker create --name vox-tmp vox-static
+#   docker cp vox-tmp:/output/ ./static-build/
+#   docker rm vox-tmp
+#
+#   # Or run directly (e.g., if you add a binary target)
+#   docker run --rm vox-static
+#
+# Build args:
+#   FEATURES  - Comma-separated Cargo features (default: "silero")
+#   TARGET    - Rust target triple (default: "x86_64-unknown-linux-musl")
+#   PROFILE   - "release" or "debug" (default: "release")
+#
+# ============================================================================
+
+# --- Stage 1: Builder -------------------------------------------------------
+FROM rust:1.85-alpine AS builder
+
+# Build arguments
+ARG FEATURES="silero"
+ARG TARGET="x86_64-unknown-linux-musl"
+ARG PROFILE="release"
+
+# Install build dependencies:
+#   - musl-dev: musl libc headers and runtime (provides musl-gcc on Alpine)
+#   - pkgconfig: needed by many -sys crates
+#   - alsa-lib-dev: ALSA headers for cpal (always needed, non-optional dep)
+#   - cmake, make, g++: for native C/C++ deps (whisper.cpp, ONNX Runtime)
+#   - openssl-dev, openssl-libs-static: for crates that need TLS (ureq, etc.)
+#   - linux-headers: kernel headers sometimes needed by sys crates
+#   - git: some build scripts fetch submodules
+RUN apk add --no-cache \
+    musl-dev \
+    pkgconfig \
+    alsa-lib-dev \
+    cmake \
+    make \
+    g++ \
+    openssl-dev \
+    openssl-libs-static \
+    linux-headers \
+    git \
+    perl
+
+# Add the musl target (Alpine Rust already has it, but be explicit)
+RUN rustup target add "$TARGET"
+
+# Set the working directory
+WORKDIR /build
+
+# --- Dependency caching layer -----------------------------------------------
+# Copy only manifests first to cache dependency builds.
+COPY Cargo.toml Cargo.lock ./
+
+# Copy the vendored chatterbox-rs manifest (needed for workspace resolution)
+COPY vendor/cbx/Cargo.toml vendor/cbx/Cargo.toml
+
+# Create stub source files so cargo can resolve the dependency graph.
+# These will be overwritten by the real sources in the next step.
+RUN mkdir -p src && echo "// stub" > src/lib.rs && \
+    mkdir -p vendor/cbx/src && echo "// stub" > vendor/cbx/src/lib.rs && \
+    mkdir -p vendor/cbx/src/bin && \
+    echo "fn main() {}" > vendor/cbx/src/bin/cbx.rs && \
+    echo "fn main() {}" > vendor/cbx/src/bin/chatterbox_onnx.rs
+
+# Pre-build dependencies (this layer is cached unless Cargo.toml/lock change)
+RUN if [ "$PROFILE" = "release" ]; then \
+        cargo build --target "$TARGET" --no-default-features --features "$FEATURES" --release 2>/dev/null || true; \
+    else \
+        cargo build --target "$TARGET" --no-default-features --features "$FEATURES" 2>/dev/null || true; \
+    fi
+
+# --- Full source build ------------------------------------------------------
+# Copy the full source tree
+COPY . .
+
+# Touch source files to invalidate the stub build
+RUN find src -name '*.rs' -exec touch {} + && \
+    find vendor -name '*.rs' -exec touch {} + 2>/dev/null || true
+
+# Set environment for static linking
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+ENV PKG_CONFIG_ALL_STATIC=1
+ENV OPENSSL_STATIC=1
+
+# Build the project
+RUN if [ "$PROFILE" = "release" ]; then \
+        cargo build --target "$TARGET" --no-default-features --features "$FEATURES" --release; \
+    else \
+        cargo build --target "$TARGET" --no-default-features --features "$FEATURES"; \
+    fi
+
+# --- Collect artifacts -------------------------------------------------------
+# Copy build artifacts to a known output location.
+# Vox is a library crate, so we collect .rlib and any example/bench binaries.
+RUN mkdir -p /output && \
+    if [ "$PROFILE" = "release" ]; then \
+        cp -r target/"$TARGET"/release/libvox* /output/ 2>/dev/null || true; \
+        cp -r target/"$TARGET"/release/deps/libvox* /output/ 2>/dev/null || true; \
+        cp -r target/"$TARGET"/release/examples/* /output/ 2>/dev/null || true; \
+    else \
+        cp -r target/"$TARGET"/debug/libvox* /output/ 2>/dev/null || true; \
+        cp -r target/"$TARGET"/debug/deps/libvox* /output/ 2>/dev/null || true; \
+        cp -r target/"$TARGET"/debug/examples/* /output/ 2>/dev/null || true; \
+    fi
+
+# --- Stage 2: Minimal output image ------------------------------------------
+# Use scratch for the smallest possible image. Since Vox is a library, this
+# stage mainly serves as an artifact container. If you add a binary target,
+# it will be runnable from this image.
+FROM scratch AS runtime
+
+COPY --from=builder /output/ /output/
+
+# If a binary example was built, it can be set as entrypoint:
+# ENTRYPOINT ["/output/vad_only"]

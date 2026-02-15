@@ -61,8 +61,8 @@ fn detect_effective_ep(ep: ExecutionProviderArg) -> Option<&'static str> {
         ExecutionProviderArg::Coreml => {
             #[cfg(feature = "coreml")]
             {
-                use ort::execution_providers::ExecutionProvider as _;
-                if ort::execution_providers::coreml::CoreMLExecutionProvider::default()
+                use ort::ep::ExecutionProvider as _;
+                if ort::ep::coreml::CoreML::default()
                     .is_available()
                     .unwrap_or(false)
                 {
@@ -109,8 +109,8 @@ fn detect_effective_ep(ep: ExecutionProviderArg) -> Option<&'static str> {
     // Auto: prefer best EP for this platform if it's available; else CPU.
     #[cfg(all(feature = "coreml", target_os = "macos"))]
     {
-        use ort::execution_providers::ExecutionProvider as _;
-        if ort::execution_providers::coreml::CoreMLExecutionProvider::default()
+        use ort::ep::ExecutionProvider as _;
+        if ort::ep::coreml::CoreML::default()
             .is_available()
             .unwrap_or(false)
         {
