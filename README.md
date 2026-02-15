@@ -46,7 +46,6 @@ Models auto-download on first run. Pass `-y` to skip prompts.
 - **Text-to-Speech** &mdash; Natural synthesis with Kokoro (50+ voices), Pocket (pure Rust, edge-ready), or Chatterbox (voice cloning)
 - **Voice Chat** &mdash; Talk to any Ollama LLM and hear responses
 - **Web Interface** &mdash; Browser UI for demos and testing (`vox serve`)
-- **Python &amp; Rust APIs** &mdash; Use from Python via pip or Rust via cargo
 - **HTTP/WebSocket Server** &mdash; Integrate into any stack with REST or streaming WebSocket API
 - **Fully Local** &mdash; No API keys, no cloud, no data leaves your machine
 - **Pluggable Backends** &mdash; Swap VAD, STT, or TTS engines via traits
@@ -118,22 +117,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
-
-### Python Library
-
-```bash
-pip install vox-voice
-```
-
-```python
-from vox_voice import Vox, SileroVad, WhisperStt
-
-vox = Vox(vad=SileroVad(), stt=WhisperStt("tiny.en"))
-for result in vox.listen():
-    print(result.text)
-```
-
-Built with PyO3 and maturin. Same pipeline, Pythonic API. Build from source in the `python/` directory.
 
 <br>
 
