@@ -1,0 +1,57 @@
+//! Backend trait definitions for the pluggable pipeline.
+//!
+//! Vox uses a trait-based backend system inspired by `embedded-hal`.
+//! Implement these traits to plug in custom VAD, STT, or TTS engines.
+
+use async_trait::async_trait;
+
+use crate::error::VoxError;
+use crate::types::{AudioChunk, SttResult, TtsOutput, TtsRequest, Utterance};
+
+/// Voice Activity Detection backend.
+///
+/// Processes audio frames and emits [`VadEvent`]s when speech
+/// starts or ends.
+#[async_trait]
+pub trait VadBackend: Send + Sync {
+    /// Process a single audio frame and return VAD events.
+    async fn process_frame(&mut self, frame: &AudioChunk) -> Result<Vec<VadEvent>, VoxError>;
+
+    /// Reset the internal VAD state.
+    fn reset(&mut self);
+
+    /// Expected frame size in samples.
+    fn frame_size(&self) -> usize;
+
+    /// Expected sample rate in Hz.
+    fn sample_rate(&self) -> u32;
+}
+
+/// Speech-to-Text backend.
+///
+/// Transcribes a complete [`Utterance`] into text.
+#[async_trait]
+pub trait SttBackend: Send + Sync {
+    /// Transcribe an audio utterance to text.
+    async fn transcribe(&self, audio: &Utterance) -> Result<SttResult, VoxError>;
+}
+
+/// Text-to-Speech backend.
+///
+/// Synthesizes text into audio samples.
+#[async_trait]
+pub trait TtsBackend: Send + Sync {
+    /// Synthesize text to audio.
+    async fn synthesize(&self, request: &TtsRequest) -> Result<TtsOutput, VoxError>;
+}
+
+/// Events emitted by a [`VadBackend`].
+#[derive(Debug)]
+pub enum VadEvent {
+    /// Speech has started.
+    SpeechStart,
+    /// Speech has ended; contains the complete utterance.
+    SpeechEnd(Utterance),
+    /// No speech detected in this frame.
+    Silence,
+}

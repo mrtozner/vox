@@ -1,0 +1,49 @@
+[package]
+name = "vox"
+version = "0.1.0"
+edition = "2024"
+authors = ["Mert Ozoner"]
+description = "The open-source voice AI framework. Run Whisper + LLM + TTS locally. No cloud. No Python."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mrtozner/vox"
+keywords = ["voice", "speech", "whisper", "ai", "edge"]
+categories = ["multimedia::audio", "science::robotics"]
+rust-version = "1.85"
+
+[dependencies]
+async-trait = "0.1"
+cpal = "0.15"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+whisper-rs = { version = "0.15", optional = true }
+ort = { version = "2.0.0-rc.11", optional = true }
+ndarray = { version = "0.16", optional = true }
+rodio = { version = "0.20", optional = true }
+hound = "3.5"
+tracing = "0.1"
+thiserror = "2"
+anyhow = "1"
+rubato = "0.16"
+
+[features]
+default = ["whisper", "silero"]
+whisper = ["dep:whisper-rs"]
+silero = ["dep:ort", "dep:ndarray"]
+kokoro = ["dep:ort"]
+piper = ["dep:ort"]
+tts = ["dep:rodio"]
+
+[dev-dependencies]
+tracing-subscriber = "0.3"
+
+[[example]]
+name = "simple_listen"
+required-features = ["whisper", "silero"]
+
+[[example]]
+name = "vad_only"
+required-features = ["silero"]
+
+[[example]]
+name = "voice_assistant"
+required-features = ["whisper", "silero"]

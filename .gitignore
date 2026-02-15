@@ -1,0 +1,27 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo lock for libraries
+Cargo.lock
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Model files (too large for git)
+*.bin
+*.onnx
+*.gguf
+*.ggml
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
