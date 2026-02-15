@@ -3,7 +3,7 @@ members = ["python"]
 
 [package]
 name = "vox"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Mert Ozoner"]
 description = "Local-first voice AI framework. Whisper STT, Kokoro/Pocket TTS, Silero VAD. Zero cloud dependencies."
@@ -81,6 +81,14 @@ server = [
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = "0.3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+
+[[test]]
+name = "server_tests"
+path = "tests/server_tests.rs"
+required-features = ["server"]
 
 [[bin]]
 name = "vox"
