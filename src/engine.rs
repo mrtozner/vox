@@ -56,6 +56,17 @@ impl VoxContext {
         .await
     }
 
+    /// Speak text and play through speakers.
+    ///
+    /// Synthesizes TTS then plays the audio through the default output device.
+    #[cfg(any(feature = "kokoro", feature = "tts"))]
+    pub async fn speak_and_play(&self, text: &str) -> Result<TtsOutput, VoxError> {
+        let output = self.speak(text).await?;
+        let player = crate::audio::AudioPlayer::new()?;
+        player.play_blocking(&output.audio)?;
+        Ok(output)
+    }
+
     /// Get current pipeline statistics.
     pub fn stats(&self) -> PipelineStats {
         self.stats.lock().unwrap().clone()

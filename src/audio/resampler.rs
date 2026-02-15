@@ -153,4 +153,88 @@ mod tests {
         assert!(r.is_ok());
         assert!(r.unwrap().resampler.is_some());
     }
+
+    #[test]
+    fn resample_produces_fewer_samples_when_downsampling() {
+        let mut r = AudioResampler::new(44100, 16000).unwrap();
+        let chunk = AudioChunk {
+            samples: vec![0.5; 44100], // 1 second at 44100 Hz
+            sample_rate: 44100,
+            channels: 1,
+        };
+        let out = r.process(&chunk).unwrap();
+        // Should produce ~16000 samples (within 5% tolerance for resampler edge effects)
+        let ratio = out.samples.len() as f64 / 16000.0;
+        assert!(
+            ratio > 0.95 && ratio < 1.05,
+            "expected ~16000 samples, got {}",
+            out.samples.len()
+        );
+        assert_eq!(out.sample_rate, 16000);
+    }
+
+    #[test]
+    fn resample_produces_more_samples_when_upsampling() {
+        let mut r = AudioResampler::new(8000, 16000).unwrap();
+        let chunk = AudioChunk {
+            samples: vec![0.5; 8000], // 1 second at 8000 Hz
+            sample_rate: 8000,
+            channels: 1,
+        };
+        let out = r.process(&chunk).unwrap();
+        let ratio = out.samples.len() as f64 / 16000.0;
+        assert!(
+            ratio > 0.95 && ratio < 1.05,
+            "expected ~16000 samples, got {}",
+            out.samples.len()
+        );
+        assert_eq!(out.sample_rate, 16000);
+    }
+
+    #[test]
+    fn stereo_input_converted_to_mono() {
+        let mut r = AudioResampler::new(16000, 16000).unwrap();
+        // Stereo: left=1.0, right=0.0 => mono should be 0.5
+        let chunk = AudioChunk {
+            samples: vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+            sample_rate: 16000,
+            channels: 2,
+        };
+        let out = r.process(&chunk).unwrap();
+        assert_eq!(out.channels, 1);
+        assert_eq!(out.samples.len(), 4);
+        for s in &out.samples {
+            assert!((s - 0.5).abs() < 1e-6, "expected 0.5, got {s}");
+        }
+    }
+
+    #[test]
+    fn empty_input_produces_empty_output() {
+        let mut r = AudioResampler::new(16000, 16000).unwrap();
+        let chunk = AudioChunk {
+            samples: vec![],
+            sample_rate: 16000,
+            channels: 1,
+        };
+        let out = r.process(&chunk).unwrap();
+        assert!(out.samples.is_empty());
+    }
+
+    #[test]
+    fn resampler_output_values_in_range() {
+        let mut r = AudioResampler::new(44100, 16000).unwrap();
+        // Sine wave that stays in [-1, 1]
+        let samples: Vec<f32> = (0..4410)
+            .map(|i| (i as f32 * 2.0 * std::f32::consts::PI * 440.0 / 44100.0).sin())
+            .collect();
+        let chunk = AudioChunk {
+            samples,
+            sample_rate: 44100,
+            channels: 1,
+        };
+        let out = r.process(&chunk).unwrap();
+        for s in &out.samples {
+            assert!(s.abs() <= 1.5, "sample out of range: {s}"); // allow small overshoot from sinc
+        }
+    }
 }

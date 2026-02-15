@@ -14,8 +14,8 @@ const SAMPLE_RATE: u32 = 16_000;
 /// Duration of one frame in milliseconds (512 samples / 16000 Hz = 32 ms).
 const FRAME_MS: u32 = (FRAME_SIZE as u32 * 1000) / SAMPLE_RATE;
 
-/// Number of elements in the LSTM hidden/cell state: shape [2, 1, 64].
-const STATE_LEN: usize = 128; // 2 * 1 * 64
+/// Number of elements in the LSTM state tensor: shape [2, 1, 128].
+const STATE_LEN: usize = 256; // 2 * 1 * 128
 
 /// Configuration for Silero VAD.
 #[derive(Debug, Clone)]
@@ -46,8 +46,7 @@ impl Default for VadConfig {
 /// configurable silence and minimum duration thresholds).
 pub struct SileroVad {
     session: Session,
-    h: Vec<f32>,
-    c: Vec<f32>,
+    state: Vec<f32>,
     config: VadConfig,
     is_speaking: bool,
     silence_frames: u32,
@@ -80,8 +79,7 @@ impl SileroVad {
 
         Ok(Self {
             session,
-            h: vec![0.0; STATE_LEN],
-            c: vec![0.0; STATE_LEN],
+            state: vec![0.0; STATE_LEN],
             config,
             is_speaking: false,
             silence_frames: 0,
@@ -98,41 +96,31 @@ impl SileroVad {
             .map_err(|e| VoxError::Vad(format!("failed to create input tensor: {e}")))?;
 
         let sr_data: [i64; 1] = [SAMPLE_RATE as i64];
-        let input_sr = TensorRef::from_array_view(([1usize], &sr_data[..]))
-            .map_err(|e| VoxError::Vad(format!("failed to create sr tensor: {e}")))?;
+        let input_sr =
+            TensorRef::from_array_view(([0usize; 0], &sr_data[..1]))
+                .map_err(|e| VoxError::Vad(format!("failed to create sr tensor: {e}")))?;
 
-        let input_h = TensorRef::from_array_view(([2usize, 1, 64], &self.h[..]))
-            .map_err(|e| VoxError::Vad(format!("failed to create h tensor: {e}")))?;
-
-        let input_c = TensorRef::from_array_view(([2usize, 1, 64], &self.c[..]))
-            .map_err(|e| VoxError::Vad(format!("failed to create c tensor: {e}")))?;
+        let input_state = TensorRef::from_array_view(([2usize, 1, 128], &self.state[..]))
+            .map_err(|e| VoxError::Vad(format!("failed to create state tensor: {e}")))?;
 
         let outputs = self
             .session
             .run(inputs![
                 "input" => input_audio,
                 "sr" => input_sr,
-                "h" => input_h,
-                "c" => input_c
+                "state" => input_state
             ])
             .map_err(|e| VoxError::Vad(format!("inference failed: {e}")))?;
 
-        // Extract speech probability scalar.
         let (_shape, prob_data) = outputs["output"]
             .try_extract_tensor::<f32>()
             .map_err(|e| VoxError::Vad(format!("failed to extract output: {e}")))?;
         let probability = prob_data.first().copied().unwrap_or(0.0);
 
-        // Update LSTM hidden and cell states.
-        let (_shape, hn_data) = outputs["hn"]
+        let (_shape, state_data) = outputs["stateN"]
             .try_extract_tensor::<f32>()
-            .map_err(|e| VoxError::Vad(format!("failed to extract hn: {e}")))?;
-        self.h.copy_from_slice(hn_data);
-
-        let (_shape, cn_data) = outputs["cn"]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| VoxError::Vad(format!("failed to extract cn: {e}")))?;
-        self.c.copy_from_slice(cn_data);
+            .map_err(|e| VoxError::Vad(format!("failed to extract stateN: {e}")))?;
+        self.state.copy_from_slice(state_data);
 
         Ok(probability)
     }
@@ -189,8 +177,7 @@ impl VadBackend for SileroVad {
     }
 
     fn reset(&mut self) {
-        self.h.fill(0.0);
-        self.c.fill(0.0);
+        self.state.fill(0.0);
         self.is_speaking = false;
         self.silence_frames = 0;
         self.speech_buffer.clear();

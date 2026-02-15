@@ -101,4 +101,59 @@ mod tests {
         assert_eq!(drained.len(), 3);
         assert_eq!(buf.last_seconds(1.0, 100).len(), 0);
     }
+
+    #[test]
+    fn empty_buffer_returns_empty() {
+        let buf = AudioBuffer::new(1.0, 16000);
+        let result = buf.last_seconds(0.5, 16000);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn request_more_than_available() {
+        let mut buf = AudioBuffer::new(1.0, 16000);
+        buf.push(&[1.0, 2.0, 3.0]);
+        let result = buf.last_seconds(10.0, 16000);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn multiple_wraps() {
+        let mut buf = AudioBuffer::new(0.05, 100); // 5 samples
+        for i in 0..20 {
+            buf.push(&[i as f32]);
+        }
+        let result = buf.last_seconds(0.05, 100);
+        assert_eq!(result, vec![15.0, 16.0, 17.0, 18.0, 19.0]);
+    }
+
+    #[test]
+    fn drain_then_push() {
+        let mut buf = AudioBuffer::new(1.0, 100);
+        buf.push(&[1.0, 2.0, 3.0]);
+        buf.drain();
+        buf.push(&[4.0, 5.0]);
+        let result = buf.last_seconds(1.0, 100);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result, vec![4.0, 5.0]);
+    }
+
+    #[test]
+    fn zero_duration_request() {
+        let mut buf = AudioBuffer::new(1.0, 16000);
+        buf.push(&[1.0, 2.0, 3.0]);
+        let result = buf.last_seconds(0.0, 16000);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn exact_capacity_fill() {
+        let mut buf = AudioBuffer::new(0.1, 100); // 10 samples
+        buf.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        let result = buf.last_seconds(0.1, 100);
+        assert_eq!(result.len(), 10);
+        assert_eq!(result[0], 1.0);
+        assert_eq!(result[9], 10.0);
+    }
 }

@@ -79,7 +79,7 @@ speak back via TTS.
 |-----------|---------|-------------|
 | VAD | Silero VAD v5 | Implement `VadBackend` trait |
 | STT | Whisper (via whisper.cpp) | Implement `SttBackend` trait |
-| TTS | Coming soon (Kokoro, Piper) | Implement `TtsBackend` trait |
+| TTS | Kokoro (82M, near-studio quality) | Implement `TtsBackend` trait |
 
 ## Feature Flags
 
@@ -87,7 +87,7 @@ speak back via TTS.
 |------|---------|-------------|
 | `whisper` | yes | Whisper STT via whisper-rs |
 | `silero` | yes | Silero VAD via ONNX Runtime |
-| `kokoro` | no | Kokoro TTS (coming soon) |
+| `kokoro` | no | Kokoro TTS (82M, 24kHz, near-studio quality) |
 | `piper` | no | Piper TTS (coming soon) |
 | `tts` | no | Audio playback for TTS output |
 
@@ -148,6 +148,36 @@ let vad = SileroVad::with_config("silero_vad.onnx", VadConfig {
 })?;
 ```
 
+### Kokoro TTS
+
+Download the ONNX model (~88MB int8 or ~310MB fp32) and voices file:
+
+```bash
+# Kokoro model (int8, recommended)
+wget https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/kokoro-v1.0-int8.onnx
+
+# Voice embeddings (~10MB)
+wget https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices-v1.0.bin
+```
+
+Synthesize speech:
+
+```rust
+use vox::{KokoroBackend, TtsBackend, TtsRequest};
+
+let tts = KokoroBackend::new("kokoro-v1.0-int8.onnx", "voices-v1.0.bin").await?;
+
+let output = tts.synthesize(&TtsRequest {
+    text: "Hello from Vox!".into(),
+    voice: Some("af_heart".into()),
+}).await?;
+// output.audio.samples contains f32 PCM at 24kHz
+```
+
+Available voices include `af_heart`, `af_sky`, `af_sarah`, `am_adam`, `am_michael`,
+`bf_alice`, `bm_daniel`, and many more. See the
+[Kokoro model card](https://huggingface.co/hexgrad/Kokoro-82M) for the full list.
+
 ## Custom Backends
 
 Implement the backend traits to plug in your own engines:
@@ -197,6 +227,9 @@ cargo run --example vad_only
 
 # Voice assistant with LLM placeholder
 cargo run --example voice_assistant
+
+# Text-to-speech with Kokoro
+cargo run --example tts_speak --features kokoro
 ```
 
 ## Contributing

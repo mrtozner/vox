@@ -25,3 +25,12 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# Model files (downloaded by scripts/download_models.sh)
+/models/
+
+# Benchmark output
+/target/criterion/
+
+# Generated audio output
+output.wav

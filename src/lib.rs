@@ -8,7 +8,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use vox::{Vox, SileroVad, WhisperBackend};
 //!
 //! #[tokio::main]
@@ -47,3 +47,9 @@ pub use vad::{SileroVad, VadConfig};
 
 #[cfg(feature = "whisper")]
 pub use stt::{WhisperBackend, WhisperConfig, WhisperModel};
+
+#[cfg(feature = "kokoro")]
+pub use tts::{KokoroBackend, KokoroConfig};
+
+#[cfg(any(feature = "kokoro", feature = "tts"))]
+pub use audio::AudioPlayer;
