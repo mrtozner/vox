@@ -3,10 +3,10 @@
 //! Provides a REST API for speech-to-text and text-to-speech operations.
 //! Start with [`run`] from the `vox serve` CLI command.
 
-mod error;
-mod handlers;
-mod models;
-mod ws;
+pub mod error;
+pub mod handlers;
+pub mod models;
+pub mod ws;
 
 use std::sync::Arc;
 

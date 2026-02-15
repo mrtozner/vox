@@ -90,6 +90,11 @@ name = "server_tests"
 path = "tests/server_tests.rs"
 required-features = ["server"]
 
+[[test]]
+name = "error_edge_tests"
+path = "tests/error_edge_tests.rs"
+required-features = ["server"]
+
 [[bin]]
 name = "vox"
 path = "src/bin/vox.rs"
