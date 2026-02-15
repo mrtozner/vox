@@ -57,7 +57,11 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
 
     // --- Load STT backend (optional) -------------------------------------------
     #[cfg(feature = "whisper")]
-    let (stt, stt_model_name, stt_model_size): (Option<Arc<dyn vox::traits::SttBackend>>, Option<String>, Option<u64>) = {
+    let (stt, stt_model_name, stt_model_size): (
+        Option<Arc<dyn vox::traits::SttBackend>>,
+        Option<String>,
+        Option<u64>,
+    ) = {
         // Try common whisper model names in preference order
         let candidates = [
             "ggml-base.en.bin",
@@ -84,7 +88,9 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
                             .unwrap_or(name)
                             .to_string();
                         model_name = Some(variant);
-                        model_size = std::fs::metadata(&path).ok().map(|m| m.len() / (1024 * 1024));
+                        model_size = std::fs::metadata(&path)
+                            .ok()
+                            .map(|m| m.len() / (1024 * 1024));
                         loaded = Some(Arc::new(backend) as Arc<dyn vox::traits::SttBackend>);
                         break;
                     }
@@ -103,7 +109,11 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         (loaded, model_name, model_size)
     };
     #[cfg(not(feature = "whisper"))]
-    let (stt, stt_model_name, stt_model_size): (Option<Arc<dyn vox::traits::SttBackend>>, Option<String>, Option<u64>) = {
+    let (stt, stt_model_name, stt_model_size): (
+        Option<Arc<dyn vox::traits::SttBackend>>,
+        Option<String>,
+        Option<u64>,
+    ) = {
         tracing::warn!("STT disabled (compiled without 'whisper' feature)");
         (None, None, None)
     };
@@ -207,8 +217,9 @@ async fn load_tts(
                     .and_then(|s| s.to_str())
                     .map(|s| s.replace('-', " "))
                     .unwrap_or_else(|| "kokoro".to_string());
-                let model_size =
-                    std::fs::metadata(&model_path).ok().map(|m| m.len() / (1024 * 1024));
+                let model_size = std::fs::metadata(&model_path)
+                    .ok()
+                    .map(|m| m.len() / (1024 * 1024));
                 (
                     Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
                     Some(model_name),
