@@ -27,15 +27,20 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    env:
-      # Disable native CPU feature detection so whisper-rs-sys (ggml)
-      # doesn't emit i8mm intrinsics unsupported on GitHub's M1 runners.
-      CMAKE_ARGS: "-DGGML_NATIVE=OFF"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      # Prevent ggml i8mm intrinsic errors on GitHub's ARM runners.
+      # armv8.5-a excludes i8mm (introduced in armv8.6-a).
+      - name: Pin ARM arch (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "CMAKE_C_FLAGS=-march=armv8.5-a" >> $GITHUB_ENV
+          echo "CMAKE_CXX_FLAGS=-march=armv8.5-a" >> $GITHUB_ENV
+
       - uses: actions/cache@v4
         with:
           path: |
@@ -65,11 +70,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    env:
-      CMAKE_ARGS: "-DGGML_NATIVE=OFF"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Pin ARM arch (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "CMAKE_C_FLAGS=-march=armv8.5-a" >> $GITHUB_ENV
+          echo "CMAKE_CXX_FLAGS=-march=armv8.5-a" >> $GITHUB_ENV
+
       - uses: actions/cache@v4
         with:
           path: |
@@ -110,11 +120,15 @@ jobs:
   python:
     name: Python bindings
     runs-on: macos-latest
-    env:
-      CMAKE_ARGS: "-DGGML_NATIVE=OFF"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Pin ARM arch (macOS)
+        run: |
+          echo "CMAKE_C_FLAGS=-march=armv8.5-a" >> $GITHUB_ENV
+          echo "CMAKE_CXX_FLAGS=-march=armv8.5-a" >> $GITHUB_ENV
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
