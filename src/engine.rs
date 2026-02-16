@@ -59,6 +59,7 @@ impl VoxContext {
         tts.synthesize(&TtsRequest {
             text: text.to_string(),
             voice: None,
+            seed: None,
         })
         .await
     }

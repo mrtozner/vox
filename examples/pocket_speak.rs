@@ -37,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
         .synthesize(&TtsRequest {
             text: text.clone(),
             voice: Some(voice.clone()),
+            seed: None,
         })
         .await?;
     let synth_ms = start.elapsed().as_millis();

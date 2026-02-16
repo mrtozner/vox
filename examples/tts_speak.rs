@@ -34,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
         .synthesize(&TtsRequest {
             text: text.clone(),
             voice: Some("af_heart".into()),
+            seed: None,
         })
         .await?;
 

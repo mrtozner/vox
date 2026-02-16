@@ -588,6 +588,10 @@ impl KokoroBackend {
 #[async_trait]
 impl TtsBackend for KokoroBackend {
     async fn synthesize(&self, request: &TtsRequest) -> Result<TtsOutput, VoxError> {
+        if request.seed.is_some() {
+            tracing::debug!("kokoro backend does not support seed; ignoring");
+        }
+
         let voice_name = request
             .voice
             .as_deref()

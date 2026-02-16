@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use async_trait::async_trait;
 use ort::{inputs, session::Session, value::TensorRef};
 
@@ -26,6 +28,10 @@ pub struct VadConfig {
     pub silence_duration_ms: u32,
     /// Minimum speech duration in ms to trigger an event (default: 250).
     pub min_speech_ms: u32,
+    /// Milliseconds of audio to retain before speech onset (default: 300).
+    /// This lookback buffer is prepended to the utterance when speech starts,
+    /// preventing clipping of the first syllable.
+    pub pre_speech_pad_ms: u32,
 }
 
 impl Default for VadConfig {
@@ -34,6 +40,7 @@ impl Default for VadConfig {
             speech_threshold: 0.5,
             silence_duration_ms: 500,
             min_speech_ms: 250,
+            pre_speech_pad_ms: 300,
         }
     }
 }
@@ -52,6 +59,10 @@ pub struct SileroVad {
     silence_frames: u32,
     speech_buffer: Vec<f32>,
     speech_frames: u32,
+    /// Ring buffer holding the most recent audio samples before speech onset.
+    lookback_buffer: VecDeque<f32>,
+    /// Maximum number of samples to keep in the lookback buffer.
+    lookback_capacity: usize,
 }
 
 impl SileroVad {
@@ -77,6 +88,9 @@ impl SileroVad {
             .commit_from_file(path)
             .map_err(|e| VoxError::Vad(format!("failed to load model: {e}")))?;
 
+        let lookback_capacity =
+            (config.pre_speech_pad_ms as usize * SAMPLE_RATE as usize) / 1000;
+
         Ok(Self {
             session,
             state: vec![0.0; STATE_LEN],
@@ -85,6 +99,8 @@ impl SileroVad {
             silence_frames: 0,
             speech_buffer: Vec::new(),
             speech_frames: 0,
+            lookback_buffer: VecDeque::with_capacity(lookback_capacity),
+            lookback_capacity,
         })
     }
 
@@ -135,6 +151,12 @@ impl VadBackend for SileroVad {
             // Speech detected in this frame.
             if !self.is_speaking {
                 self.is_speaking = true;
+                // Prepend the lookback buffer to capture audio just before speech onset.
+                if self.lookback_capacity > 0 {
+                    self.speech_buffer
+                        .extend(self.lookback_buffer.iter().copied());
+                    self.lookback_buffer.clear();
+                }
                 events.push(VadEvent::SpeechStart);
             }
             self.speech_buffer.extend_from_slice(&frame.samples);
@@ -169,6 +191,15 @@ impl VadBackend for SileroVad {
                 self.speech_frames = 0;
             }
         } else {
+            // Not speaking -- feed the lookback ring buffer.
+            if self.lookback_capacity > 0 {
+                for &sample in &frame.samples {
+                    if self.lookback_buffer.len() >= self.lookback_capacity {
+                        self.lookback_buffer.pop_front();
+                    }
+                    self.lookback_buffer.push_back(sample);
+                }
+            }
             events.push(VadEvent::Silence);
         }
 
@@ -181,6 +212,7 @@ impl VadBackend for SileroVad {
         self.silence_frames = 0;
         self.speech_buffer.clear();
         self.speech_frames = 0;
+        self.lookback_buffer.clear();
     }
 
     fn frame_size(&self) -> usize {
@@ -201,5 +233,126 @@ impl VadBackend for SileroVad {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: compute expected lookback capacity in samples for a given pad_ms.
+    fn expected_capacity(pad_ms: u32) -> usize {
+        (pad_ms as usize * SAMPLE_RATE as usize) / 1000
+    }
+
+    /// Test that the lookback buffer capacity is calculated correctly for 300ms.
+    #[test]
+    fn pad_lookback_capacity_300ms() {
+        // 300ms at 16kHz = 4800 samples
+        let cap = expected_capacity(300);
+        assert_eq!(cap, 4800);
+    }
+
+    /// Test that the lookback buffer capacity is 0 when pre_speech_pad_ms = 0.
+    #[test]
+    fn pad_lookback_capacity_zero() {
+        let cap = expected_capacity(0);
+        assert_eq!(cap, 0);
+    }
+
+    /// Test that the ring buffer retains only the last N samples after many pushes.
+    #[test]
+    fn pad_ring_buffer_wrapping() {
+        let capacity = expected_capacity(300); // 4800
+        let mut buf: VecDeque<f32> = VecDeque::with_capacity(capacity);
+
+        // Push 10000 samples (more than 4800 capacity).
+        for i in 0..10_000u32 {
+            if buf.len() >= capacity {
+                buf.pop_front();
+            }
+            buf.push_back(i as f32);
+        }
+
+        assert_eq!(buf.len(), capacity);
+        // The buffer should contain [5200, 5201, ..., 9999].
+        assert_eq!(*buf.front().unwrap(), 5200.0);
+        assert_eq!(*buf.back().unwrap(), 9999.0);
+    }
+
+    /// Test that pre-padded audio appears at the start of the speech buffer
+    /// when transitioning from silence to speech.
+    #[test]
+    fn pad_prepend_on_speech_start() {
+        let capacity = 10; // small for easy testing
+        let mut lookback: VecDeque<f32> = VecDeque::with_capacity(capacity);
+        let mut speech_buffer: Vec<f32> = Vec::new();
+
+        // Simulate filling lookback with samples 1..=10.
+        for i in 1..=10 {
+            if lookback.len() >= capacity {
+                lookback.pop_front();
+            }
+            lookback.push_back(i as f32);
+        }
+        assert_eq!(lookback.len(), 10);
+
+        // Simulate speech start: prepend lookback, then add current frame.
+        speech_buffer.extend(lookback.iter().copied());
+        lookback.clear();
+        let frame_samples = vec![100.0, 101.0, 102.0];
+        speech_buffer.extend_from_slice(&frame_samples);
+
+        // speech_buffer should be [1,2,...,10, 100,101,102].
+        assert_eq!(speech_buffer.len(), 13);
+        assert_eq!(&speech_buffer[..10], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(&speech_buffer[10..], &[100.0, 101.0, 102.0]);
+    }
+
+    /// Test that with pad_ms = 0 no lookback occurs (same behavior as before).
+    #[test]
+    fn pad_zero_no_lookback() {
+        let capacity = expected_capacity(0);
+        assert_eq!(capacity, 0);
+
+        let lookback: VecDeque<f32> = VecDeque::with_capacity(capacity);
+        let mut speech_buffer: Vec<f32> = Vec::new();
+
+        // With capacity 0, the guard `if capacity > 0` prevents any lookback ops.
+        if capacity > 0 {
+            speech_buffer.extend(lookback.iter().copied());
+        }
+        let frame_samples = vec![42.0, 43.0];
+        speech_buffer.extend_from_slice(&frame_samples);
+
+        // No padding prepended.
+        assert_eq!(speech_buffer, vec![42.0, 43.0]);
+    }
+
+    /// Test that after wrapping, only the most recent samples are retained.
+    #[test]
+    fn pad_buffer_only_retains_last_n_ms() {
+        // 100ms at 16kHz = 1600 samples
+        let capacity = expected_capacity(100);
+        assert_eq!(capacity, 1600);
+
+        let mut buf: VecDeque<f32> = VecDeque::with_capacity(capacity);
+
+        // Feed 5 frames of 512 samples each = 2560 samples total.
+        for frame_idx in 0..5u32 {
+            let frame: Vec<f32> = (0..512).map(|s| (frame_idx * 512 + s) as f32).collect();
+            for &sample in &frame {
+                if buf.len() >= capacity {
+                    buf.pop_front();
+                }
+                buf.push_back(sample);
+            }
+        }
+
+        assert_eq!(buf.len(), capacity); // 1600
+        // 2560 total samples - 1600 capacity = first 960 were evicted.
+        // So buffer starts at sample index 960.
+        assert_eq!(*buf.front().unwrap(), 960.0);
+        assert_eq!(*buf.back().unwrap(), 2559.0);
     }
 }

@@ -40,6 +40,9 @@ pub struct TtsRequest {
     pub text: String,
     /// Optional voice identifier.
     pub voice: Option<String>,
+    /// Optional seed for deterministic generation.
+    /// Not all backends support this; unsupported backends will ignore it.
+    pub seed: Option<u64>,
 }
 
 /// Audio output produced by a TTS backend.

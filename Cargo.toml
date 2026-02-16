@@ -99,6 +99,11 @@ name = "error_edge_tests"
 path = "tests/error_edge_tests.rs"
 required-features = ["server"]
 
+[[test]]
+name = "wav_safety_tests"
+path = "tests/wav_safety_tests.rs"
+required-features = ["server"]
+
 [[bin]]
 name = "vox"
 path = "src/bin/vox.rs"

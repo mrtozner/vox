@@ -34,6 +34,7 @@ fn bench_chatterbox_synthesize(c: &mut Criterion) {
         let request = TtsRequest {
             text: text.to_string(),
             voice: None,
+            seed: None,
         };
 
         group.bench_with_input(

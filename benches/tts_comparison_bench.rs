@@ -49,6 +49,7 @@ fn bench_tts_comparison(c: &mut Criterion) {
                 let request = TtsRequest {
                     text: text.to_string(),
                     voice: Some("af_heart".into()),
+                    seed: None,
                 };
 
                 group.bench_with_input(
@@ -85,6 +86,7 @@ fn bench_tts_comparison(c: &mut Criterion) {
                     let request = TtsRequest {
                         text: text.to_string(),
                         voice: None,
+                        seed: None,
                     };
 
                     group.bench_with_input(
@@ -123,6 +125,7 @@ fn bench_tts_comparison(c: &mut Criterion) {
                         let request = TtsRequest {
                             text: text.to_string(),
                             voice: None,
+                            seed: None,
                         };
 
                         group.bench_with_input(
@@ -169,6 +172,7 @@ fn bench_tts_rtf(c: &mut Criterion) {
             let request = TtsRequest {
                 text: SHORT_TEXT.to_string(),
                 voice: Some("af_heart".into()),
+                seed: None,
             };
 
             let mut group = c.benchmark_group("tts_rtf");
@@ -201,6 +205,7 @@ fn bench_tts_rtf(c: &mut Criterion) {
             let request = TtsRequest {
                 text: SHORT_TEXT.to_string(),
                 voice: None,
+                seed: None,
             };
 
             let mut group = c.benchmark_group("tts_rtf");
@@ -234,6 +239,7 @@ fn bench_tts_rtf(c: &mut Criterion) {
                 let request = TtsRequest {
                     text: SHORT_TEXT.to_string(),
                     voice: None,
+                    seed: None,
                 };
 
                 let mut group = c.benchmark_group("tts_rtf");

@@ -4,11 +4,13 @@
 //! desktop/Mac targets. Models auto-download from HuggingFace.
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chatterbox_rs::chatterbox::Chatterbox;
 use chatterbox_rs::hf::{self, ModelVariant};
+use chatterbox_rs::voice::VoiceProfile;
 
 use crate::error::VoxError;
 use crate::traits::TtsBackend;
@@ -58,6 +60,8 @@ impl Default for ChatterboxConfig {
 pub struct ChatterboxBackend {
     model: Arc<Mutex<Chatterbox>>,
     config: ChatterboxConfig,
+    /// In-memory cache of encoded voice profiles keyed by canonical WAV path.
+    voice_cache: Arc<Mutex<HashMap<PathBuf, VoiceProfile>>>,
 }
 
 impl ChatterboxBackend {
@@ -172,6 +176,7 @@ impl ChatterboxBackend {
         Ok(Self {
             model: Arc::new(Mutex::new(model)),
             config,
+            voice_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
@@ -179,6 +184,10 @@ impl ChatterboxBackend {
 #[async_trait]
 impl TtsBackend for ChatterboxBackend {
     async fn synthesize(&self, request: &TtsRequest) -> Result<TtsOutput, VoxError> {
+        if request.seed.is_some() {
+            tracing::debug!("chatterbox backend does not support seed; ignoring");
+        }
+
         let reference_wav = request
             .voice
             .as_ref()
@@ -196,14 +205,48 @@ impl TtsBackend for ChatterboxBackend {
         let text = request.text.clone();
         let max_new_tokens = self.config.max_new_tokens;
         let repetition_penalty = self.config.repetition_penalty;
+        let voice_cache = self.voice_cache.clone();
+        let repo_id = DEFAULT_REPO_ID.to_string();
+        let revision = DEFAULT_REVISION.to_string();
+        let dtype = self.config.dtype.clone();
 
         // Chatterbox synthesis is synchronous — run on a blocking thread pool.
         let samples = tokio::task::spawn_blocking(move || {
             let mut model = model
                 .lock()
                 .map_err(|e| VoxError::Tts(format!("chatterbox mutex poisoned: {e}")))?;
+
+            // Use canonical path as cache key to handle symlinks/relative paths.
+            let cache_key = reference_wav.canonicalize().unwrap_or(reference_wav.clone());
+
+            // Check voice profile cache; encode on miss.
+            let mut cache = voice_cache
+                .lock()
+                .map_err(|e| VoxError::Tts(format!("voice cache mutex poisoned: {e}")))?;
+
+            let profile = if let Some(cached) = cache.get(&cache_key) {
+                tracing::debug!(path = %cache_key.display(), "voice profile cache hit");
+                cached.clone()
+            } else {
+                tracing::debug!(path = %cache_key.display(), "voice profile cache miss, encoding");
+                let p = model
+                    .encode_voice_profile(&reference_wav, &repo_id, &revision, &dtype)
+                    .map_err(|e| VoxError::Tts(format!("voice profile encoding failed: {e}")))?;
+                cache.insert(cache_key, p.clone());
+                p
+            };
+            drop(cache);
+
             model
-                .synthesize(&text, &reference_wav, max_new_tokens, repetition_penalty)
+                .synthesize_with_voice_profile(
+                    &text,
+                    &repo_id,
+                    &revision,
+                    &dtype,
+                    &profile,
+                    max_new_tokens,
+                    repetition_penalty,
+                )
                 .map_err(|e| VoxError::Tts(format!("chatterbox synthesis failed: {e}")))
         })
         .await

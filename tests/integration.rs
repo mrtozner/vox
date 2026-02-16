@@ -201,6 +201,7 @@ async fn mock_tts_synthesizes() {
     let request = TtsRequest {
         text: "hello".into(),
         voice: None,
+        seed: None,
     };
 
     let output = tts.synthesize(&request).await.unwrap();

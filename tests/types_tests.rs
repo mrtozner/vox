@@ -45,6 +45,7 @@ fn tts_request_with_voice() {
     let req = TtsRequest {
         text: "hello".into(),
         voice: Some("af_heart".into()),
+        seed: None,
     };
     assert_eq!(req.voice.as_deref(), Some("af_heart"));
 }
@@ -54,8 +55,29 @@ fn tts_request_without_voice() {
     let req = TtsRequest {
         text: "hello".into(),
         voice: None,
+        seed: None,
     };
     assert!(req.voice.is_none());
+}
+
+#[test]
+fn tts_request_with_seed() {
+    let req = TtsRequest {
+        text: "hello".into(),
+        voice: None,
+        seed: Some(42),
+    };
+    assert_eq!(req.seed, Some(42));
+}
+
+#[test]
+fn tts_request_without_seed() {
+    let req = TtsRequest {
+        text: "hello".into(),
+        voice: Some("af_heart".into()),
+        seed: None,
+    };
+    assert!(req.seed.is_none());
 }
 
 #[test]

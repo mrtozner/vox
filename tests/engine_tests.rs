@@ -637,6 +637,7 @@ async fn mock_tts_produces_audio_output() {
     let request = TtsRequest {
         text: "hello".into(),
         voice: None,
+        seed: None,
     };
 
     let output = tts.synthesize(&request).await.unwrap();
@@ -653,6 +654,7 @@ async fn mock_tts_custom_sample_rate() {
     let request = TtsRequest {
         text: "hello".into(),
         voice: None,
+        seed: None,
     };
 
     let output = tts.synthesize(&request).await.unwrap();
@@ -666,6 +668,7 @@ async fn mock_tts_stereo_output() {
     let request = TtsRequest {
         text: "hello".into(),
         voice: None,
+        seed: None,
     };
 
     let output = tts.synthesize(&request).await.unwrap();
@@ -684,6 +687,7 @@ async fn failing_tts_returns_error() {
     let request = TtsRequest {
         text: "hello".into(),
         voice: None,
+        seed: None,
     };
 
     let result = tts.synthesize(&request).await;
@@ -825,6 +829,7 @@ async fn full_pipeline_vad_stt_tts_round_trip() {
             let tts_request = TtsRequest {
                 text: stt_result.text.clone(),
                 voice: None,
+                seed: None,
             };
             let tts_output = tts.synthesize(&tts_request).await.unwrap();
             assert_eq!(tts_output.duration_ms, 1000);
@@ -946,6 +951,7 @@ fn tts_request_with_voice() {
     let request = TtsRequest {
         text: "hello".into(),
         voice: Some("af_heart".into()),
+        seed: None,
     };
 
     assert_eq!(request.text, "hello");
@@ -957,6 +963,7 @@ fn tts_request_without_voice() {
     let request = TtsRequest {
         text: "hello".into(),
         voice: None,
+        seed: None,
     };
 
     assert_eq!(request.text, "hello");
@@ -968,6 +975,7 @@ fn tts_request_clone_is_independent() {
     let request = TtsRequest {
         text: "original".into(),
         voice: Some("voice1".into()),
+        seed: None,
     };
 
     let mut cloned = request.clone();
@@ -985,6 +993,7 @@ fn tts_request_debug_format() {
     let request = TtsRequest {
         text: "test".into(),
         voice: Some("v".into()),
+        seed: None,
     };
     let debug = format!("{:?}", request);
     assert!(debug.contains("TtsRequest"));

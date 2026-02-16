@@ -144,7 +144,7 @@ impl KokoroTts {
                     .map_err(to_py_err)
             })?;
 
-            let request = vox::TtsRequest { text, voice };
+            let request = vox::TtsRequest { text, voice, seed: None };
 
             let output = RUNTIME
                 .block_on(async {

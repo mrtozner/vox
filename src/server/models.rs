@@ -16,6 +16,7 @@ pub struct TranscribeResponse {
 pub struct SynthesizeRequest {
     pub text: String,
     pub voice: Option<String>,
+    pub seed: Option<u64>,
 }
 
 /// Response listing available backends.

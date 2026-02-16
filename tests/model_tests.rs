@@ -69,6 +69,7 @@ mod vad_real {
                 speech_threshold: 0.3,
                 silence_duration_ms: 300,
                 min_speech_ms: 100,
+                ..VadConfig::default()
             },
         );
         assert!(vad.is_ok());

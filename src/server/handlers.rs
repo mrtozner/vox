@@ -106,6 +106,7 @@ pub async fn synthesize(
     let tts_request = TtsRequest {
         text: req.text,
         voice: req.voice,
+        seed: req.seed,
     };
 
     let output = tts.synthesize(&tts_request).await?;

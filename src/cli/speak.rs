@@ -37,6 +37,7 @@ async fn run_kokoro(text: &str, voice: &str, yes: bool) -> anyhow::Result<()> {
         .synthesize(&TtsRequest {
             text: text.to_string(),
             voice: Some(voice.to_string()),
+            seed: None,
         })
         .await?;
 
@@ -87,6 +88,7 @@ async fn run_piper(text: &str, voice: &str, yes: bool) -> anyhow::Result<()> {
         .synthesize(&TtsRequest {
             text: text.to_string(),
             voice: None, // single-speaker models use the default
+            seed: None,
         })
         .await?;
 

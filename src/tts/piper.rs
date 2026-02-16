@@ -119,6 +119,10 @@ impl PiperBackend {
 #[async_trait]
 impl TtsBackend for PiperBackend {
     async fn synthesize(&self, request: &TtsRequest) -> Result<TtsOutput, VoxError> {
+        if request.seed.is_some() {
+            tracing::debug!("piper backend does not support seed; ignoring");
+        }
+
         // Handle speaker selection from the voice field
         if let Some(ref voice) = request.voice {
             // Try parsing as a numeric speaker ID first

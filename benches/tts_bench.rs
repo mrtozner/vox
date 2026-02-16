@@ -35,6 +35,7 @@ fn bench_kokoro_synthesize(c: &mut Criterion) {
         let request = TtsRequest {
             text: text.to_string(),
             voice: Some("af_heart".into()),
+            seed: None,
         };
 
         group.bench_with_input(
@@ -51,6 +52,7 @@ fn bench_kokoro_synthesize(c: &mut Criterion) {
         let request = TtsRequest {
             text: "Hello, this is a voice test.".to_string(),
             voice: Some(voice.into()),
+            seed: None,
         };
 
         group.bench_with_input(
