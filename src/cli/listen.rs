@@ -20,7 +20,17 @@ pub async fn run(model: &str, stt_backend: &str, yes: bool) -> anyhow::Result<()
              Rebuild with:\n\
              \n  cargo build --features cli,sherpa --release\n"
         ),
-        other => anyhow::bail!("Unknown STT backend: '{other}'. Use 'whisper' or 'sherpa'."),
+        #[cfg(feature = "sherpa")]
+        "sherpa-streaming" => run_sherpa_streaming(vad, yes).await,
+        #[cfg(not(feature = "sherpa"))]
+        "sherpa-streaming" => anyhow::bail!(
+            "Sherpa streaming STT requires the 'sherpa' feature.\n\n\
+             Rebuild with:\n\
+             \n  cargo build --features cli,sherpa --release\n"
+        ),
+        other => anyhow::bail!(
+            "Unknown STT backend: '{other}'. Use 'whisper', 'sherpa', or 'sherpa-streaming'."
+        ),
     }
 }
 
@@ -57,6 +67,39 @@ async fn run_sherpa(vad: SileroVad, yes: bool) -> anyhow::Result<()> {
         .stt(stt)
         .on_utterance(|result, _ctx| {
             println!("[transcript] {}", result.text);
+        })
+        .build()?;
+
+    println!("Listening on default microphone... (Ctrl+C to stop)\n");
+    vox.listen().await?;
+    Ok(())
+}
+
+#[cfg(feature = "sherpa")]
+async fn run_sherpa_streaming(vad: SileroVad, yes: bool) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    // Download streaming model.
+    let model_dir = super::models::ensure_sherpa_streaming(yes).await?;
+
+    println!("Loading Sherpa streaming zipformer model...");
+    let streaming_backend = vox::SherpaStreamingBackend::from_transducer(&model_dir)?;
+
+    // Also load a batch STT backend as fallback.
+    let sensevoice_dir = super::models::ensure_sherpa_sensevoice(yes).await?;
+    println!("Loading Sherpa SenseVoice model (batch fallback)...");
+    let batch_stt = vox::SherpaBackend::from_sensevoice(&sensevoice_dir)?;
+
+    let vox = Vox::builder()
+        .vad(vad)
+        .stt(batch_stt)
+        .streaming_stt(streaming_backend)
+        .on_partial(|text| {
+            print!("\r\x1b[2K[partial] {text}");
+            let _ = std::io::stdout().flush();
+        })
+        .on_utterance(|result, _ctx| {
+            println!("\r\x1b[2K[transcript] {}", result.text);
         })
         .build()?;
 

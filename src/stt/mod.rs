@@ -14,3 +14,11 @@ mod sherpa;
 
 #[cfg(feature = "sherpa")]
 pub use self::sherpa::{SherpaBackend, SherpaConfig, SherpaModel};
+
+#[cfg(feature = "sherpa")]
+mod sherpa_streaming;
+
+#[cfg(feature = "sherpa")]
+pub use self::sherpa_streaming::{
+    SherpaStreamingBackend, SherpaStreamingConfig, SherpaStreamingModel,
+};

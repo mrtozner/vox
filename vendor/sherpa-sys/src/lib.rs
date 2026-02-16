@@ -409,3 +409,289 @@ unsafe extern "C" {
         result: *const SherpaOnnxOfflineRecognizerResult,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Online/Streaming Recognition
+// ---------------------------------------------------------------------------
+
+/// SherpaOnnxOnlineTransducerModelConfig — 24 bytes
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOnlineTransducerModelConfig {
+    pub encoder: *const c_char,
+    pub decoder: *const c_char,
+    pub joiner: *const c_char,
+}
+
+impl Default for SherpaOnnxOnlineTransducerModelConfig {
+    fn default() -> Self {
+        Self {
+            encoder: std::ptr::null(),
+            decoder: std::ptr::null(),
+            joiner: std::ptr::null(),
+        }
+    }
+}
+
+/// SherpaOnnxOnlineParaformerModelConfig — 16 bytes
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOnlineParaformerModelConfig {
+    pub encoder: *const c_char,
+    pub decoder: *const c_char,
+}
+
+impl Default for SherpaOnnxOnlineParaformerModelConfig {
+    fn default() -> Self {
+        Self {
+            encoder: std::ptr::null(),
+            decoder: std::ptr::null(),
+        }
+    }
+}
+
+/// SherpaOnnxOnlineZipformer2CtcModelConfig — 8 bytes
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOnlineZipformer2CtcModelConfig {
+    pub model: *const c_char,
+}
+
+impl Default for SherpaOnnxOnlineZipformer2CtcModelConfig {
+    fn default() -> Self {
+        Self {
+            model: std::ptr::null(),
+        }
+    }
+}
+
+/// SherpaOnnxOnlineNemoCtcModelConfig — 8 bytes
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOnlineNemoCtcModelConfig {
+    pub model: *const c_char,
+}
+
+impl Default for SherpaOnnxOnlineNemoCtcModelConfig {
+    fn default() -> Self {
+        Self {
+            model: std::ptr::null(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SherpaOnnxOnlineModelConfig — 128 bytes (v1.12.24)
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOnlineModelConfig {
+    pub transducer: SherpaOnnxOnlineTransducerModelConfig,
+    pub paraformer: SherpaOnnxOnlineParaformerModelConfig,
+    pub zipformer2_ctc: SherpaOnnxOnlineZipformer2CtcModelConfig,
+    pub tokens: *const c_char,
+    pub num_threads: c_int,
+    pub provider: *const c_char,
+    pub debug: c_int,
+    pub model_type: *const c_char,
+    pub modeling_unit: *const c_char,
+    pub bpe_vocab: *const c_char,
+    pub tokens_buf: *const c_char,
+    pub tokens_buf_size: c_int,
+    pub nemo_ctc: SherpaOnnxOnlineNemoCtcModelConfig,
+}
+
+impl Default for SherpaOnnxOnlineModelConfig {
+    fn default() -> Self {
+        Self {
+            transducer: SherpaOnnxOnlineTransducerModelConfig::default(),
+            paraformer: SherpaOnnxOnlineParaformerModelConfig::default(),
+            zipformer2_ctc: SherpaOnnxOnlineZipformer2CtcModelConfig::default(),
+            tokens: std::ptr::null(),
+            num_threads: 0,
+            provider: std::ptr::null(),
+            debug: 0,
+            model_type: std::ptr::null(),
+            modeling_unit: std::ptr::null(),
+            bpe_vocab: std::ptr::null(),
+            tokens_buf: std::ptr::null(),
+            tokens_buf_size: 0,
+            nemo_ctc: SherpaOnnxOnlineNemoCtcModelConfig::default(),
+        }
+    }
+}
+
+/// SherpaOnnxOnlineCtcFstDecoderConfig — 16 bytes
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOnlineCtcFstDecoderConfig {
+    pub graph: *const c_char,
+    pub max_active: c_int,
+}
+
+impl Default for SherpaOnnxOnlineCtcFstDecoderConfig {
+    fn default() -> Self {
+        Self {
+            graph: std::ptr::null(),
+            max_active: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SherpaOnnxOnlineRecognizerConfig — 264 bytes (v1.12.24)
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOnlineRecognizerConfig {
+    pub feat_config: SherpaOnnxFeatureConfig,
+    pub model_config: SherpaOnnxOnlineModelConfig,
+    pub decoding_method: *const c_char,
+    pub max_active_paths: c_int,
+    pub enable_endpoint: c_int,
+    pub rule1_min_trailing_silence: c_float,
+    pub rule2_min_trailing_silence: c_float,
+    pub rule3_min_utterance_length: c_float,
+    pub hotwords_file: *const c_char,
+    pub hotwords_score: c_float,
+    pub ctc_fst_decoder_config: SherpaOnnxOnlineCtcFstDecoderConfig,
+    pub rule_fsts: *const c_char,
+    pub rule_fars: *const c_char,
+    pub blank_penalty: c_float,
+    pub hotwords_buf: *const c_char,
+    pub hotwords_buf_size: c_int,
+    pub hr: SherpaOnnxHomophoneReplacerConfig,
+}
+
+impl Default for SherpaOnnxOnlineRecognizerConfig {
+    fn default() -> Self {
+        Self {
+            feat_config: SherpaOnnxFeatureConfig::default(),
+            model_config: SherpaOnnxOnlineModelConfig::default(),
+            decoding_method: std::ptr::null(),
+            max_active_paths: 0,
+            enable_endpoint: 0,
+            rule1_min_trailing_silence: 0.0,
+            rule2_min_trailing_silence: 0.0,
+            rule3_min_utterance_length: 0.0,
+            hotwords_file: std::ptr::null(),
+            hotwords_score: 0.0,
+            ctc_fst_decoder_config: SherpaOnnxOnlineCtcFstDecoderConfig::default(),
+            rule_fsts: std::ptr::null(),
+            rule_fars: std::ptr::null(),
+            blank_penalty: 0.0,
+            hotwords_buf: std::ptr::null(),
+            hotwords_buf_size: 0,
+            hr: SherpaOnnxHomophoneReplacerConfig::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SherpaOnnxOnlineRecognizerResult — 48 bytes
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOnlineRecognizerResult {
+    pub text: *const c_char,
+    pub tokens: *const c_char,
+    pub tokens_arr: *const *const c_char,
+    pub timestamps: *mut c_float,
+    pub count: c_int,
+    pub json: *const c_char,
+}
+
+// ---------------------------------------------------------------------------
+// Opaque handles for online recognition
+// ---------------------------------------------------------------------------
+
+pub enum SherpaOnnxOnlineRecognizer {}
+pub enum SherpaOnnxOnlineStream {}
+
+// ---------------------------------------------------------------------------
+// Compile-time struct size assertions (catches layout drift)
+//
+// Note: size_of catches missing/extra fields but NOT reordered fields at the
+// same total size. A field swap would silently corrupt data. Full protection
+// requires CI bindgen diffing, but this catches the most common mistake
+// (adding a field upstream that we don't have).
+// ---------------------------------------------------------------------------
+
+const _: () = assert!(std::mem::size_of::<SherpaOnnxOnlineModelConfig>() == 128);
+const _: () = assert!(std::mem::size_of::<SherpaOnnxOnlineRecognizerConfig>() == 264);
+const _: () = assert!(std::mem::size_of::<SherpaOnnxOnlineRecognizerResult>() == 48);
+
+// ---------------------------------------------------------------------------
+// Online FFI function declarations
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    pub fn SherpaOnnxCreateOnlineRecognizer(
+        config: *const SherpaOnnxOnlineRecognizerConfig,
+    ) -> *const SherpaOnnxOnlineRecognizer;
+
+    pub fn SherpaOnnxDestroyOnlineRecognizer(recognizer: *const SherpaOnnxOnlineRecognizer);
+
+    pub fn SherpaOnnxCreateOnlineStream(
+        recognizer: *const SherpaOnnxOnlineRecognizer,
+    ) -> *const SherpaOnnxOnlineStream;
+
+    pub fn SherpaOnnxCreateOnlineStreamWithHotwords(
+        recognizer: *const SherpaOnnxOnlineRecognizer,
+        hotwords: *const c_char,
+    ) -> *const SherpaOnnxOnlineStream;
+
+    pub fn SherpaOnnxDestroyOnlineStream(stream: *const SherpaOnnxOnlineStream);
+
+    pub fn SherpaOnnxOnlineStreamAcceptWaveform(
+        stream: *const SherpaOnnxOnlineStream,
+        sample_rate: c_int,
+        samples: *const c_float,
+        n: c_int,
+    );
+
+    pub fn SherpaOnnxOnlineStreamInputFinished(stream: *const SherpaOnnxOnlineStream);
+
+    pub fn SherpaOnnxIsOnlineStreamReady(
+        recognizer: *const SherpaOnnxOnlineRecognizer,
+        stream: *const SherpaOnnxOnlineStream,
+    ) -> c_int;
+
+    pub fn SherpaOnnxDecodeOnlineStream(
+        recognizer: *const SherpaOnnxOnlineRecognizer,
+        stream: *const SherpaOnnxOnlineStream,
+    );
+
+    pub fn SherpaOnnxDecodeMultipleOnlineStreams(
+        recognizer: *const SherpaOnnxOnlineRecognizer,
+        streams: *mut *const SherpaOnnxOnlineStream,
+        n: c_int,
+    );
+
+    pub fn SherpaOnnxGetOnlineStreamResult(
+        recognizer: *const SherpaOnnxOnlineRecognizer,
+        stream: *const SherpaOnnxOnlineStream,
+    ) -> *const SherpaOnnxOnlineRecognizerResult;
+
+    pub fn SherpaOnnxDestroyOnlineRecognizerResult(r: *const SherpaOnnxOnlineRecognizerResult);
+
+    pub fn SherpaOnnxGetOnlineStreamResultAsJson(
+        recognizer: *const SherpaOnnxOnlineRecognizer,
+        stream: *const SherpaOnnxOnlineStream,
+    ) -> *const c_char;
+
+    pub fn SherpaOnnxDestroyOnlineStreamResultJson(s: *const c_char);
+
+    pub fn SherpaOnnxOnlineStreamReset(
+        recognizer: *const SherpaOnnxOnlineRecognizer,
+        stream: *const SherpaOnnxOnlineStream,
+    );
+
+    pub fn SherpaOnnxOnlineStreamIsEndpoint(
+        recognizer: *const SherpaOnnxOnlineRecognizer,
+        stream: *const SherpaOnnxOnlineStream,
+    ) -> c_int;
+}

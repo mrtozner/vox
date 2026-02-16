@@ -38,7 +38,7 @@ pub mod vad;
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
-pub use traits::{SttBackend, TtsBackend, VadBackend, VadEvent};
+pub use traits::{StreamingSttBackend, SttBackend, SttSession, TtsBackend, VadBackend, VadEvent};
 pub use types::{
     AudioChunk, PipelineStats, SttResult, TtsOutput, TtsRequest, Utterance, VoiceInfo,
 };
@@ -52,6 +52,9 @@ pub use stt::{WhisperBackend, WhisperConfig, WhisperModel};
 
 #[cfg(feature = "sherpa")]
 pub use stt::{SherpaBackend, SherpaConfig, SherpaModel};
+
+#[cfg(feature = "sherpa")]
+pub use stt::{SherpaStreamingBackend, SherpaStreamingConfig, SherpaStreamingModel};
 
 #[cfg(feature = "kokoro")]
 pub use tts::{KokoroBackend, KokoroConfig};

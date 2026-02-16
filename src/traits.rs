@@ -79,3 +79,30 @@ pub enum VadEvent {
     /// No speech detected in this frame.
     Silence,
 }
+
+/// A streaming STT session that accepts audio incrementally.
+///
+/// Created by [`StreamingSttBackend::create_session`]. Push audio
+/// chunks as they arrive; each push may return updated partial text.
+/// Call [`finish`](SttSession::finish) when speech ends to get the final result.
+pub trait SttSession: Send {
+    /// Push audio samples and get optional updated partial text.
+    ///
+    /// Returns `Ok(Some(text))` when partial text has changed,
+    /// `Ok(None)` when nothing new is available yet.
+    fn push_audio(&mut self, samples: &[f32], sample_rate: u32)
+    -> Result<Option<String>, VoxError>;
+
+    /// Signal that no more audio will arrive and get the final result.
+    fn finish(&mut self) -> Result<SttResult, VoxError>;
+}
+
+/// Streaming Speech-to-Text backend.
+///
+/// Creates [`SttSession`]s for incremental audio processing.
+/// Unlike [`SttBackend`] which transcribes complete utterances,
+/// this processes audio chunk-by-chunk with partial results.
+pub trait StreamingSttBackend: Send + Sync {
+    /// Create a new streaming session.
+    fn create_session(&self) -> Result<Box<dyn SttSession>, VoxError>;
+}

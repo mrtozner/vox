@@ -32,7 +32,7 @@ enum Commands {
         /// Whisper model size (tiny.en, base.en, small.en)
         #[arg(long, default_value = "tiny.en")]
         model: String,
-        /// STT backend to use (whisper or sherpa)
+        /// STT backend to use (whisper, sherpa, or sherpa-streaming)
         #[arg(long, default_value = "whisper")]
         stt_backend: String,
         /// Auto-download missing models without prompting

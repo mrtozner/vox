@@ -19,9 +19,16 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 /// Shared server state accessible from all handlers.
+///
+/// `stt` is the primary batch STT backend (Whisper or offline Sherpa) used for
+/// `/v1/transcribe` and as the fallback in WebSocket streaming. `streaming_stt`
+/// is the optional incremental backend (online Sherpa) used *only* for the
+/// WebSocket `/v1/listen` session path. They must be separate instances —
+/// do not load the same backend as both.
 pub struct ServerState {
     pub stt: Option<Arc<dyn vox::traits::SttBackend>>,
     pub tts: Option<Arc<dyn vox::traits::TtsBackend>>,
+    pub streaming_stt: Option<Arc<dyn vox::traits::StreamingSttBackend>>,
     pub vad_model_path: Option<std::path::PathBuf>,
     pub stats: Arc<std::sync::Mutex<ServerStats>>,
     pub start_time: std::time::Instant,
@@ -55,14 +62,12 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
                 .join("models")
         });
 
-    // --- Load STT backend (optional) -------------------------------------------
     #[cfg(feature = "whisper")]
     let (stt, stt_model_name, stt_model_size): (
         Option<Arc<dyn vox::traits::SttBackend>>,
         Option<String>,
         Option<u64>,
     ) = {
-        // Try common whisper model names in preference order
         let candidates = [
             "ggml-base.en.bin",
             "ggml-tiny.en.bin",
@@ -80,7 +85,6 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
                 match vox::stt::WhisperBackend::from_model(&path) {
                     Ok(backend) => {
                         info!(model = %path.display(), "loaded whisper STT backend");
-                        // Extract model variant from filename: "ggml-base.en.bin" -> "base.en"
                         let variant = name
                             .strip_prefix("ggml-")
                             .unwrap_or(name)
@@ -118,10 +122,8 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         (None, None, None)
     };
 
-    // --- Load TTS backend (optional) -------------------------------------------
     let (tts, tts_model_name, tts_model_size) = load_tts(&models_dir).await;
 
-    // --- Detect VAD model for WebSocket endpoint --------------------------------
     let vad_model_path = {
         let path = models_dir.join("silero_vad.onnx");
         if path.exists() {
@@ -133,13 +135,37 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         }
     };
 
-    // --- Build state and router ------------------------------------------------
+    #[cfg(feature = "sherpa")]
+    let streaming_stt: Option<Arc<dyn vox::traits::StreamingSttBackend>> = {
+        let streaming_dir = models_dir.join("sherpa-streaming");
+        if streaming_dir.exists() {
+            match vox::SherpaStreamingBackend::from_transducer(&streaming_dir) {
+                Ok(backend) => {
+                    info!(
+                        model = %streaming_dir.display(),
+                        "loaded sherpa streaming STT backend"
+                    );
+                    Some(Arc::new(backend))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load streaming STT");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+    #[cfg(not(feature = "sherpa"))]
+    let streaming_stt: Option<Arc<dyn vox::traits::StreamingSttBackend>> = None;
+
     let ollama_host =
         std::env::var("VOX_OLLAMA_HOST").unwrap_or_else(|_| "localhost:11434".to_string());
 
     let state = Arc::new(ServerState {
         stt,
         tts,
+        streaming_stt,
         vad_model_path,
         stats: Arc::new(std::sync::Mutex::new(ServerStats {
             requests: 0,
@@ -171,7 +197,6 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    // --- Bind and serve --------------------------------------------------------
     let addr = format!("{host}:{port}");
     println!();
     println!("  vox server v{}", env!("CARGO_PKG_VERSION"));

@@ -10,7 +10,9 @@ use tokio::sync::mpsc;
 
 use crate::audio::{AudioCapture, AudioResampler};
 use crate::error::VoxError;
-use crate::traits::{SttBackend, TtsBackend, VadBackend, VadEvent};
+use crate::traits::{
+    StreamingSttBackend, SttBackend, SttSession, TtsBackend, VadBackend, VadEvent,
+};
 use crate::types::{AudioChunk, PipelineStats, SttResult, TtsOutput, TtsRequest};
 
 /// Configuration for the Vox pipeline.
@@ -93,6 +95,8 @@ pub struct VoxBuilder {
     vad: Option<Box<dyn VadBackend>>,
     stt: Option<Box<dyn SttBackend>>,
     tts: Option<Box<dyn TtsBackend>>,
+    streaming_stt: Option<Box<dyn StreamingSttBackend>>,
+    on_partial: Option<Box<dyn Fn(String) + Send + Sync>>,
     callback: Option<Box<dyn Fn(SttResult, VoxContext) + Send + Sync>>,
 }
 
@@ -104,6 +108,8 @@ impl VoxBuilder {
             vad: None,
             stt: None,
             tts: None,
+            streaming_stt: None,
+            on_partial: None,
             callback: None,
         }
     }
@@ -132,6 +138,25 @@ impl VoxBuilder {
         self
     }
 
+    /// Set the optional streaming STT backend for real-time partial results.
+    ///
+    /// When set, audio is processed incrementally during speech,
+    /// producing partial transcriptions via the [`on_partial`](Self::on_partial) callback.
+    /// The batch STT backend is still used as a fallback.
+    pub fn streaming_stt(mut self, stt: impl StreamingSttBackend + 'static) -> Self {
+        self.streaming_stt = Some(Box::new(stt));
+        self
+    }
+
+    /// Register a callback for partial transcription results.
+    ///
+    /// Called when the streaming STT session produces updated text
+    /// during speech (before the utterance ends).
+    pub fn on_partial(mut self, callback: impl Fn(String) + Send + Sync + 'static) -> Self {
+        self.on_partial = Some(Box::new(callback));
+        self
+    }
+
     /// Register a callback invoked for each transcribed utterance.
     ///
     /// The callback receives the [`SttResult`] and a [`VoxContext`] that
@@ -157,18 +182,13 @@ impl VoxBuilder {
             })
         });
 
-        // Initialize audio capture at the configured sample rate and channels.
         let (capture, audio_rx) = AudioCapture::new(self.config.sample_rate, self.config.channels)?;
 
-        // The VAD expects 16kHz mono. Create a resampler from the capture's
-        // configured rate to 16kHz. If they match, the resampler is a passthrough.
         let target_rate = vad.sample_rate();
         let resampler = AudioResampler::new(self.config.sample_rate, target_rate)?;
 
-        // Wrap TTS in Arc so VoxContext can hold a reference.
         let tts: Option<Arc<dyn TtsBackend>> = self.tts.map(Arc::from);
 
-        // Create a persistent audio player for TTS playback.
         #[cfg(any(
             feature = "kokoro",
             feature = "pocket",
@@ -186,6 +206,9 @@ impl VoxBuilder {
             vad,
             stt,
             tts,
+            streaming_stt: self.streaming_stt,
+            on_partial: self.on_partial,
+            active_session: None,
             audio_rx,
             resampler,
             _capture: capture,
@@ -217,6 +240,9 @@ pub struct Vox {
     vad: Box<dyn VadBackend>,
     stt: Box<dyn SttBackend>,
     tts: Option<Arc<dyn TtsBackend>>,
+    streaming_stt: Option<Box<dyn StreamingSttBackend>>,
+    on_partial: Option<Box<dyn Fn(String) + Send + Sync>>,
+    active_session: Option<Box<dyn SttSession>>,
     audio_rx: mpsc::Receiver<AudioChunk>,
     resampler: AudioResampler,
     _capture: AudioCapture,
@@ -247,7 +273,6 @@ impl Vox {
     /// - The audio capture channel closes (e.g. device disconnected)
     /// - Ctrl+C is received
     pub async fn listen(mut self) -> Result<(), VoxError> {
-        // Start audio capture.
         self._capture.start()?;
 
         let start_time = std::time::Instant::now();
@@ -293,10 +318,7 @@ impl Vox {
         chunk: AudioChunk,
         start_time: std::time::Instant,
     ) -> Result<(), VoxError> {
-        // Resample to VAD's expected format (16kHz mono).
         let resampled = self.resampler.process(&chunk)?;
-
-        // Split into VAD-sized frames.
         let frame_size = self.vad.frame_size();
         let frames = resampled.samples.chunks(frame_size);
 
@@ -311,13 +333,33 @@ impl Vox {
                 channels: 1,
             };
 
-            // Feed to VAD.
             let events = self.vad.process_frame(&frame).await?;
+
+            if let Some(session) = &mut self.active_session {
+                match session.push_audio(&frame.samples, 16000) {
+                    Ok(Some(partial)) => {
+                        if let Some(on_partial) = &self.on_partial {
+                            on_partial(partial);
+                        }
+                    }
+                    Ok(None) => {} // no new text yet
+                    Err(e) => {
+                        tracing::warn!("streaming push_audio failed: {e}, dropping session");
+                        self.active_session = None;
+                    }
+                }
+            }
 
             for event in events {
                 match event {
                     VadEvent::SpeechStart => {
                         tracing::debug!("speech started");
+                        if let Some(streaming) = &self.streaming_stt {
+                            match streaming.create_session() {
+                                Ok(session) => self.active_session = Some(session),
+                                Err(e) => tracing::warn!("failed to create streaming session: {e}"),
+                            }
+                        }
                     }
                     VadEvent::SpeechEnd(utterance) => {
                         tracing::debug!(
@@ -325,8 +367,19 @@ impl Vox {
                             "speech ended, transcribing..."
                         );
 
-                        // Transcribe the utterance.
-                        let stt_result = self.stt.transcribe(&utterance).await?;
+                        let stt_result = if let Some(mut session) = self.active_session.take() {
+                            match session.finish() {
+                                Ok(result) => result,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "streaming finish failed: {e}, falling back to batch"
+                                    );
+                                    self.stt.transcribe(&utterance).await?
+                                }
+                            }
+                        } else {
+                            self.stt.transcribe(&utterance).await?
+                        };
 
                         if !stt_result.text.is_empty() {
                             tracing::info!(
@@ -335,7 +388,6 @@ impl Vox {
                                 "transcription complete"
                             );
 
-                            // Update stats.
                             {
                                 let mut stats =
                                     self.stats.lock().unwrap_or_else(|e| e.into_inner());
@@ -347,7 +399,6 @@ impl Vox {
                                 stats.uptime_secs = start_time.elapsed().as_secs();
                             }
 
-                            // Call user callback.
                             let ctx = VoxContext {
                                 tts: self.tts.clone(),
                                 stats: self.stats.clone(),

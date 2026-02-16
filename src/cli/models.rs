@@ -67,6 +67,35 @@ pub const MODELS: &[ModelInfo] = &[
         size_bytes: 300_000,
         kind: "STT",
     },
+    // Streaming Sherpa-ONNX zipformer transducer model
+    ModelInfo {
+        name: "sherpa-streaming-encoder",
+        filename: "sherpa-streaming/encoder.onnx",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+        size_bytes: 12_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "sherpa-streaming-decoder",
+        filename: "sherpa-streaming/decoder.onnx",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+        size_bytes: 3_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "sherpa-streaming-joiner",
+        filename: "sherpa-streaming/joiner.onnx",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+        size_bytes: 12_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "sherpa-streaming-tokens",
+        filename: "sherpa-streaming/tokens.txt",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/tokens.txt",
+        size_bytes: 50_000,
+        kind: "STT",
+    },
     // Piper TTS voices
     ModelInfo {
         name: "piper-en-us",
@@ -398,6 +427,37 @@ pub async fn ensure_sherpa_sensevoice(yes: bool) -> anyhow::Result<PathBuf> {
     ensure_model("sherpa-sensevoice-tokens", "sensevoice/tokens.txt", yes).await?;
     // Return the parent directory (sensevoice/)
     Ok(model_path.parent().unwrap().to_path_buf())
+}
+
+/// Download streaming zipformer model files and return the model directory path.
+#[cfg(feature = "sherpa")]
+pub async fn ensure_sherpa_streaming(yes: bool) -> anyhow::Result<PathBuf> {
+    let encoder_path = ensure_model(
+        "sherpa-streaming-encoder",
+        "sherpa-streaming/encoder.onnx",
+        yes,
+    )
+    .await?;
+    ensure_model(
+        "sherpa-streaming-decoder",
+        "sherpa-streaming/decoder.onnx",
+        yes,
+    )
+    .await?;
+    ensure_model(
+        "sherpa-streaming-joiner",
+        "sherpa-streaming/joiner.onnx",
+        yes,
+    )
+    .await?;
+    ensure_model(
+        "sherpa-streaming-tokens",
+        "sherpa-streaming/tokens.txt",
+        yes,
+    )
+    .await?;
+    // Return the parent directory (sherpa-streaming/)
+    Ok(encoder_path.parent().unwrap().to_path_buf())
 }
 
 /// Download both Piper voice model files (.onnx + .onnx.json) and return the config path.
