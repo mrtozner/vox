@@ -42,6 +42,10 @@ reference_voice.wav
 # Research notes (not shipped)
 /research/
 
+# Local tooling
+.claude/
+/plans/
+
 # Demo assets
 demo.gif
 demo.tape

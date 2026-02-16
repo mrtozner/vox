@@ -24,6 +24,7 @@ pub struct SynthesizeRequest {
 pub struct ModelsResponse {
     pub stt: Option<BackendInfo>,
     pub tts: Option<BackendInfo>,
+    pub streaming_stt: Option<BackendInfo>,
     pub ollama: Option<OllamaStatus>,
 }
 

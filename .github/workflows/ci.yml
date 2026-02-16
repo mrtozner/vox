@@ -114,6 +114,8 @@ jobs:
 
       - name: Tests with piper feature
         run: cargo test --features piper
+        env:
+          RUSTFLAGS: ""
 
       - name: Build CLI binary
         run: cargo build --features cli --release

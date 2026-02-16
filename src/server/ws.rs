@@ -4,6 +4,7 @@
 //! and receive JSON events: speech_start, transcript, speech_end, error.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -115,6 +116,7 @@ async fn handle_ws(
             let Some(msg) = ws_msg else { break };
             match msg {
                 Ok(Message::Binary(data)) => {
+                    let t_msg = Instant::now();
                     let samples = bytes_to_f32_samples(&data);
                     let chunk = vox::AudioChunk {
                         samples,
@@ -196,8 +198,17 @@ async fn handle_ws(
                                                             .send(Message::Text(t_json.into()))
                                                             .await;
                                                     }
+                                                    let t_fallback = Instant::now();
                                                     match stt.transcribe(&utterance).await {
-                                                        Ok(result) => result,
+                                                        Ok(result) => {
+                                                            tracing::debug!(
+                                                                elapsed_us = t_fallback
+                                                                    .elapsed()
+                                                                    .as_micros(),
+                                                                "ws stt fallback transcribe"
+                                                            );
+                                                            result
+                                                        }
                                                         Err(e) => {
                                                             let _ = ws_tx
                                                                 .send(Message::Text(
@@ -254,6 +265,10 @@ async fn handle_ws(
                             }
                         }
                     }
+                    tracing::debug!(
+                        elapsed_us = t_msg.elapsed().as_micros(),
+                        "ws binary message processed"
+                    );
                 }
                 Ok(Message::Close(_)) => break,
                 Err(_) => break,

@@ -179,6 +179,12 @@ pub async fn models(State(state): State<AppState>) -> impl IntoResponse {
             model: state.tts_model_name.clone(),
             size_mb: state.tts_model_size,
         }),
+        streaming_stt: state.streaming_stt.as_ref().map(|_| BackendInfo {
+            name: "sherpa-streaming".to_string(),
+            loaded: true,
+            model: Some("zipformer".to_string()),
+            size_mb: Some(27),
+        }),
         ollama,
     })
 }

@@ -298,6 +298,7 @@ fn builder_error_is_no_vad_when_both_missing() {
 // and via the on_utterance callback setup test below.
 
 #[test]
+#[cfg_attr(target_os = "windows", ignore)]
 fn builder_with_vad_and_stt_reaches_audio_init() {
     // When both backends are present, the builder should get past the
     // NoVad/NoStt checks and attempt audio device initialization.
@@ -319,6 +320,7 @@ fn builder_with_vad_and_stt_reaches_audio_init() {
 }
 
 #[test]
+#[cfg_attr(target_os = "windows", ignore)]
 fn builder_with_vad_stt_and_tts_reaches_audio_init() {
     let result = Vox::builder()
         .vad(MockVad::new(1))
@@ -338,6 +340,7 @@ fn builder_with_vad_stt_and_tts_reaches_audio_init() {
 }
 
 #[test]
+#[cfg_attr(target_os = "windows", ignore)]
 fn builder_with_on_utterance_callback_reaches_audio_init() {
     let result = Vox::builder()
         .vad(MockVad::new(1))
@@ -1617,6 +1620,7 @@ async fn streaming_session_with_vad_pipeline() {
 }
 
 #[test]
+#[cfg_attr(target_os = "windows", ignore)]
 fn builder_accepts_streaming_stt() {
     // When streaming_stt is provided alongside VAD and STT, the builder
     // should get past the NoVad/NoStt checks and attempt audio init.
@@ -1640,6 +1644,7 @@ fn builder_accepts_streaming_stt() {
 }
 
 #[test]
+#[cfg_attr(target_os = "windows", ignore)]
 fn builder_accepts_on_partial() {
     // When on_partial is provided alongside VAD and STT, the builder
     // should get past the NoVad/NoStt checks and attempt audio init.

@@ -318,6 +318,7 @@ impl Vox {
         chunk: AudioChunk,
         start_time: std::time::Instant,
     ) -> Result<(), VoxError> {
+        let t_chunk = std::time::Instant::now();
         let resampled = self.resampler.process(&chunk)?;
         let frame_size = self.vad.frame_size();
         let frames = resampled.samples.chunks(frame_size);
@@ -333,9 +334,15 @@ impl Vox {
                 channels: 1,
             };
 
+            let t_vad = std::time::Instant::now();
             let events = self.vad.process_frame(&frame).await?;
+            tracing::debug!(
+                elapsed_us = t_vad.elapsed().as_micros(),
+                "vad frame processed"
+            );
 
             if let Some(session) = &mut self.active_session {
+                let t_push = std::time::Instant::now();
                 match session.push_audio(&frame.samples, 16000) {
                     Ok(Some(partial)) => {
                         if let Some(on_partial) = &self.on_partial {
@@ -348,6 +355,10 @@ impl Vox {
                         self.active_session = None;
                     }
                 }
+                tracing::debug!(
+                    elapsed_us = t_push.elapsed().as_micros(),
+                    "streaming push_audio"
+                );
             }
 
             for event in events {
@@ -367,6 +378,7 @@ impl Vox {
                             "speech ended, transcribing..."
                         );
 
+                        let t_stt = std::time::Instant::now();
                         let stt_result = if let Some(mut session) = self.active_session.take() {
                             match session.finish() {
                                 Ok(result) => result,
@@ -380,6 +392,7 @@ impl Vox {
                         } else {
                             self.stt.transcribe(&utterance).await?
                         };
+                        tracing::debug!(elapsed_us = t_stt.elapsed().as_micros(), "stt transcribe");
 
                         if !stt_result.text.is_empty() {
                             tracing::info!(
@@ -417,6 +430,11 @@ impl Vox {
                 }
             }
         }
+
+        tracing::debug!(
+            elapsed_us = t_chunk.elapsed().as_micros(),
+            "process_chunk total"
+        );
 
         Ok(())
     }

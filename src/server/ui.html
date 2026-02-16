@@ -574,11 +574,16 @@ const S = {
     reconnecting: false,
     synthesizing: false,
     chatBusy: false,
+    uptimeBase: 0,
+    uptimeReceivedAt: 0,
+    statusPollId: null,
+    uptimeTickId: null,
 };
 
 const MAX_TOASTS = 3;
 const TOAST_DURATION = 5000;
 const DASH_POLL_INTERVAL = 5000;
+const STATUS_POLL_INTERVAL = 30000;
 const WS_RECONNECT_DELAY = 2000;
 const CHUNK_SIZE = 4800;
 
@@ -1189,9 +1194,10 @@ async function refreshDashboard() {
             }
         };
         renderBackend('stt', data.stt);
+        renderBackend('streaming', data.streaming_stt);
         renderBackend('tts', data.tts);
 
-        // Ollama status
+
         if (data.ollama) {
             const cls = data.ollama.connected ? 'loaded' : 'not-loaded';
             const status = data.ollama.connected ? data.ollama.model_count + ' models' : 'offline';
@@ -1229,8 +1235,7 @@ function updateStatusBar(modelsData, statsData) {
         $('statusStt').textContent = 'stt: ' + sttLabel;
         const ttsLabel = modelsData.tts ? (modelsData.tts.model || modelsData.tts.name) : 'none';
         $('statusTts').textContent = 'tts: ' + ttsLabel;
-        // Streaming STT indicator: check if stt backend supports streaming
-        const hasStreaming = modelsData.stt && modelsData.stt.streaming;
+        const hasStreaming = !!modelsData.streaming_stt;
         $('statusStreaming').textContent = 'streaming: ' + (hasStreaming ? 'on' : 'off');
         $('statusStreaming').style.color = hasStreaming ? 'var(--accent)' : '';
         if (modelsData.ollama) {
@@ -1241,11 +1246,36 @@ function updateStatusBar(modelsData, statsData) {
         }
     }
     if (statsData) {
+        S.uptimeBase = statsData.uptime_secs;
+        S.uptimeReceivedAt = Date.now();
         $('statusUptime').textContent = 'uptime: ' + formatUptime(statsData.uptime_secs);
     }
 }
 
-// ─── 11. INIT ───────────────────────────────────────────────
+// ─── 11. STATUS BAR POLLING ──────────────────────────────────
+async function refreshStatusBar() {
+    try {
+        const [modelsRes, statsRes] = await Promise.allSettled([
+            fetch('/v1/models'),
+            fetch('/v1/stats'),
+        ]);
+        if (modelsRes.status === 'fulfilled' && modelsRes.value.ok)
+            updateStatusBar(await modelsRes.value.json(), null);
+        if (statsRes.status === 'fulfilled' && statsRes.value.ok)
+            updateStatusBar(null, await statsRes.value.json());
+    } catch (_) {}
+}
+
+function tickUptime() {
+    if (!S.uptimeReceivedAt) return;
+    const elapsed = Math.floor((Date.now() - S.uptimeReceivedAt) / 1000);
+    $('statusUptime').textContent = 'uptime: ' + formatUptime(S.uptimeBase + elapsed);
+    if (S.activeTab === 'dashboard') {
+        $('dashUptime').textContent = formatUptime(S.uptimeBase + elapsed);
+    }
+}
+
+// ─── 12. INIT ───────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
 
@@ -1281,6 +1311,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial data load
     refreshDashboard();
     loadOllamaModels();
+
+    // Status bar: poll server every 30s, tick uptime every 1s
+    refreshStatusBar();
+    S.statusPollId = setInterval(refreshStatusBar, STATUS_POLL_INTERVAL);
+    S.uptimeTickId = setInterval(tickUptime, 1000);
 });
 </script>
 </body>

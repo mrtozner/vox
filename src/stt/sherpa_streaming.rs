@@ -126,6 +126,7 @@ unsafe impl Sync for SherpaStreamingBackend {}
 impl SherpaStreamingBackend {
     /// Create a new streaming backend with the given configuration.
     pub fn with_config(config: SherpaStreamingConfig) -> Result<Self, VoxError> {
+        let t = Instant::now();
         validate_model_paths(&config.model)?;
 
         // CString pool -- all strings must stay alive until after CreateOnlineRecognizer.
@@ -179,6 +180,11 @@ impl SherpaStreamingBackend {
         }
 
         // pool drops here -- that's fine, the recognizer has copied the strings.
+
+        tracing::debug!(
+            elapsed_ms = t.elapsed().as_millis(),
+            "sherpa streaming model loaded"
+        );
 
         Ok(Self {
             recognizer: Arc::new(OnlineRecognizerPtr(recognizer)),
@@ -290,6 +296,7 @@ impl SttSession for SherpaStreamingSession {
             return Err(VoxError::Stt("session already finished".into()));
         }
 
+        let t = Instant::now();
         unsafe {
             sherpa_sys::SherpaOnnxOnlineStreamAcceptWaveform(
                 self.stream,
@@ -306,6 +313,10 @@ impl SttSession for SherpaStreamingSession {
                 sherpa_sys::SherpaOnnxGetOnlineStreamResult(self.recognizer.0, self.stream);
             if result_ptr.is_null() {
                 self.total_samples += samples.len();
+                tracing::debug!(
+                    elapsed_us = t.elapsed().as_micros(),
+                    "sherpa push_audio decode"
+                );
                 return Ok(None);
             }
 
@@ -322,12 +333,19 @@ impl SttSession for SherpaStreamingSession {
             sherpa_sys::SherpaOnnxDestroyOnlineRecognizerResult(result_ptr);
             self.total_samples += samples.len();
 
-            if !text.is_empty() && text != self.last_text {
+            let ret = if !text.is_empty() && text != self.last_text {
                 self.last_text = text.clone();
                 Ok(Some(text))
             } else {
                 Ok(None)
-            }
+            };
+
+            tracing::debug!(
+                elapsed_us = t.elapsed().as_micros(),
+                "sherpa push_audio decode"
+            );
+
+            ret
         }
     }
 
@@ -337,6 +355,7 @@ impl SttSession for SherpaStreamingSession {
         }
         self.finished = true;
 
+        let t_finish = Instant::now();
         unsafe {
             sherpa_sys::SherpaOnnxOnlineStreamInputFinished(self.stream);
 
@@ -369,6 +388,11 @@ impl SttSession for SherpaStreamingSession {
 
             let processing_time_ms = self.start_time.elapsed().as_millis() as u64;
             let duration_ms = (self.total_samples as u64 * 1000) / 16000;
+
+            tracing::debug!(
+                elapsed_us = t_finish.elapsed().as_micros(),
+                "sherpa finish finalized"
+            );
 
             Ok(SttResult {
                 text,

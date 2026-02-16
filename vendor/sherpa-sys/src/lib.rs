@@ -1,19 +1,12 @@
-//! Raw FFI bindings to the sherpa-onnx C API (offline recognition).
-//!
-//! These bindings target the sherpa-onnx offline recognizer for
-//! non-streaming speech-to-text (STT) using models like SenseVoice,
-//! Zipformer transducer, Paraformer, or Whisper.
-//!
-//! Struct layouts match sherpa-onnx v1.12.24 C API (verified via bindgen).
+//! Raw FFI bindings to sherpa-onnx C API v1.12.24.
+//! Offline + online (streaming) recognition.
 
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
 use std::os::raw::{c_char, c_float, c_int};
 
-// ---------------------------------------------------------------------------
-// Config structs (all fields zero-initializable)
-// ---------------------------------------------------------------------------
+// Offline config structs
 
 #[repr(C)]
 #[derive(Debug)]
@@ -69,6 +62,8 @@ pub struct SherpaOnnxOfflineWhisperModelConfig {
     pub language: *const c_char,
     pub task: *const c_char,
     pub tail_paddings: c_int,
+    pub enable_token_timestamps: c_int,
+    pub enable_segment_timestamps: c_int,
 }
 
 impl Default for SherpaOnnxOfflineWhisperModelConfig {
@@ -79,6 +74,8 @@ impl Default for SherpaOnnxOfflineWhisperModelConfig {
             language: std::ptr::null(),
             task: std::ptr::null(),
             tail_paddings: 0,
+            enable_token_timestamps: 0,
+            enable_segment_timestamps: 0,
         }
     }
 }
@@ -201,13 +198,87 @@ impl Default for SherpaOnnxOfflineCanaryModelConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SherpaOnnxOfflineModelConfig - 272 bytes (v1.12.24)
-//
-// Field order MUST match the C header exactly. The previous bindings were
-// missing nemo_ctc, fire_red_asr, dolphin, zipformer_ctc, and canary,
-// and had whisper/tdnn before nemo_ctc instead of after.
-// ---------------------------------------------------------------------------
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOfflineWenetCtcModelConfig {
+    pub model: *const c_char,
+}
+
+impl Default for SherpaOnnxOfflineWenetCtcModelConfig {
+    fn default() -> Self {
+        Self {
+            model: std::ptr::null(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOfflineOmnilingualAsrCtcModelConfig {
+    pub model: *const c_char,
+}
+
+impl Default for SherpaOnnxOfflineOmnilingualAsrCtcModelConfig {
+    fn default() -> Self {
+        Self {
+            model: std::ptr::null(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOfflineMedAsrCtcModelConfig {
+    pub model: *const c_char,
+}
+
+impl Default for SherpaOnnxOfflineMedAsrCtcModelConfig {
+    fn default() -> Self {
+        Self {
+            model: std::ptr::null(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOfflineFunASRNanoModelConfig {
+    pub encoder_adaptor: *const c_char,
+    pub llm: *const c_char,
+    pub embedding: *const c_char,
+    pub tokenizer: *const c_char,
+    pub system_prompt: *const c_char,
+    pub user_prompt: *const c_char,
+    pub max_new_tokens: c_int,
+    pub temperature: c_float,
+    pub top_p: c_float,
+    pub seed: c_int,
+    pub language: *const c_char,
+    pub itn: c_int,
+    pub hotwords: *const c_char,
+}
+
+impl Default for SherpaOnnxOfflineFunASRNanoModelConfig {
+    fn default() -> Self {
+        Self {
+            encoder_adaptor: std::ptr::null(),
+            llm: std::ptr::null(),
+            embedding: std::ptr::null(),
+            tokenizer: std::ptr::null(),
+            system_prompt: std::ptr::null(),
+            user_prompt: std::ptr::null(),
+            max_new_tokens: 0,
+            temperature: 0.0,
+            top_p: 0.0,
+            seed: 0,
+            language: std::ptr::null(),
+            itn: 0,
+            hotwords: std::ptr::null(),
+        }
+    }
+}
+
+// SherpaOnnxOfflineModelConfig — 392 bytes (v1.12.24)
 
 #[repr(C)]
 #[derive(Debug)]
@@ -231,6 +302,10 @@ pub struct SherpaOnnxOfflineModelConfig {
     pub dolphin: SherpaOnnxOfflineDolphinModelConfig,
     pub zipformer_ctc: SherpaOnnxOfflineZipformerCtcModelConfig,
     pub canary: SherpaOnnxOfflineCanaryModelConfig,
+    pub wenet_ctc: SherpaOnnxOfflineWenetCtcModelConfig,
+    pub omnilingual: SherpaOnnxOfflineOmnilingualAsrCtcModelConfig,
+    pub medasr: SherpaOnnxOfflineMedAsrCtcModelConfig,
+    pub funasr_nano: SherpaOnnxOfflineFunASRNanoModelConfig,
 }
 
 impl Default for SherpaOnnxOfflineModelConfig {
@@ -255,6 +330,10 @@ impl Default for SherpaOnnxOfflineModelConfig {
             dolphin: SherpaOnnxOfflineDolphinModelConfig::default(),
             zipformer_ctc: SherpaOnnxOfflineZipformerCtcModelConfig::default(),
             canary: SherpaOnnxOfflineCanaryModelConfig::default(),
+            wenet_ctc: SherpaOnnxOfflineWenetCtcModelConfig::default(),
+            omnilingual: SherpaOnnxOfflineOmnilingualAsrCtcModelConfig::default(),
+            medasr: SherpaOnnxOfflineMedAsrCtcModelConfig::default(),
+            funasr_nano: SherpaOnnxOfflineFunASRNanoModelConfig::default(),
         }
     }
 }
@@ -282,10 +361,6 @@ pub struct SherpaOnnxFeatureConfig {
     pub feature_dim: c_int,
 }
 
-// ---------------------------------------------------------------------------
-// SherpaOnnxHomophoneReplacerConfig - new in v1.12.24
-// ---------------------------------------------------------------------------
-
 #[repr(C)]
 #[derive(Debug)]
 pub struct SherpaOnnxHomophoneReplacerConfig {
@@ -304,11 +379,7 @@ impl Default for SherpaOnnxHomophoneReplacerConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SherpaOnnxOfflineRecognizerConfig - 376 bytes (v1.12.24)
-//
-// Adds the `hr` (homophone replacer) field at the end.
-// ---------------------------------------------------------------------------
+// SherpaOnnxOfflineRecognizerConfig — 496 bytes (v1.12.24)
 
 #[repr(C)]
 #[derive(Debug)]
@@ -344,20 +415,10 @@ impl Default for SherpaOnnxOfflineRecognizerConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Opaque handles
-// ---------------------------------------------------------------------------
-
 pub enum SherpaOnnxOfflineRecognizer {}
 pub enum SherpaOnnxOfflineStream {}
 
-// ---------------------------------------------------------------------------
-// SherpaOnnxOfflineRecognizerResult - 72 bytes (v1.12.24)
-//
-// Critical fixes:
-//   - `tokens` is *const c_char (single string), NOT *const *const c_char
-//   - `json` field added between `tokens_arr` and `lang`
-// ---------------------------------------------------------------------------
+// SherpaOnnxOfflineRecognizerResult — 128 bytes (v1.12.24)
 
 #[repr(C)]
 pub struct SherpaOnnxOfflineRecognizerResult {
@@ -370,11 +431,16 @@ pub struct SherpaOnnxOfflineRecognizerResult {
     pub lang: *const c_char,
     pub emotion: *const c_char,
     pub event: *const c_char,
+    pub durations: *mut c_float,
+    pub ys_log_probs: *mut c_float,
+    pub segment_timestamps: *const c_float,
+    pub segment_durations: *const c_float,
+    pub segment_texts: *const c_char,
+    pub segment_texts_arr: *const *const c_char,
+    pub segment_count: c_int,
 }
 
-// ---------------------------------------------------------------------------
-// FFI function declarations
-// ---------------------------------------------------------------------------
+// Offline FFI functions
 
 unsafe extern "C" {
     pub fn SherpaOnnxCreateOfflineRecognizer(
@@ -410,9 +476,7 @@ unsafe extern "C" {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Online/Streaming Recognition
-// ---------------------------------------------------------------------------
+// Online/streaming recognition
 
 /// SherpaOnnxOnlineTransducerModelConfig — 24 bytes
 #[repr(C)]
@@ -480,9 +544,22 @@ impl Default for SherpaOnnxOnlineNemoCtcModelConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SherpaOnnxOnlineModelConfig — 128 bytes (v1.12.24)
-// ---------------------------------------------------------------------------
+/// SherpaOnnxOnlineToneCtcModelConfig — 8 bytes
+#[repr(C)]
+#[derive(Debug)]
+pub struct SherpaOnnxOnlineToneCtcModelConfig {
+    pub model: *const c_char,
+}
+
+impl Default for SherpaOnnxOnlineToneCtcModelConfig {
+    fn default() -> Self {
+        Self {
+            model: std::ptr::null(),
+        }
+    }
+}
+
+// SherpaOnnxOnlineModelConfig — 136 bytes (v1.12.24)
 
 #[repr(C)]
 #[derive(Debug)]
@@ -500,6 +577,7 @@ pub struct SherpaOnnxOnlineModelConfig {
     pub tokens_buf: *const c_char,
     pub tokens_buf_size: c_int,
     pub nemo_ctc: SherpaOnnxOnlineNemoCtcModelConfig,
+    pub t_one_ctc: SherpaOnnxOnlineToneCtcModelConfig,
 }
 
 impl Default for SherpaOnnxOnlineModelConfig {
@@ -518,6 +596,7 @@ impl Default for SherpaOnnxOnlineModelConfig {
             tokens_buf: std::ptr::null(),
             tokens_buf_size: 0,
             nemo_ctc: SherpaOnnxOnlineNemoCtcModelConfig::default(),
+            t_one_ctc: SherpaOnnxOnlineToneCtcModelConfig::default(),
         }
     }
 }
@@ -539,9 +618,7 @@ impl Default for SherpaOnnxOnlineCtcFstDecoderConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SherpaOnnxOnlineRecognizerConfig — 264 bytes (v1.12.24)
-// ---------------------------------------------------------------------------
+// SherpaOnnxOnlineRecognizerConfig — 272 bytes (v1.12.24)
 
 #[repr(C)]
 #[derive(Debug)]
@@ -589,9 +666,7 @@ impl Default for SherpaOnnxOnlineRecognizerConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SherpaOnnxOnlineRecognizerResult — 48 bytes
-// ---------------------------------------------------------------------------
+// SherpaOnnxOnlineRecognizerResult — 48 bytes (v1.12.24)
 
 #[repr(C)]
 #[derive(Debug)]
@@ -604,29 +679,20 @@ pub struct SherpaOnnxOnlineRecognizerResult {
     pub json: *const c_char,
 }
 
-// ---------------------------------------------------------------------------
-// Opaque handles for online recognition
-// ---------------------------------------------------------------------------
-
 pub enum SherpaOnnxOnlineRecognizer {}
 pub enum SherpaOnnxOnlineStream {}
 
-// ---------------------------------------------------------------------------
-// Compile-time struct size assertions (catches layout drift)
-//
-// Note: size_of catches missing/extra fields but NOT reordered fields at the
-// same total size. A field swap would silently corrupt data. Full protection
-// requires CI bindgen diffing, but this catches the most common mistake
-// (adding a field upstream that we don't have).
-// ---------------------------------------------------------------------------
+// Compile-time size assertions (v1.12.24)
 
-const _: () = assert!(std::mem::size_of::<SherpaOnnxOnlineModelConfig>() == 128);
-const _: () = assert!(std::mem::size_of::<SherpaOnnxOnlineRecognizerConfig>() == 264);
+const _: () = assert!(std::mem::size_of::<SherpaOnnxOnlineModelConfig>() == 136);
+const _: () = assert!(std::mem::size_of::<SherpaOnnxOnlineRecognizerConfig>() == 272);
 const _: () = assert!(std::mem::size_of::<SherpaOnnxOnlineRecognizerResult>() == 48);
+const _: () = assert!(std::mem::size_of::<SherpaOnnxOfflineWhisperModelConfig>() == 48);
+const _: () = assert!(std::mem::size_of::<SherpaOnnxOfflineModelConfig>() == 392);
+const _: () = assert!(std::mem::size_of::<SherpaOnnxOfflineRecognizerConfig>() == 496);
+const _: () = assert!(std::mem::size_of::<SherpaOnnxOfflineRecognizerResult>() == 128);
 
-// ---------------------------------------------------------------------------
-// Online FFI function declarations
-// ---------------------------------------------------------------------------
+// Online FFI functions
 
 unsafe extern "C" {
     pub fn SherpaOnnxCreateOnlineRecognizer(
