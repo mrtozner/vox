@@ -101,10 +101,7 @@ fn app_data_lib_dir() -> Option<PathBuf> {
     let home = env::var("HOME").ok()?;
 
     if cfg!(target_os = "macos") {
-        Some(
-            Path::new(&home)
-                .join("Library/Application Support/vox/lib"),
-        )
+        Some(Path::new(&home).join("Library/Application Support/vox/lib"))
     } else {
         // Linux and other Unix-like systems
         Some(Path::new(&home).join(".local/share/vox/lib"))

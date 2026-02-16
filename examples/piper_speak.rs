@@ -23,12 +23,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "Hello from Piper TTS!".to_string());
 
     println!("Synthesizing: \"{text}\"");
-    let output = tts
-        .synthesize(&TtsRequest {
-            text,
-            voice: None,
-        })
-        .await?;
+    let output = tts.synthesize(&TtsRequest { text, voice: None }).await?;
 
     println!(
         "Generated {:.1}s of audio ({} samples at {} Hz)",

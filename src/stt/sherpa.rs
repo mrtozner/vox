@@ -29,10 +29,7 @@ pub enum SherpaModel {
         language: Option<String>,
     },
     /// Paraformer model (single ONNX file + tokens).
-    Paraformer {
-        model: PathBuf,
-        tokens: PathBuf,
-    },
+    Paraformer { model: PathBuf, tokens: PathBuf },
     /// Zipformer transducer model (encoder + decoder + joiner + tokens).
     Transducer {
         encoder: PathBuf,
@@ -74,22 +71,15 @@ unsafe impl Send for SherpaBackend {}
 unsafe impl Sync for SherpaBackend {}
 
 /// Push a CString into the pool, returning a pointer valid while the pool lives.
-fn push_cstring(
-    pool: &mut Vec<CString>,
-    s: &str,
-) -> Result<*const std::os::raw::c_char, VoxError> {
-    let cs =
-        CString::new(s).map_err(|e| VoxError::Stt(format!("invalid C string: {e}")))?;
+fn push_cstring(pool: &mut Vec<CString>, s: &str) -> Result<*const std::os::raw::c_char, VoxError> {
+    let cs = CString::new(s).map_err(|e| VoxError::Stt(format!("invalid C string: {e}")))?;
     let ptr = cs.as_ptr();
     pool.push(cs);
     Ok(ptr)
 }
 
 /// Push a path as CString into the pool.
-fn push_path(
-    pool: &mut Vec<CString>,
-    p: &Path,
-) -> Result<*const std::os::raw::c_char, VoxError> {
+fn push_path(pool: &mut Vec<CString>, p: &Path) -> Result<*const std::os::raw::c_char, VoxError> {
     let s = p
         .to_str()
         .ok_or_else(|| VoxError::Stt("non-UTF-8 model path".into()))?;
@@ -129,8 +119,7 @@ impl SherpaBackend {
             } => {
                 cfg.model_config.sense_voice.model = push_path(&mut pool, model)?;
                 if let Some(lang) = language {
-                    cfg.model_config.sense_voice.language =
-                        push_cstring(&mut pool, lang)?;
+                    cfg.model_config.sense_voice.language = push_cstring(&mut pool, lang)?;
                 }
                 cfg.model_config.sense_voice.use_itn = 1;
                 push_path(&mut pool, tokens)?
@@ -144,8 +133,7 @@ impl SherpaBackend {
                 cfg.model_config.whisper.encoder = push_path(&mut pool, encoder)?;
                 cfg.model_config.whisper.decoder = push_path(&mut pool, decoder)?;
                 if let Some(lang) = language {
-                    cfg.model_config.whisper.language =
-                        push_cstring(&mut pool, lang)?;
+                    cfg.model_config.whisper.language = push_cstring(&mut pool, lang)?;
                 }
                 cfg.model_config.whisper.task = push_cstring(&mut pool, "transcribe")?;
                 push_path(&mut pool, tokens)?
@@ -173,8 +161,7 @@ impl SherpaBackend {
         cfg.model_config.debug = 0;
         cfg.decoding_method = push_cstring(&mut pool, &config.decoding_method)?;
 
-        let recognizer =
-            unsafe { sherpa_sys::SherpaOnnxCreateOfflineRecognizer(&cfg) };
+        let recognizer = unsafe { sherpa_sys::SherpaOnnxCreateOfflineRecognizer(&cfg) };
 
         if recognizer.is_null() {
             return Err(VoxError::Stt(
@@ -247,8 +234,7 @@ impl SttBackend for SherpaBackend {
                 sherpa_sys::SherpaOnnxDecodeOfflineStream(rec, stream);
             }
 
-            let result_ptr =
-                unsafe { sherpa_sys::SherpaOnnxGetOfflineStreamResult(stream) };
+            let result_ptr = unsafe { sherpa_sys::SherpaOnnxGetOfflineStreamResult(stream) };
             if result_ptr.is_null() {
                 unsafe { sherpa_sys::SherpaOnnxDestroyOfflineStream(stream) };
                 return Err(VoxError::Stt("sherpa-onnx returned null result".into()));

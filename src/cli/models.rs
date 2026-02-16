@@ -417,9 +417,7 @@ pub async fn ensure_piper_voice(voice_name: &str, yes: bool) -> anyhow::Result<P
     let config_info = MODELS
         .iter()
         .find(|m| m.name == config_registry_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!("Unknown piper voice config: '{config_registry_name}'")
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("Unknown piper voice config: '{config_registry_name}'"))?;
 
     // Download both files
     ensure_model(model_registry_name, model_info.filename, yes).await?;

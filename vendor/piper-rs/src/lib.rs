@@ -782,9 +782,15 @@ impl SpeechStreamer {
                     ))
                 })?;
             // Extract audio data while outputs (and thus session) are still alive
-            let audio_arr = outputs[0].try_extract_array::<f32>().map_err(|e| {
-                PiperError::OperationError(format!("Failed to run model inference. Error: {}", e))
-            })?.to_owned();
+            let audio_arr = outputs[0]
+                .try_extract_array::<f32>()
+                .map_err(|e| {
+                    PiperError::OperationError(format!(
+                        "Failed to run model inference. Error: {}",
+                        e
+                    ))
+                })?
+                .to_owned();
             // Drop session/outputs before borrowing self mutably
             drop(outputs);
             drop(session);
@@ -816,10 +822,7 @@ impl Iterator for SpeechStreamer {
         let (mel_index, audio_index) = self.mel_chunker.next()?;
         if self.one_shot {
             self.mel_chunker.consume();
-            Some(
-                self.encoder_outputs
-                    .infer_decoder(&self.decoder_model),
-            )
+            Some(self.encoder_outputs.infer_decoder(&self.decoder_model))
         } else {
             Some(self.synthesize_chunk(mel_index, audio_index))
         }

@@ -381,9 +381,7 @@ unsafe extern "C" {
         config: *const SherpaOnnxOfflineRecognizerConfig,
     ) -> *mut SherpaOnnxOfflineRecognizer;
 
-    pub fn SherpaOnnxDestroyOfflineRecognizer(
-        recognizer: *mut SherpaOnnxOfflineRecognizer,
-    );
+    pub fn SherpaOnnxDestroyOfflineRecognizer(recognizer: *mut SherpaOnnxOfflineRecognizer);
 
     pub fn SherpaOnnxCreateOfflineStream(
         recognizer: *const SherpaOnnxOfflineRecognizer,

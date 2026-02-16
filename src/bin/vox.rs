@@ -108,10 +108,19 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Listen { model, stt_backend, yes } => {
+        Commands::Listen {
+            model,
+            stt_backend,
+            yes,
+        } => {
             cli::listen::run(&model, &stt_backend, yes).await?;
         }
-        Commands::Speak { text, voice, backend, yes } => {
+        Commands::Speak {
+            text,
+            voice,
+            backend,
+            yes,
+        } => {
             cli::speak::run(&text, &voice, &backend, yes).await?;
         }
         Commands::Chat {

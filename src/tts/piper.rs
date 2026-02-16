@@ -167,8 +167,8 @@ impl TtsBackend for PiperBackend {
 
             let mut samples: Vec<f32> = Vec::new();
             for result in audio_stream {
-                let audio = result
-                    .map_err(|e| VoxError::Tts(format!("piper audio chunk error: {e}")))?;
+                let audio =
+                    result.map_err(|e| VoxError::Tts(format!("piper audio chunk error: {e}")))?;
                 samples.append(&mut audio.into_vec());
             }
 
