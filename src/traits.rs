@@ -106,3 +106,30 @@ pub trait StreamingSttBackend: Send + Sync {
     /// Create a new streaming session.
     fn create_session(&self) -> Result<Box<dyn SttSession>, VoxError>;
 }
+
+/// A chunk of audio from a streaming TTS session.
+pub struct TtsChunk {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub progress: f32, // 0.0 to 1.0
+}
+
+/// A streaming TTS session that produces audio in chunks.
+///
+/// Created by [`StreamingTtsBackend::create_tts_session`].
+/// Call [`pull_chunk`](TtsSession::pull_chunk) repeatedly until it returns `None`.
+pub trait TtsSession: Send {
+    /// Pull the next audio chunk. Returns `None` when synthesis is complete.
+    fn pull_chunk(&mut self) -> Result<Option<TtsChunk>, VoxError>;
+}
+
+/// Streaming Text-to-Speech backend.
+///
+/// Creates [`TtsSession`]s that produce audio incrementally.
+pub trait StreamingTtsBackend: Send + Sync {
+    /// Create a streaming session for the given text.
+    fn create_tts_session(
+        &self,
+        request: &TtsRequest,
+    ) -> Result<Box<dyn TtsSession>, VoxError>;
+}

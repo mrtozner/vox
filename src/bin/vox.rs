@@ -52,6 +52,9 @@ enum Commands {
         /// Auto-download missing models without prompting
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Stream audio sentence-by-sentence (start playing before full synthesis)
+        #[arg(long, default_value_t = false)]
+        stream: bool,
     },
     /// Chat with an LLM using your voice
     Chat {
@@ -120,8 +123,9 @@ async fn main() -> anyhow::Result<()> {
             voice,
             backend,
             yes,
+            stream,
         } => {
-            cli::speak::run(&text, &voice, &backend, yes).await?;
+            cli::speak::run(&text, &voice, &backend, yes, stream).await?;
         }
         Commands::Chat {
             model,

@@ -17,6 +17,8 @@ mod chatterbox;
 #[cfg(feature = "piper")]
 mod piper;
 
+mod streaming;
+
 #[cfg(feature = "kokoro")]
 pub use kokoro::{KokoroBackend, KokoroConfig};
 
@@ -28,3 +30,5 @@ pub use chatterbox::{ChatterboxBackend, ChatterboxConfig};
 
 #[cfg(feature = "piper")]
 pub use self::piper::{PiperBackend, PiperConfig};
+
+pub use streaming::SentenceStreamingAdapter;

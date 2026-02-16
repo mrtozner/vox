@@ -1,11 +1,11 @@
 //! Handler for `vox speak` — text-to-speech synthesis and playback.
 
 /// Run the speak command, dispatching to the appropriate backend.
-pub async fn run(text: &str, voice: &str, backend: &str, yes: bool) -> anyhow::Result<()> {
+pub async fn run(text: &str, voice: &str, backend: &str, yes: bool, stream: bool) -> anyhow::Result<()> {
     match backend {
-        "kokoro" => run_kokoro(text, voice, yes).await,
+        "kokoro" => run_kokoro(text, voice, yes, stream).await,
         #[cfg(feature = "piper")]
-        "piper" => run_piper(text, voice, yes).await,
+        "piper" => run_piper(text, voice, yes, stream).await,
         #[cfg(not(feature = "piper"))]
         "piper" => anyhow::bail!(
             "Piper TTS requires the 'piper' feature.\n\n\
@@ -13,7 +13,7 @@ pub async fn run(text: &str, voice: &str, backend: &str, yes: bool) -> anyhow::R
              \n  cargo build --features cli,piper --release\n"
         ),
         #[cfg(feature = "chatterbox")]
-        "chatterbox" => run_chatterbox(text, voice, yes).await,
+        "chatterbox" => run_chatterbox(text, voice, yes, stream).await,
         #[cfg(not(feature = "chatterbox"))]
         "chatterbox" => anyhow::bail!(
             "Chatterbox TTS requires the 'chatterbox' feature.\n\n\
@@ -27,9 +27,50 @@ pub async fn run(text: &str, voice: &str, backend: &str, yes: bool) -> anyhow::R
     }
 }
 
+/// Stream audio sentence-by-sentence using any TTS backend.
+#[cfg(any(feature = "kokoro", feature = "piper", feature = "chatterbox"))]
+fn play_streaming(
+    backend: std::sync::Arc<dyn vox::TtsBackend>,
+    text: &str,
+    voice: &str,
+) -> anyhow::Result<()> {
+    use vox::traits::StreamingTtsBackend;
+    use vox::types::AudioChunk;
+
+    let adapter = vox::SentenceStreamingAdapter::new(
+        backend,
+        tokio::runtime::Handle::current(),
+    );
+    let request = vox::types::TtsRequest {
+        text: text.to_string(),
+        voice: Some(voice.to_string()),
+        seed: None,
+    };
+    let mut session = adapter.create_tts_session(&request)?;
+    let player = vox::AudioPlayer::new()?;
+    let mut chunk_count = 0u32;
+
+    while let Some(chunk) = session.pull_chunk()? {
+        chunk_count += 1;
+        println!(
+            "  Playing chunk {} ({:.0}% complete)...",
+            chunk_count,
+            chunk.progress * 100.0,
+        );
+        let audio = AudioChunk {
+            samples: chunk.samples,
+            sample_rate: chunk.sample_rate,
+            channels: 1,
+        };
+        player.play_blocking(&audio)?;
+    }
+    println!("Done ({chunk_count} chunks).");
+    Ok(())
+}
+
 /// Run TTS with the Kokoro backend.
 #[cfg(feature = "kokoro")]
-async fn run_kokoro(text: &str, voice: &str, yes: bool) -> anyhow::Result<()> {
+async fn run_kokoro(text: &str, voice: &str, yes: bool, stream: bool) -> anyhow::Result<()> {
     use super::models::ensure_model;
     use vox::traits::TtsBackend;
     use vox::types::TtsRequest;
@@ -39,6 +80,11 @@ async fn run_kokoro(text: &str, voice: &str, yes: bool) -> anyhow::Result<()> {
 
     println!("Loading Kokoro TTS...");
     let tts = vox::KokoroBackend::new(&model_path, &voices_path).await?;
+
+    if stream {
+        println!("Streaming with voice '{voice}'...");
+        return play_streaming(std::sync::Arc::new(tts), text, voice);
+    }
 
     println!("Synthesizing with voice '{voice}'...");
     let output = tts
@@ -67,7 +113,7 @@ async fn run_kokoro(text: &str, voice: &str, yes: bool) -> anyhow::Result<()> {
 
 /// Stub when kokoro feature is disabled.
 #[cfg(not(feature = "kokoro"))]
-async fn run_kokoro(_text: &str, _voice: &str, _yes: bool) -> anyhow::Result<()> {
+async fn run_kokoro(_text: &str, _voice: &str, _yes: bool, _stream: bool) -> anyhow::Result<()> {
     anyhow::bail!(
         "Kokoro TTS requires the 'kokoro' feature.\n\n\
          Rebuild with:\n\
@@ -77,7 +123,7 @@ async fn run_kokoro(_text: &str, _voice: &str, _yes: bool) -> anyhow::Result<()>
 
 /// Run TTS with the Chatterbox backend (voice cloning).
 #[cfg(feature = "chatterbox")]
-async fn run_chatterbox(text: &str, voice: &str, _yes: bool) -> anyhow::Result<()> {
+async fn run_chatterbox(text: &str, voice: &str, _yes: bool, stream: bool) -> anyhow::Result<()> {
     use vox::traits::TtsBackend;
     use vox::types::TtsRequest;
 
@@ -92,6 +138,11 @@ async fn run_chatterbox(text: &str, voice: &str, _yes: bool) -> anyhow::Result<(
 
     println!("Loading Chatterbox TTS (downloading model if needed)...");
     let tts = vox::ChatterboxBackend::new(reference_wav)?;
+
+    if stream {
+        println!("Streaming with Chatterbox (voice cloning from {voice})...");
+        return play_streaming(std::sync::Arc::new(tts), text, voice);
+    }
 
     println!("Synthesizing with Chatterbox (voice cloning from {voice})...");
     let output = tts
@@ -120,7 +171,7 @@ async fn run_chatterbox(text: &str, voice: &str, _yes: bool) -> anyhow::Result<(
 
 /// Run TTS with the Piper backend.
 #[cfg(feature = "piper")]
-async fn run_piper(text: &str, voice: &str, yes: bool) -> anyhow::Result<()> {
+async fn run_piper(text: &str, voice: &str, yes: bool, stream: bool) -> anyhow::Result<()> {
     use super::models::{ensure_piper_voice, piper_voice_alias};
     use vox::traits::TtsBackend;
     use vox::types::TtsRequest;
@@ -133,6 +184,11 @@ async fn run_piper(text: &str, voice: &str, yes: bool) -> anyhow::Result<()> {
 
     println!("Loading Piper TTS...");
     let tts = vox::PiperBackend::new(&config_path)?;
+
+    if stream {
+        println!("Streaming with Piper ({model_name})...");
+        return play_streaming(std::sync::Arc::new(tts), text, voice);
+    }
 
     println!("Synthesizing with Piper ({model_name})...");
     let output = tts

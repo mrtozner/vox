@@ -38,7 +38,7 @@ pub mod vad;
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
-pub use traits::{StreamingSttBackend, SttBackend, SttSession, TtsBackend, VadBackend, VadEvent};
+pub use traits::{StreamingSttBackend, StreamingTtsBackend, SttBackend, SttSession, TtsBackend, TtsChunk, TtsSession, VadBackend, VadEvent};
 pub use types::{
     AudioChunk, PipelineStats, SttResult, TtsOutput, TtsRequest, Utterance, VoiceInfo,
 };
@@ -67,6 +67,8 @@ pub use tts::{ChatterboxBackend, ChatterboxConfig};
 
 #[cfg(feature = "piper")]
 pub use tts::{PiperBackend, PiperConfig};
+
+pub use tts::SentenceStreamingAdapter;
 
 #[cfg(any(
     feature = "kokoro",
