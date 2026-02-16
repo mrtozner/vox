@@ -29,11 +29,6 @@ jobs:
             artifact: vox
             archive: tar.gz
 
-          - os: macos-14
-            target: x86_64-apple-darwin
-            artifact: vox
-            archive: tar.gz
-
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: vox.exe
