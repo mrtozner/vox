@@ -4,7 +4,7 @@ exclude = ["vendor/sherpa-sys"]
 
 [package]
 name = "vox"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 authors = ["Mert Ozoner"]
 description = "Local-first voice AI framework. Whisper STT, Kokoro/Pocket TTS, Silero VAD. Zero cloud dependencies."
