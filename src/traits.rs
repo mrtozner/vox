@@ -128,8 +128,5 @@ pub trait TtsSession: Send {
 /// Creates [`TtsSession`]s that produce audio incrementally.
 pub trait StreamingTtsBackend: Send + Sync {
     /// Create a streaming session for the given text.
-    fn create_tts_session(
-        &self,
-        request: &TtsRequest,
-    ) -> Result<Box<dyn TtsSession>, VoxError>;
+    fn create_tts_session(&self, request: &TtsRequest) -> Result<Box<dyn TtsSession>, VoxError>;
 }

@@ -34,10 +34,7 @@ impl SentenceStreamingAdapter {
 }
 
 impl StreamingTtsBackend for SentenceStreamingAdapter {
-    fn create_tts_session(
-        &self,
-        request: &TtsRequest,
-    ) -> Result<Box<dyn TtsSession>, VoxError> {
+    fn create_tts_session(&self, request: &TtsRequest) -> Result<Box<dyn TtsSession>, VoxError> {
         let sentences = split_sentences(&request.text);
         if sentences.is_empty() {
             return Err(VoxError::Tts("empty text".into()));
@@ -133,10 +130,7 @@ mod tests {
 
     #[test]
     fn splits_on_period() {
-        assert_eq!(
-            split_sentences("Hello. World."),
-            vec!["Hello.", "World."]
-        );
+        assert_eq!(split_sentences("Hello. World."), vec!["Hello.", "World."]);
     }
 
     #[test]
@@ -183,9 +177,6 @@ mod tests {
 
     #[test]
     fn handles_trailing_text_without_punctuation() {
-        assert_eq!(
-            split_sentences("Hello. World"),
-            vec!["Hello.", "World"]
-        );
+        assert_eq!(split_sentences("Hello. World"), vec!["Hello.", "World"]);
     }
 }

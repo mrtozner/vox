@@ -1,7 +1,13 @@
 //! Handler for `vox speak` — text-to-speech synthesis and playback.
 
 /// Run the speak command, dispatching to the appropriate backend.
-pub async fn run(text: &str, voice: &str, backend: &str, yes: bool, stream: bool) -> anyhow::Result<()> {
+pub async fn run(
+    text: &str,
+    voice: &str,
+    backend: &str,
+    yes: bool,
+    stream: bool,
+) -> anyhow::Result<()> {
     match backend {
         "kokoro" => run_kokoro(text, voice, yes, stream).await,
         #[cfg(feature = "piper")]
@@ -37,10 +43,7 @@ fn play_streaming(
     use vox::traits::StreamingTtsBackend;
     use vox::types::AudioChunk;
 
-    let adapter = vox::SentenceStreamingAdapter::new(
-        backend,
-        tokio::runtime::Handle::current(),
-    );
+    let adapter = vox::SentenceStreamingAdapter::new(backend, tokio::runtime::Handle::current());
     let request = vox::types::TtsRequest {
         text: text.to_string(),
         voice: Some(voice.to_string()),

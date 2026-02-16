@@ -38,7 +38,10 @@ pub mod vad;
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
-pub use traits::{StreamingSttBackend, StreamingTtsBackend, SttBackend, SttSession, TtsBackend, TtsChunk, TtsSession, VadBackend, VadEvent};
+pub use traits::{
+    StreamingSttBackend, StreamingTtsBackend, SttBackend, SttSession, TtsBackend, TtsChunk,
+    TtsSession, VadBackend, VadEvent,
+};
 pub use types::{
     AudioChunk, PipelineStats, SttResult, TtsOutput, TtsRequest, Utterance, VoiceInfo,
 };
