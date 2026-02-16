@@ -12,9 +12,17 @@ pub async fn run(text: &str, voice: &str, backend: &str, yes: bool) -> anyhow::R
              Rebuild with:\n\
              \n  cargo build --features cli,piper --release\n"
         ),
+        #[cfg(feature = "chatterbox")]
+        "chatterbox" => run_chatterbox(text, voice, yes).await,
+        #[cfg(not(feature = "chatterbox"))]
+        "chatterbox" => anyhow::bail!(
+            "Chatterbox TTS requires the 'chatterbox' feature.\n\n\
+             Rebuild with:\n\
+             \n  cargo build --features cli,chatterbox --release\n"
+        ),
         other => anyhow::bail!(
             "Unknown TTS backend: '{other}'.\n\n\
-             Available backends: kokoro, piper"
+             Available backends: kokoro, piper, chatterbox"
         ),
     }
 }
@@ -65,6 +73,49 @@ async fn run_kokoro(_text: &str, _voice: &str, _yes: bool) -> anyhow::Result<()>
          Rebuild with:\n\
          \n  cargo build --features cli,kokoro --release\n"
     );
+}
+
+/// Run TTS with the Chatterbox backend (voice cloning).
+#[cfg(feature = "chatterbox")]
+async fn run_chatterbox(text: &str, voice: &str, _yes: bool) -> anyhow::Result<()> {
+    use vox::traits::TtsBackend;
+    use vox::types::TtsRequest;
+
+    let reference_wav = std::path::Path::new(voice);
+    if !reference_wav.exists() {
+        anyhow::bail!(
+            "Chatterbox requires a reference WAV for voice cloning.\n\n\
+             Usage:\n\
+             \n  vox speak \"text\" --backend chatterbox --voice /path/to/reference.wav\n"
+        );
+    }
+
+    println!("Loading Chatterbox TTS (downloading model if needed)...");
+    let tts = vox::ChatterboxBackend::new(reference_wav)?;
+
+    println!("Synthesizing with Chatterbox (voice cloning from {voice})...");
+    let output = tts
+        .synthesize(&TtsRequest {
+            text: text.to_string(),
+            voice: Some(voice.to_string()),
+            seed: None,
+        })
+        .await?;
+
+    let duration_secs = output.duration_ms as f64 / 1000.0;
+    println!(
+        "Generated {:.1}s of audio ({} samples at {} Hz)",
+        duration_secs,
+        output.audio.samples.len(),
+        output.audio.sample_rate,
+    );
+
+    println!("Playing audio...");
+    let player = vox::AudioPlayer::new()?;
+    player.play_blocking(&output.audio)?;
+    println!("Done.");
+
+    Ok(())
 }
 
 /// Run TTS with the Piper backend.

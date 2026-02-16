@@ -46,7 +46,7 @@ enum Commands {
         /// TTS voice name (e.g. af_heart for kokoro, en/de/fr for piper)
         #[arg(long, default_value = "af_heart")]
         voice: String,
-        /// TTS backend to use (kokoro or piper)
+        /// TTS backend to use (kokoro, piper, or chatterbox)
         #[arg(long, default_value = "kokoro")]
         backend: String,
         /// Auto-download missing models without prompting
