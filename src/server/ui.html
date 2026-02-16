@@ -152,6 +152,7 @@ body {
 }
 .transcript-text { font-size: 14px; word-break: break-word; }
 .transcript-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.transcript-partial .transcript-text { color: var(--text-muted); font-style: italic; }
 .transcript-placeholder .transcript-text { animation: dot-pulse 1.5s ease-in-out infinite; }
 @keyframes dot-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 .transcript-copy-btn {
@@ -461,7 +462,7 @@ body {
 
 <!-- Header -->
 <div class="header">
-    <div class="header-brand">vox<span>v0.2.0</span></div>
+    <div class="header-brand">vox<span>v0.3.0</span></div>
     <div class="header-health">
         <div class="health-dot" id="healthDot"></div>
         <span id="healthText">--</span>
@@ -545,6 +546,7 @@ body {
 <!-- Status Bar -->
 <div class="status-bar">
     <span id="statusStt">stt: --</span>
+    <span id="statusStreaming">streaming: --</span>
     <span id="statusTts">tts: --</span>
     <span id="statusOllama">ollama: --</span>
     <span id="statusUptime">uptime: --</span>
@@ -809,10 +811,12 @@ function showTranscriptPlaceholder() {
     area.scrollTop = area.scrollHeight;
 }
 
-function updateTranscriptPlaceholder(text) {
+function updateTranscriptPlaceholder(text, isPartial) {
     const ph = $('transcriptPlaceholder');
     if (ph) {
         ph.querySelector('.transcript-text').textContent = text;
+        ph.classList.toggle('transcript-partial', !!isPartial);
+        ph.classList.toggle('transcript-placeholder', !isPartial);
     }
 }
 
@@ -841,12 +845,12 @@ function handleListenEvent(data) {
         case 'partial':
             status.textContent = 'Speaking...';
             status.className = 'listen-status active';
-            updateTranscriptPlaceholder(data.text || '...');
+            updateTranscriptPlaceholder(data.text || '...', true);
             break;
         case 'transcribing':
             status.textContent = 'Transcribing...';
             status.className = 'listen-status transcribing';
-            updateTranscriptPlaceholder('Transcribing...');
+            updateTranscriptPlaceholder('Transcribing...', false);
             break;
         case 'transcript':
             removeTranscriptPlaceholder();
@@ -1084,7 +1088,9 @@ async function startChatMic() {
     const input = $('chatInput');
 
     S.chatWs = connectWs('/v1/listen', (data) => {
-        if (data.type === 'transcript' && data.text) {
+        if (data.type === 'partial' && data.text) {
+            input.value = data.text;
+        } else if (data.type === 'transcript' && data.text) {
             stopChatMic();
             input.value = data.text;
             sendChat(data.text);
@@ -1223,6 +1229,10 @@ function updateStatusBar(modelsData, statsData) {
         $('statusStt').textContent = 'stt: ' + sttLabel;
         const ttsLabel = modelsData.tts ? (modelsData.tts.model || modelsData.tts.name) : 'none';
         $('statusTts').textContent = 'tts: ' + ttsLabel;
+        // Streaming STT indicator: check if stt backend supports streaming
+        const hasStreaming = modelsData.stt && modelsData.stt.streaming;
+        $('statusStreaming').textContent = 'streaming: ' + (hasStreaming ? 'on' : 'off');
+        $('statusStreaming').style.color = hasStreaming ? 'var(--accent)' : '';
         if (modelsData.ollama) {
             const ollamaLabel = modelsData.ollama.connected
                 ? modelsData.ollama.model_count + ' models'

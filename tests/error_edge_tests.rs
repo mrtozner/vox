@@ -40,6 +40,7 @@ fn test_state() -> Arc<ServerState> {
         stt_model_size: None,
         tts_model_name: None,
         tts_model_size: None,
+        streaming_stt: None,
     })
 }
 
@@ -366,6 +367,7 @@ mod wav_decoding {
             stt_model_size: None,
             tts_model_name: None,
             tts_model_size: None,
+            streaming_stt: None,
         })
     }
 }

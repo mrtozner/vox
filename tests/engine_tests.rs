@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use vox::{
-    AudioChunk, PipelineStats, SttBackend, SttResult, TtsBackend, TtsOutput, TtsRequest, Utterance,
-    VadBackend, VadEvent, Vox, VoxConfig, VoxError,
+    AudioChunk, PipelineStats, StreamingSttBackend, SttBackend, SttResult, SttSession, TtsBackend,
+    TtsOutput, TtsRequest, Utterance, VadBackend, VadEvent, Vox, VoxConfig, VoxError,
 };
 
 // ===========================================================================
@@ -1351,4 +1351,311 @@ async fn tts_default_backend_name_for_unoverridden() {
     let tts = MinimalTts;
     assert_eq!(tts.backend_name(), "unknown");
     assert!(tts.list_voices().is_empty());
+}
+
+// ===========================================================================
+// 11. Streaming STT mock backends
+// ===========================================================================
+
+/// A mock streaming STT session that returns partial text every 3rd push.
+struct MockSttSession {
+    push_count: usize,
+    partial_text: String,
+    finished: bool,
+}
+
+impl SttSession for MockSttSession {
+    fn push_audio(
+        &mut self,
+        _samples: &[f32],
+        _sample_rate: u32,
+    ) -> Result<Option<String>, VoxError> {
+        if self.finished {
+            return Err(VoxError::Stt("session already finished".into()));
+        }
+        self.push_count += 1;
+        // Return partial text every 3rd push
+        if self.push_count % 3 == 0 {
+            Ok(Some(format!(
+                "{} {}",
+                self.partial_text,
+                self.push_count / 3
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn finish(&mut self) -> Result<SttResult, VoxError> {
+        if self.finished {
+            return Err(VoxError::Stt("session already finished".into()));
+        }
+        self.finished = true;
+        Ok(SttResult {
+            text: format!("{} final", self.partial_text),
+            language: Some("en".into()),
+            duration_ms: 1000,
+            processing_time_ms: 50,
+        })
+    }
+}
+
+/// A mock streaming STT backend that creates MockSttSession instances.
+struct MockStreamingStt {
+    partial_text: String,
+}
+
+impl StreamingSttBackend for MockStreamingStt {
+    fn create_session(&self) -> Result<Box<dyn SttSession>, VoxError> {
+        Ok(Box::new(MockSttSession {
+            push_count: 0,
+            partial_text: self.partial_text.clone(),
+            finished: false,
+        }))
+    }
+}
+
+/// A streaming STT backend that always fails on session creation.
+struct FailingStreamingStt;
+
+impl StreamingSttBackend for FailingStreamingStt {
+    fn create_session(&self) -> Result<Box<dyn SttSession>, VoxError> {
+        Err(VoxError::Stt("simulated session creation failure".into()))
+    }
+}
+
+// ===========================================================================
+// 12. Streaming STT tests
+// ===========================================================================
+
+#[test]
+fn mock_streaming_session_returns_none_initially() {
+    let mut session = MockSttSession {
+        push_count: 0,
+        partial_text: "partial".into(),
+        finished: false,
+    };
+
+    let result = session.push_audio(&[0.0; 512], 16000).unwrap();
+    assert!(
+        result.is_none(),
+        "first push should return None, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn mock_streaming_session_returns_partial_every_3rd_push() {
+    let mut session = MockSttSession {
+        push_count: 0,
+        partial_text: "partial".into(),
+        finished: false,
+    };
+
+    let samples = [0.0f32; 512];
+
+    // Push 1: None
+    assert!(session.push_audio(&samples, 16000).unwrap().is_none());
+    // Push 2: None
+    assert!(session.push_audio(&samples, 16000).unwrap().is_none());
+    // Push 3: Some partial text
+    let result = session.push_audio(&samples, 16000).unwrap();
+    assert_eq!(result, Some("partial 1".into()));
+}
+
+#[test]
+fn mock_streaming_session_finish_returns_final_text() {
+    let mut session = MockSttSession {
+        push_count: 0,
+        partial_text: "hello".into(),
+        finished: false,
+    };
+
+    let samples = [0.0f32; 512];
+    // Push a few frames before finishing
+    session.push_audio(&samples, 16000).unwrap();
+    session.push_audio(&samples, 16000).unwrap();
+
+    let result = session.finish().unwrap();
+    assert_eq!(result.text, "hello final");
+    assert_eq!(result.language, Some("en".into()));
+    assert_eq!(result.duration_ms, 1000);
+    assert_eq!(result.processing_time_ms, 50);
+}
+
+#[test]
+fn mock_streaming_session_double_finish_returns_error() {
+    let mut session = MockSttSession {
+        push_count: 0,
+        partial_text: "test".into(),
+        finished: false,
+    };
+
+    // First finish succeeds
+    let result = session.finish();
+    assert!(result.is_ok());
+
+    // Second finish fails
+    let result = session.finish();
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().to_string().contains("already finished"),
+        "error should mention 'already finished'"
+    );
+}
+
+#[test]
+fn mock_streaming_session_push_after_finish_returns_error() {
+    let mut session = MockSttSession {
+        push_count: 0,
+        partial_text: "test".into(),
+        finished: false,
+    };
+
+    // Finish the session
+    session.finish().unwrap();
+
+    // Push after finish should fail
+    let result = session.push_audio(&[0.0; 512], 16000);
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().to_string().contains("already finished"),
+        "error should mention 'already finished'"
+    );
+}
+
+#[test]
+fn mock_streaming_backend_creates_independent_sessions() {
+    let backend = MockStreamingStt {
+        partial_text: "word".into(),
+    };
+
+    let mut session_a = backend.create_session().unwrap();
+    let mut session_b = backend.create_session().unwrap();
+
+    let samples = [0.0f32; 512];
+
+    // Push 3 frames to session A (triggers partial)
+    session_a.push_audio(&samples, 16000).unwrap();
+    session_a.push_audio(&samples, 16000).unwrap();
+    let partial_a = session_a.push_audio(&samples, 16000).unwrap();
+    assert_eq!(partial_a, Some("word 1".into()));
+
+    // Session B has only 1 push -- should return None
+    let partial_b = session_b.push_audio(&samples, 16000).unwrap();
+    assert!(
+        partial_b.is_none(),
+        "session B should be independent of session A"
+    );
+
+    // Finish both independently
+    let result_a = session_a.finish().unwrap();
+    let result_b = session_b.finish().unwrap();
+    assert_eq!(result_a.text, "word final");
+    assert_eq!(result_b.text, "word final");
+}
+
+#[test]
+fn failing_streaming_backend_returns_error() {
+    let backend = FailingStreamingStt;
+
+    let result = backend.create_session();
+    match result {
+        Err(e) => {
+            assert!(
+                e.to_string().contains("session creation failure"),
+                "error should mention session creation failure, got: {}",
+                e
+            );
+        }
+        Ok(_) => panic!("expected create_session to fail"),
+    }
+}
+
+#[tokio::test]
+async fn streaming_session_with_vad_pipeline() {
+    // Simulate: VAD triggers SpeechStart -> create session -> push frames ->
+    // VAD triggers SpeechEnd -> finish session -> verify final text.
+    let mut vad = MockVad::new(3);
+    let streaming = MockStreamingStt {
+        partial_text: "streaming".into(),
+    };
+    let frame = test_chunk(512, 16000, 1);
+
+    let mut active_session: Option<Box<dyn SttSession>> = None;
+    let mut final_text: Option<String> = None;
+
+    for _ in 0..3 {
+        let events = vad.process_frame(&frame).await.unwrap();
+
+        // Push audio to active session
+        if let Some(session) = &mut active_session {
+            let _ = session.push_audio(&frame.samples, 16000);
+        }
+
+        for event in events {
+            match event {
+                VadEvent::SpeechStart => {
+                    active_session = Some(streaming.create_session().unwrap());
+                }
+                VadEvent::SpeechEnd(_utterance) => {
+                    if let Some(mut session) = active_session.take() {
+                        let result = session.finish().unwrap();
+                        final_text = Some(result.text);
+                    }
+                }
+                VadEvent::Silence => {}
+            }
+        }
+    }
+
+    assert_eq!(
+        final_text,
+        Some("streaming final".into()),
+        "streaming session should produce final text after VAD SpeechEnd"
+    );
+}
+
+#[test]
+fn builder_accepts_streaming_stt() {
+    // When streaming_stt is provided alongside VAD and STT, the builder
+    // should get past the NoVad/NoStt checks and attempt audio init.
+    let result = Vox::builder()
+        .vad(MockVad::new(1))
+        .stt(MockStt::new("test"))
+        .streaming_stt(MockStreamingStt {
+            partial_text: "partial".into(),
+        })
+        .build();
+    match result {
+        Ok(_) => {} // audio device available -- success
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("no VAD") && !msg.contains("no STT"),
+                "should not fail with missing-backend error, got: {msg}"
+            );
+        }
+    }
+}
+
+#[test]
+fn builder_accepts_on_partial() {
+    // When on_partial is provided alongside VAD and STT, the builder
+    // should get past the NoVad/NoStt checks and attempt audio init.
+    let result = Vox::builder()
+        .vad(MockVad::new(1))
+        .stt(MockStt::new("test"))
+        .on_partial(|_text| {})
+        .build();
+    match result {
+        Ok(_) => {} // audio device available -- success
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("no VAD") && !msg.contains("no STT"),
+                "should not fail with missing-backend error, got: {msg}"
+            );
+        }
+    }
 }

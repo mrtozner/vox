@@ -67,6 +67,8 @@ jobs:
       - name: Clippy (CLI + server)
         run: cargo clippy --features cli,server -- -D warnings
 
+      # Note: 'sherpa' excluded (requires prebuilt native lib), 'piper' excluded
+      # (vendor crate has pre-existing lifetime lint incompatible with -D warnings).
       - name: Clippy (all portable features)
         run: cargo clippy --features whisper,silero,kokoro,pocket,chatterbox,cli,server -- -D warnings
 
@@ -109,6 +111,9 @@ jobs:
 
       - name: Unit + integration tests
         run: cargo test
+
+      - name: Tests with piper feature
+        run: cargo test --features piper
 
       - name: Build CLI binary
         run: cargo build --features cli --release
