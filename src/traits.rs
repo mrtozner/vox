@@ -2,6 +2,10 @@
 //!
 //! Vox uses a trait-based backend system inspired by `embedded-hal`.
 //! Implement these traits to plug in custom VAD, STT, or TTS engines.
+//!
+//! All backends require `Send + Sync`, so they can be shared across
+//! threads via `Arc`. STT and TTS backends use `&self` (not `&mut self`),
+//! making them safe to call concurrently from multiple tasks.
 
 use async_trait::async_trait;
 
@@ -34,7 +38,9 @@ pub trait VadBackend: Send + Sync {
 
 /// Speech-to-Text backend.
 ///
-/// Transcribes a complete [`Utterance`] into text.
+/// Transcribes a complete [`Utterance`] into text. Takes `&self`,
+/// so a single backend instance can serve concurrent requests
+/// when wrapped in `Arc`.
 #[async_trait]
 pub trait SttBackend: Send + Sync {
     /// Transcribe an audio utterance to text.
@@ -43,7 +49,10 @@ pub trait SttBackend: Send + Sync {
 
 /// Text-to-Speech backend.
 ///
-/// Synthesizes text into audio samples.
+/// Synthesizes text into audio samples. Thread-safe by design:
+/// wrap in `Arc<dyn TtsBackend>` and call from multiple tokio tasks
+/// concurrently. Backends use `spawn_blocking` internally for
+/// CPU-bound inference, keeping the async runtime responsive.
 #[async_trait]
 pub trait TtsBackend: Send + Sync {
     /// Synthesize text to audio.
