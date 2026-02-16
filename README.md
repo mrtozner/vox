@@ -14,7 +14,7 @@
 Speech-to-text, text-to-speech, and voice chat running locally. No API keys, no cloud, no data leaving your machine.
 
 ```
-Mic --> VAD (Silero) --> STT (Whisper) --> Your Code --> TTS (Kokoro) --> Speaker
+Mic --> VAD (Silero) --> STT (Whisper/Sherpa) --> Your Code --> TTS (Kokoro) --> Speaker
 ```
 
 <br>
@@ -42,8 +42,8 @@ Models auto-download on first run. Pass `-y` to skip prompts.
 
 ## What It Does
 
-- **Speech-to-Text** &mdash; Microphone transcription with Whisper (tiny to medium, English or multilingual)
-- **Text-to-Speech** &mdash; Natural synthesis with Kokoro (50+ voices), Pocket (pure Rust, edge-ready), or Chatterbox (voice cloning)
+- **Speech-to-Text** &mdash; Whisper (tiny to medium), Sherpa-ONNX (SenseVoice, Zipformer, Paraformer), or streaming Sherpa for real-time partial transcription
+- **Text-to-Speech** &mdash; Natural synthesis with Kokoro (50+ voices), Piper (multilingual), Pocket (pure Rust, edge-ready), or Chatterbox (voice cloning)
 - **Voice Chat** &mdash; Talk to any Ollama LLM and hear responses
 - **Web Interface** &mdash; Browser UI for demos and testing (`vox serve`)
 - **Python Bindings** &mdash; Same pipeline from Python via PyO3
@@ -58,10 +58,13 @@ Models auto-download on first run. Pass `-y` to skip prompts.
 ### CLI
 
 ```bash
-vox listen                              # transcribe from microphone
+vox listen                              # transcribe from microphone (Whisper)
 vox listen --model base.en              # use a larger Whisper model
+vox listen --stt-backend sherpa         # use Sherpa SenseVoice (multilingual)
+vox listen --stt-backend sherpa-streaming  # real-time streaming transcription
 vox speak "Hello from Vox!"             # text-to-speech (needs kokoro feature)
 vox speak "Hello" --voice am_adam       # pick a voice
+vox speak "Hallo" --backend piper --voice de  # multilingual TTS with Piper
 vox chat --llm llama3.2                 # voice chat with Ollama
 vox models list                         # show downloaded models
 vox models download whisper-base.en     # download a specific model
@@ -92,12 +95,17 @@ curl -X POST http://localhost:3000/v1/synthesize \
   -d '{"text": "Hello from Vox!"}'
 ```
 
-WebSocket streaming at `ws://localhost:3000/v1/listen` &mdash; send PCM f32 LE frames at 16kHz mono, receive JSON:
+WebSocket streaming at `ws://localhost:3000/v1/listen` &mdash; send PCM f32 LE frames at 16kHz mono, receive JSON events in real time:
 
 ```json
 {"type": "speech_start"}
+{"type": "partial", "text": "hello", "is_final": false, "stability": 0.5, "duration_ms": 600, "processing_time_ms": 2}
+{"type": "partial", "text": "hello world", "is_final": false, "stability": 0.5, "duration_ms": 1000, "processing_time_ms": 3}
 {"type": "transcript", "text": "hello world", "duration_ms": 1200, "processing_time_ms": 180}
+{"type": "speech_end"}
 ```
+
+When a streaming STT backend is available (sherpa-streaming model downloaded), partial results arrive incrementally as you speak. Without it, partials are omitted and you get the final transcript on speech end.
 
 ### Rust Library
 
@@ -164,7 +172,10 @@ Audio captured via `cpal`, resampled to 16kHz mono, fed frame-by-frame to VAD. O
 | | Whisper base.en | 142MB | Better accuracy |
 | | Whisper small.en | 466MB | High accuracy |
 | | Whisper medium.en | 1.5GB | Highest accuracy |
+| | Sherpa SenseVoice | 230MB | Multilingual (zh/en/ja/ko/yue) |
+| | Sherpa Streaming Zipformer | 27MB | Real-time partial results |
 | **TTS** | Kokoro | 310MB | 50+ voices |
+| | Piper | 63MB/voice | Multilingual (en/de/es/fr/zh) |
 | | Pocket | 82MB | Pure Rust, edge/embedded |
 | | Chatterbox | 350MB | Voice cloning |
 
@@ -173,6 +184,7 @@ vox models download silero-vad          # 2MB
 vox models download whisper-tiny.en     # 75MB
 vox models download kokoro              # 310MB
 vox models download kokoro-voices       # 27MB
+vox models download piper-en-us         # 63MB (+ piper-en-us-config)
 ```
 
 <br>
@@ -185,6 +197,8 @@ vox models download kokoro-voices       # 27MB
 | `server` | no | HTTP/WebSocket API server |
 | `whisper` | yes | Whisper STT via whisper-rs |
 | `silero` | yes | Silero VAD via ONNX Runtime |
+| `sherpa` | no | Sherpa-ONNX STT (SenseVoice, Zipformer, streaming) |
+| `piper` | no | Piper TTS (multilingual) |
 | `kokoro` | no | Kokoro TTS (50+ voices) |
 | `pocket` | no | Pocket TTS (pure Rust) |
 | `pocket-metal` | no | Pocket TTS with Apple Metal GPU |
