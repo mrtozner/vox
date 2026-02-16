@@ -14,7 +14,7 @@
 Speech-to-text, text-to-speech, and voice chat running locally. No API keys, no cloud, no data leaving your machine.
 
 ```
-Mic --> VAD (Silero) --> STT (Whisper/Sherpa) --> Your Code --> TTS (Kokoro) --> Speaker
+Mic --> VAD (Silero) --> STT (Whisper/Sherpa/Streaming) --> Your Code --> TTS (Kokoro/Piper/Chatterbox) --> Speaker
 ```
 
 <br>
@@ -65,6 +65,7 @@ vox listen --stt-backend sherpa-streaming  # real-time streaming transcription
 vox speak "Hello from Vox!"             # text-to-speech (needs kokoro feature)
 vox speak "Hello" --voice am_adam       # pick a voice
 vox speak "Hallo" --backend piper --voice de  # multilingual TTS with Piper
+vox speak "Hi" --backend chatterbox --voice ref.wav  # voice cloning
 vox chat --llm llama3.2                 # voice chat with Ollama
 vox models list                         # show downloaded models
 vox models download whisper-base.en     # download a specific model
@@ -221,13 +222,16 @@ vox models download piper-en-us         # 63MB (+ piper-en-us-config)
 
 ## Performance
 
-Measured on Apple M1 MacBook Pro with Whisper `tiny.en`:
+Measured on Apple M1 MacBook Pro:
 
 | Metric | Value |
 |--------|-------|
 | VAD frame latency | ~1ms per 32ms frame |
-| STT latency (3s utterance) | ~200ms |
+| Whisper STT (3s utterance) | ~200ms |
+| Streaming STT (per chunk) | <1ms (0.03x real-time) |
 | End-to-end (speech end to text) | ~250ms |
+| Piper TTS ("Hello world") | ~200ms |
+| Chatterbox TTS ("Hello world") | ~2s |
 | Memory (idle pipeline) | ~150MB |
 
 <br>
@@ -237,8 +241,10 @@ Measured on Apple M1 MacBook Pro with Whisper `tiny.en`:
 ```bash
 cargo run --example simple_listen --features whisper,silero       # mic to text
 cargo run --example vad_only --features silero                    # speech detection only
-cargo run --example voice_assistant --features whisper,silero,kokoro  # LLM voice assistant
-cargo run --example tts_speak --features kokoro                   # text to speech
+cargo run --example voice_assistant --features whisper,silero,kokoro  # voice assistant
+cargo run --example tts_speak --features kokoro                   # kokoro TTS
+cargo run --example piper_speak --features piper                  # piper TTS
+cargo run --example chatterbox_speak --features chatterbox        # voice cloning
 ```
 
 <br>
