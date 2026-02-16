@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">Vox</h1>
+  <img src="assets/vox-logo.jpg" alt="Vox" width="200">
   <p align="center"><strong>Local-first voice AI framework. Speech-to-text, text-to-speech, and voice chat.</strong></p>
 </p>
 
