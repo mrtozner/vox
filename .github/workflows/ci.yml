@@ -54,12 +54,21 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
-      - name: Install build tools (Windows)
+      - name: Cache LLVM (Windows)
         if: runner.os == 'Windows'
-        run: |
-          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
-          choco install llvm -y
-          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+        id: cache-llvm-clippy
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\LLVM
+          key: llvm-19-windows
+
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows' && steps.cache-llvm-clippy.outputs.cache-hit != 'true'
+        run: choco install llvm -y
+
+      - name: Set LIBCLANG_PATH (Windows)
+        if: runner.os == 'Windows'
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
       - name: Clippy (default features)
         run: cargo clippy -- -D warnings
@@ -102,12 +111,21 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
-      - name: Install build tools (Windows)
+      - name: Cache LLVM (Windows)
         if: runner.os == 'Windows'
-        run: |
-          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
-          choco install llvm -y
-          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+        id: cache-llvm-test
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\LLVM
+          key: llvm-19-windows
+
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows' && steps.cache-llvm-test.outputs.cache-hit != 'true'
+        run: choco install llvm -y
+
+      - name: Set LIBCLANG_PATH (Windows)
+        if: runner.os == 'Windows'
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
       - name: Unit + integration tests
         run: cargo test
