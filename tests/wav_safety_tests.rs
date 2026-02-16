@@ -166,10 +166,7 @@ struct MockStt;
 
 #[async_trait]
 impl vox::SttBackend for MockStt {
-    async fn transcribe(
-        &self,
-        audio: &vox::Utterance,
-    ) -> Result<vox::SttResult, vox::VoxError> {
+    async fn transcribe(&self, audio: &vox::Utterance) -> Result<vox::SttResult, vox::VoxError> {
         Ok(vox::SttResult {
             text: format!("mock[{}samples]", audio.audio.samples.len()),
             language: Some("en".into()),
@@ -501,8 +498,7 @@ mod wav_oversized_claim {
         match reader {
             Ok(r) => {
                 // hound reports len based on claimed size; only read a bounded number
-                let first_100: Vec<Result<i16, _>> =
-                    r.into_samples::<i16>().take(100).collect();
+                let first_100: Vec<Result<i16, _>> = r.into_samples::<i16>().take(100).collect();
                 let ok_count = first_100.iter().filter(|s| s.is_ok()).count();
                 // Only 2 real samples exist (4 bytes / 2 bytes per sample)
                 assert!(
@@ -530,8 +526,7 @@ mod wav_oversized_claim {
         match reader {
             Ok(r) => {
                 // Only read a bounded slice — hound iterator length is huge
-                let first_100: Vec<Result<i16, _>> =
-                    r.into_samples::<i16>().take(100).collect();
+                let first_100: Vec<Result<i16, _>> = r.into_samples::<i16>().take(100).collect();
                 let ok_count = first_100.iter().filter(|s| s.is_ok()).count();
                 assert!(
                     ok_count <= 4,

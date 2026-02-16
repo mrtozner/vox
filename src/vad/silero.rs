@@ -88,8 +88,7 @@ impl SileroVad {
             .commit_from_file(path)
             .map_err(|e| VoxError::Vad(format!("failed to load model: {e}")))?;
 
-        let lookback_capacity =
-            (config.pre_speech_pad_ms as usize * SAMPLE_RATE as usize) / 1000;
+        let lookback_capacity = (config.pre_speech_pad_ms as usize * SAMPLE_RATE as usize) / 1000;
 
         Ok(Self {
             session,
@@ -305,7 +304,10 @@ mod tests {
 
         // speech_buffer should be [1,2,...,10, 100,101,102].
         assert_eq!(speech_buffer.len(), 13);
-        assert_eq!(&speech_buffer[..10], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(
+            &speech_buffer[..10],
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+        );
         assert_eq!(&speech_buffer[10..], &[100.0, 101.0, 102.0]);
     }
 

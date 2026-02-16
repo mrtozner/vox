@@ -217,7 +217,9 @@ impl TtsBackend for ChatterboxBackend {
                 .map_err(|e| VoxError::Tts(format!("chatterbox mutex poisoned: {e}")))?;
 
             // Use canonical path as cache key to handle symlinks/relative paths.
-            let cache_key = reference_wav.canonicalize().unwrap_or(reference_wav.clone());
+            let cache_key = reference_wav
+                .canonicalize()
+                .unwrap_or(reference_wav.clone());
 
             // Check voice profile cache; encode on miss.
             let mut cache = voice_cache
