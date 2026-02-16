@@ -13,6 +13,7 @@ mod resampler;
     feature = "kokoro",
     feature = "pocket",
     feature = "chatterbox",
+    feature = "piper",
     feature = "tts"
 ))]
 mod playback;
@@ -25,6 +26,7 @@ pub use resampler::AudioResampler;
     feature = "kokoro",
     feature = "pocket",
     feature = "chatterbox",
+    feature = "piper",
     feature = "tts"
 ))]
 pub use playback::AudioPlayer;

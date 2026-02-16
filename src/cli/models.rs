@@ -53,6 +53,91 @@ pub const MODELS: &[ModelInfo] = &[
         size_bytes: 27_000_000,
         kind: "TTS",
     },
+    ModelInfo {
+        name: "sherpa-sensevoice",
+        filename: "sensevoice/model.int8.onnx",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx",
+        size_bytes: 230_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "sherpa-sensevoice-tokens",
+        filename: "sensevoice/tokens.txt",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt",
+        size_bytes: 300_000,
+        kind: "STT",
+    },
+    // Piper TTS voices
+    ModelInfo {
+        name: "piper-en-us",
+        filename: "piper/en_US-lessac-medium.onnx",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
+        size_bytes: 63_000_000,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "piper-en-us-config",
+        filename: "piper/en_US-lessac-medium.onnx.json",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
+        size_bytes: 5_000,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "piper-de",
+        filename: "piper/de_DE-thorsten-medium.onnx",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx",
+        size_bytes: 63_000_000,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "piper-de-config",
+        filename: "piper/de_DE-thorsten-medium.onnx.json",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json",
+        size_bytes: 5_000,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "piper-es",
+        filename: "piper/es_ES-davefx-medium.onnx",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx",
+        size_bytes: 63_000_000,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "piper-es-config",
+        filename: "piper/es_ES-davefx-medium.onnx.json",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx.json",
+        size_bytes: 5_000,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "piper-fr",
+        filename: "piper/fr_FR-siwis-medium.onnx",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx",
+        size_bytes: 63_000_000,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "piper-fr-config",
+        filename: "piper/fr_FR-siwis-medium.onnx.json",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx.json",
+        size_bytes: 5_000,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "piper-zh",
+        filename: "piper/zh_CN-huayan-medium.onnx",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx",
+        size_bytes: 63_000_000,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "piper-zh-config",
+        filename: "piper/zh_CN-huayan-medium.onnx.json",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx.json",
+        size_bytes: 5_000,
+        kind: "TTS",
+    },
 ];
 
 /// Return the models directory path (`~/.vox/models/`), creating it if needed.
@@ -182,6 +267,11 @@ pub async fn download(name: &str) -> anyhow::Result<()> {
         .progress_chars("=> "),
     );
 
+    // Ensure parent directories exist (for subdirectory filenames like sensevoice/model.int8.onnx)
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
     // Write to a temporary file first, then rename (atomic-ish)
     let tmp_dest = dest.with_extension("part");
 
@@ -298,5 +388,60 @@ pub async fn ensure_model(
              Download with:\n\
              \n  vox models download {model_name}\n"
         );
+    }
+}
+
+/// Download both SenseVoice model files and return the model directory path.
+#[cfg(feature = "sherpa")]
+pub async fn ensure_sherpa_sensevoice(yes: bool) -> anyhow::Result<PathBuf> {
+    let model_path = ensure_model("sherpa-sensevoice", "sensevoice/model.int8.onnx", yes).await?;
+    ensure_model("sherpa-sensevoice-tokens", "sensevoice/tokens.txt", yes).await?;
+    // Return the parent directory (sensevoice/)
+    Ok(model_path.parent().unwrap().to_path_buf())
+}
+
+/// Download both Piper voice model files (.onnx + .onnx.json) and return the config path.
+///
+/// `voice_name` is the registry prefix (e.g. "piper-en-us", "piper-de").
+/// Returns the path to the `.onnx.json` config file.
+#[cfg(feature = "piper")]
+pub async fn ensure_piper_voice(voice_name: &str, yes: bool) -> anyhow::Result<PathBuf> {
+    let model_registry_name = voice_name;
+    let config_registry_name = format!("{voice_name}-config");
+
+    // Look up the model entry to get the filename
+    let model_info = MODELS
+        .iter()
+        .find(|m| m.name == model_registry_name)
+        .ok_or_else(|| anyhow::anyhow!("Unknown piper voice: '{voice_name}'"))?;
+    let config_info = MODELS
+        .iter()
+        .find(|m| m.name == config_registry_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!("Unknown piper voice config: '{config_registry_name}'")
+        })?;
+
+    // Download both files
+    ensure_model(model_registry_name, model_info.filename, yes).await?;
+    let config_path = ensure_model(&config_registry_name, config_info.filename, yes).await?;
+
+    Ok(config_path)
+}
+
+/// Map a short voice alias to a piper model registry name.
+///
+/// Supports shorthand like "en", "de", "fr", etc. as well as the full
+/// registry names like "piper-en-us".
+#[cfg(feature = "piper")]
+pub fn piper_voice_alias(voice: &str) -> String {
+    let lower = voice.to_lowercase();
+    match lower.as_str() {
+        "en" | "en-us" | "english" => "piper-en-us".to_string(),
+        "de" | "german" | "deutsch" => "piper-de".to_string(),
+        "es" | "spanish" | "espanol" => "piper-es".to_string(),
+        "fr" | "french" | "francais" => "piper-fr".to_string(),
+        "zh" | "chinese" | "mandarin" => "piper-zh".to_string(),
+        _ if lower.starts_with("piper-") => lower,
+        _ => "piper-en-us".to_string(), // default to English
     }
 }

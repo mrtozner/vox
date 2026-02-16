@@ -211,7 +211,6 @@ async fn load_tts(
         match vox::tts::KokoroBackend::new(&model_path, &voices_path).await {
             Ok(backend) => {
                 info!("loaded kokoro TTS backend");
-                // Extract model name from filename: "kokoro-v1.0.onnx" -> "kokoro v1.0"
                 let model_name = model_path
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -220,27 +219,53 @@ async fn load_tts(
                 let model_size = std::fs::metadata(&model_path)
                     .ok()
                     .map(|m| m.len() / (1024 * 1024));
-                (
+                return (
                     Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
                     Some(model_name),
                     model_size,
-                )
+                );
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to load kokoro TTS backend");
-                (None, None, None)
             }
         }
     } else {
         tracing::warn!(
-            "kokoro model files not found in {}, TTS disabled",
+            "kokoro model files not found in {}, trying piper fallback",
             models_dir.display()
         );
-        (None, None, None)
     }
+
+    // Fallback: try Piper if Kokoro is unavailable
+    #[cfg(feature = "piper")]
+    {
+        if let Some(result) = try_load_piper(models_dir) {
+            return result;
+        }
+    }
+
+    (None, None, None)
 }
 
-#[cfg(not(feature = "kokoro"))]
+#[cfg(all(feature = "piper", not(feature = "kokoro")))]
+async fn load_tts(
+    models_dir: &std::path::Path,
+) -> (
+    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<String>,
+    Option<u64>,
+) {
+    if let Some(result) = try_load_piper(models_dir) {
+        return result;
+    }
+    tracing::warn!(
+        "no piper model found in {}, TTS disabled",
+        models_dir.display()
+    );
+    (None, None, None)
+}
+
+#[cfg(not(any(feature = "kokoro", feature = "piper")))]
 async fn load_tts(
     models_dir: &std::path::Path,
 ) -> (
@@ -249,8 +274,59 @@ async fn load_tts(
     Option<u64>,
 ) {
     tracing::warn!(
-        "TTS disabled (compiled without 'kokoro' feature); models dir: {}",
+        "TTS disabled (compiled without 'kokoro' or 'piper' feature); models dir: {}",
         models_dir.display()
     );
     (None, None, None)
+}
+
+/// Scan models_dir/piper/ for any *.onnx.json config files and try to load the first valid one.
+#[cfg(feature = "piper")]
+fn try_load_piper(
+    models_dir: &std::path::Path,
+) -> Option<(
+    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<String>,
+    Option<u64>,
+)> {
+    let piper_dir = models_dir.join("piper");
+    if !piper_dir.exists() {
+        return None;
+    }
+
+    let entries = std::fs::read_dir(&piper_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "json")
+            && path.to_str().is_some_and(|s| s.ends_with(".onnx.json"))
+        {
+            match vox::tts::PiperBackend::new(&path) {
+                Ok(backend) => {
+                    info!(model = %path.display(), "loaded piper TTS backend");
+                    let model_name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| {
+                            // "en_US-lessac-medium.onnx" -> "piper en_US-lessac-medium"
+                            format!("piper {}", s.strip_suffix(".onnx").unwrap_or(s))
+                        })
+                        .unwrap_or_else(|| "piper".to_string());
+                    // Size of the .onnx model file (not the json config)
+                    let onnx_path = path.with_extension(""); // strips .json -> .onnx
+                    let model_size = std::fs::metadata(&onnx_path)
+                        .ok()
+                        .map(|m| m.len() / (1024 * 1024));
+                    return Some((
+                        Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
+                        Some(model_name),
+                        model_size,
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(model = %path.display(), error = %e, "failed to load piper model");
+                }
+            }
+        }
+    }
+    None
 }

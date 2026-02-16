@@ -32,17 +32,23 @@ enum Commands {
         /// Whisper model size (tiny.en, base.en, small.en)
         #[arg(long, default_value = "tiny.en")]
         model: String,
+        /// STT backend to use (whisper or sherpa)
+        #[arg(long, default_value = "whisper")]
+        stt_backend: String,
         /// Auto-download missing models without prompting
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// Speak text aloud using Kokoro TTS
+    /// Speak text aloud using TTS (kokoro or piper backend)
     Speak {
         /// Text to synthesize and play
         text: String,
-        /// TTS voice name (e.g. af_heart, am_adam, bf_emma)
+        /// TTS voice name (e.g. af_heart for kokoro, en/de/fr for piper)
         #[arg(long, default_value = "af_heart")]
         voice: String,
+        /// TTS backend to use (kokoro or piper)
+        #[arg(long, default_value = "kokoro")]
+        backend: String,
         /// Auto-download missing models without prompting
         #[arg(long, short = 'y')]
         yes: bool,
@@ -102,11 +108,11 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Listen { model, yes } => {
-            cli::listen::run(&model, yes).await?;
+        Commands::Listen { model, stt_backend, yes } => {
+            cli::listen::run(&model, &stt_backend, yes).await?;
         }
-        Commands::Speak { text, voice, yes } => {
-            cli::speak::run(&text, &voice, yes).await?;
+        Commands::Speak { text, voice, backend, yes } => {
+            cli::speak::run(&text, &voice, &backend, yes).await?;
         }
         Commands::Chat {
             model,

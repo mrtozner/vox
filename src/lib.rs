@@ -50,6 +50,9 @@ pub use vad::{SileroVad, VadConfig};
 #[cfg(feature = "whisper")]
 pub use stt::{WhisperBackend, WhisperConfig, WhisperModel};
 
+#[cfg(feature = "sherpa")]
+pub use stt::{SherpaBackend, SherpaConfig, SherpaModel};
+
 #[cfg(feature = "kokoro")]
 pub use tts::{KokoroBackend, KokoroConfig};
 
@@ -59,10 +62,14 @@ pub use tts::{PocketTtsBackend, PocketTtsConfig};
 #[cfg(feature = "chatterbox")]
 pub use tts::{ChatterboxBackend, ChatterboxConfig};
 
+#[cfg(feature = "piper")]
+pub use tts::{PiperBackend, PiperConfig};
+
 #[cfg(any(
     feature = "kokoro",
     feature = "pocket",
     feature = "chatterbox",
+    feature = "piper",
     feature = "tts"
 ))]
 pub use audio::AudioPlayer;

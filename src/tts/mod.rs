@@ -14,6 +14,9 @@ mod pocket;
 #[cfg(feature = "chatterbox")]
 mod chatterbox;
 
+#[cfg(feature = "piper")]
+mod piper;
+
 #[cfg(feature = "kokoro")]
 pub use kokoro::{KokoroBackend, KokoroConfig};
 
@@ -22,3 +25,6 @@ pub use pocket::{PocketTtsBackend, PocketTtsConfig};
 
 #[cfg(feature = "chatterbox")]
 pub use chatterbox::{ChatterboxBackend, ChatterboxConfig};
+
+#[cfg(feature = "piper")]
+pub use self::piper::{PiperBackend, PiperConfig};

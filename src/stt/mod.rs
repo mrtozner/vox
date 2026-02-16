@@ -8,3 +8,9 @@ mod whisper;
 
 #[cfg(feature = "whisper")]
 pub use self::whisper::{WhisperBackend, WhisperConfig, WhisperModel};
+
+#[cfg(feature = "sherpa")]
+mod sherpa;
+
+#[cfg(feature = "sherpa")]
+pub use self::sherpa::{SherpaBackend, SherpaConfig, SherpaModel};

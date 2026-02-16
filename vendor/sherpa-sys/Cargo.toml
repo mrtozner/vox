@@ -1,0 +1,11 @@
+[package]
+name = "sherpa-sys"
+version = "0.1.0"
+edition = "2024"
+description = "FFI bindings to sherpa-onnx C API for speech recognition"
+license = "MIT OR Apache-2.0"
+publish = false
+links = "sherpa-onnx-c-api"
+
+[build-dependencies]
+# No build deps needed — we'll use manual download scripts + cargo:rustc-link directives

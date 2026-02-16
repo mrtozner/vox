@@ -1,5 +1,6 @@
 [workspace]
 members = ["python"]
+exclude = ["vendor/sherpa-sys"]
 
 [package]
 name = "vox"
@@ -32,6 +33,8 @@ ndarray = { version = "0.16", optional = true }
 rodio = { version = "0.20", optional = true }
 pocket-tts = { version = "0.6", optional = true }
 chatterbox-rs = { path = "vendor/cbx", optional = true }
+piper-rs = { path = "vendor/piper-rs", optional = true }
+sherpa-sys = { path = "vendor/sherpa-sys", optional = true }
 candle-core = { version = "0.9", optional = true }
 hound = "3.5"
 tracing = "0.1"
@@ -59,7 +62,8 @@ default = ["whisper", "silero"]
 whisper = ["dep:whisper-rs"]
 silero = ["dep:ort", "dep:ndarray"]
 kokoro = ["dep:kokoro-tts", "dep:ort", "dep:rodio"]
-piper = ["dep:ort"]  # TODO: piper TTS backend not yet implemented
+sherpa = ["dep:sherpa-sys"]
+piper = ["dep:piper-rs", "dep:ort", "dep:rodio"]
 tts = ["dep:rodio"]
 pocket = ["dep:pocket-tts", "dep:candle-core", "dep:rodio"]
 pocket-metal = ["pocket", "pocket-tts/metal", "candle-core/metal"]
@@ -156,3 +160,7 @@ required-features = ["pocket"]
 [[example]]
 name = "chatterbox_speak"
 required-features = ["chatterbox"]
+
+[[example]]
+name = "piper_speak"
+required-features = ["piper"]
