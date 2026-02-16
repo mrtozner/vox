@@ -29,7 +29,7 @@ jobs:
             artifact: vox
             archive: tar.gz
 
-          - os: macos-13
+          - os: macos-14
             target: x86_64-apple-darwin
             artifact: vox
             archive: tar.gz
@@ -70,12 +70,21 @@ jobs:
           echo "CMAKE_CXX_FLAGS=-march=armv8.5-a" >> $GITHUB_ENV
 
       # ── Windows dependencies ─────────────────────────────────────────
-      - name: Install build tools (Windows)
+      - name: Cache LLVM (Windows)
         if: runner.os == 'Windows'
-        run: |
-          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
-          choco install llvm -y
-          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\LLVM
+          key: llvm-19-windows
+
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
+        run: choco install llvm -y
+
+      - name: Set LIBCLANG_PATH (Windows)
+        if: runner.os == 'Windows'
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
       # ── Build ────────────────────────────────────────────────────────
       - name: Build release binary
