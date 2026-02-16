@@ -104,3 +104,24 @@ pub struct OllamaModelInfo {
     pub name: String,
     pub size: Option<u64>,
 }
+
+/// Request from client on the `/v1/speak` WebSocket.
+#[derive(Debug, Deserialize)]
+pub struct SpeakWsRequest {
+    pub text: String,
+    pub voice: Option<String>,
+}
+
+/// JSON events sent from server to client on the `/v1/speak` WebSocket.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+pub enum TtsWsEvent {
+    #[serde(rename = "tts_start")]
+    Start {},
+    #[serde(rename = "tts_progress")]
+    Progress { chunk: usize, progress: f32 },
+    #[serde(rename = "tts_done")]
+    Done { chunks: usize },
+    #[serde(rename = "error")]
+    Error { message: String },
+}

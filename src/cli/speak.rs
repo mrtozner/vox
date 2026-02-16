@@ -65,8 +65,9 @@ fn play_streaming(
             sample_rate: chunk.sample_rate,
             channels: 1,
         };
-        player.play_blocking(&audio)?;
+        player.append(&audio)?;
     }
+    player.wait_until_done()?;
     println!("Done ({chunk_count} chunks).");
     Ok(())
 }

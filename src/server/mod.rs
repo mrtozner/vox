@@ -192,6 +192,7 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/v1/stats", get(handlers::stats))
         .route("/health", get(handlers::health))
         .route("/v1/listen", get(ws::listen_ws))
+        .route("/v1/speak", get(ws::speak_ws))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB max request body
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -213,6 +214,7 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
     println!("    GET  /v1/models      — list loaded backends");
     println!("    GET  /v1/stats       — server statistics");
     println!("    WS   /v1/listen       — real-time voice transcription");
+    println!("    WS   /v1/speak        — streaming text-to-speech");
     println!("    GET  /health         — health check");
     println!();
 

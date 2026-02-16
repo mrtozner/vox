@@ -497,7 +497,9 @@ body {
         <div class="speak-row">
             <select id="voiceSelect"><option value="">Loading voices...</option></select>
             <button class="btn" id="synthesizeBtn">Synthesize</button>
+            <button class="btn" id="streamSpeakBtn">Stream</button>
         </div>
+        <div id="streamProgress" style="font-size:12px;color:var(--text-muted);min-height:18px;"></div>
         <div class="audio-player" id="audioPlayer"></div>
     </div>
 </div>
@@ -966,6 +968,87 @@ async function synthesize() {
     }
 }
 
+// ─── 7a. STREAMING TTS ──────────────────────────────────────
+async function streamSpeak() {
+    const text = $('speakText').value.trim();
+    if (!text) return;
+
+    const voice = $('voiceSelect').value;
+    const btn = $('streamSpeakBtn');
+    const progress = $('streamProgress');
+
+    btn.disabled = true;
+    btn.textContent = 'Streaming...';
+    progress.textContent = 'Connecting...';
+    $('audioPlayer').innerHTML = '';
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(proto + '//' + location.host + '/v1/speak');
+    ws.binaryType = 'arraybuffer';
+
+    const audioChunks = [];
+    let playbackCtx = null;
+    let nextStartTime = 0;
+    let chunksReceived = 0;
+
+    ws.onopen = () => {
+        const payload = { text };
+        if (voice) payload.voice = voice;
+        ws.send(JSON.stringify(payload));
+        progress.textContent = 'Waiting for audio...';
+    };
+
+    ws.onmessage = async (e) => {
+        if (e.data instanceof ArrayBuffer) {
+            chunksReceived++;
+            if (!playbackCtx) {
+                playbackCtx = new AudioContext();
+                nextStartTime = playbackCtx.currentTime;
+            }
+            try {
+                const audioBuffer = await playbackCtx.decodeAudioData(e.data.slice(0));
+                const source = playbackCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(playbackCtx.destination);
+                const startAt = Math.max(nextStartTime, playbackCtx.currentTime);
+                source.start(startAt);
+                nextStartTime = startAt + audioBuffer.duration;
+            } catch (err) {
+                console.warn('Failed to decode audio chunk', err);
+            }
+        } else {
+            try {
+                const data = JSON.parse(e.data);
+                switch (data.type) {
+                    case 'tts_start':
+                        progress.textContent = 'Synthesizing...';
+                        break;
+                    case 'tts_progress':
+                        progress.textContent = 'Chunk ' + data.chunk + ' (' + Math.round(data.progress * 100) + '%)';
+                        break;
+                    case 'tts_done':
+                        progress.textContent = 'Done — ' + data.chunks + ' chunk(s) streamed';
+                        break;
+                    case 'error':
+                        showToast(data.message, 'error');
+                        progress.textContent = 'Error';
+                        break;
+                }
+            } catch (_) {}
+        }
+    };
+
+    ws.onerror = () => {
+        showToast('Streaming TTS connection failed', 'error');
+        progress.textContent = '';
+    };
+
+    ws.onclose = () => {
+        btn.disabled = false;
+        btn.textContent = 'Stream';
+    };
+}
+
 // ─── 7b. OLLAMA MODELS ──────────────────────────────────────
 async function loadOllamaModels() {
     if (S.ollamaModelsLoaded) return;
@@ -1287,6 +1370,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Speak tab
     $('synthesizeBtn').addEventListener('click', synthesize);
+    $('streamSpeakBtn').addEventListener('click', streamSpeak);
 
     // Chat tab
     $('chatSendBtn').addEventListener('click', () => sendChat($('chatInput').value.trim()));

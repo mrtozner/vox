@@ -12,6 +12,8 @@ use crate::types::AudioChunk;
 enum PlaybackCommand {
     Play(AudioChunk),
     PlayBlocking(AudioChunk, mpsc::Sender<Result<(), String>>),
+    Append(AudioChunk, mpsc::Sender<Result<(), String>>),
+    WaitUntilDone(mpsc::Sender<Result<(), String>>),
     Stop,
 }
 
@@ -46,6 +48,8 @@ impl AudioPlayer {
                 }
             };
 
+            let mut persistent_sink: Option<rodio::Sink> = None;
+
             while let Ok(cmd) = rx.recv() {
                 match cmd {
                     PlaybackCommand::Play(audio) => {
@@ -56,7 +60,6 @@ impl AudioPlayer {
                                 audio.samples,
                             );
                             sink.append(source);
-                            // sink is detached -- plays in background
                             sink.detach();
                         }
                     }
@@ -75,6 +78,30 @@ impl AudioPlayer {
                             Err(e) => Err(format!("failed to create audio sink: {e}")),
                         };
                         let _ = done_tx.send(result);
+                    }
+                    PlaybackCommand::Append(audio, done_tx) => {
+                        let result = (|| {
+                            if persistent_sink.is_none() {
+                                let new_sink = rodio::Sink::try_new(&handle)
+                                    .map_err(|e| format!("failed to create audio sink: {e}"))?;
+                                persistent_sink = Some(new_sink);
+                            }
+                            let sink = persistent_sink.as_ref().unwrap();
+                            let source = rodio::buffer::SamplesBuffer::new(
+                                audio.channels,
+                                audio.sample_rate,
+                                audio.samples,
+                            );
+                            sink.append(source);
+                            Ok(())
+                        })();
+                        let _ = done_tx.send(result);
+                    }
+                    PlaybackCommand::WaitUntilDone(done_tx) => {
+                        if let Some(sink) = persistent_sink.take() {
+                            sink.sleep_until_end();
+                        }
+                        let _ = done_tx.send(Ok(()));
                     }
                     PlaybackCommand::Stop => break,
                 }
@@ -107,6 +134,33 @@ impl AudioPlayer {
         self.tx
             .send(PlaybackCommand::Play(audio.clone()))
             .map_err(|_| VoxError::Audio("playback thread died".into()))
+    }
+
+    /// Append audio to the persistent sink for gapless streaming playback.
+    ///
+    /// Creates a sink on the first call and reuses it for subsequent calls.
+    /// Audio chunks are queued and played back-to-back without gaps.
+    pub fn append(&self, audio: &AudioChunk) -> Result<(), VoxError> {
+        let (done_tx, done_rx) = mpsc::channel();
+        self.tx
+            .send(PlaybackCommand::Append(audio.clone(), done_tx))
+            .map_err(|_| VoxError::Audio("playback thread died".into()))?;
+        done_rx
+            .recv()
+            .map_err(|_| VoxError::Audio("playback thread died".into()))?
+            .map_err(VoxError::Audio)
+    }
+
+    /// Block until all audio appended via [`append`](Self::append) has finished playing.
+    pub fn wait_until_done(&self) -> Result<(), VoxError> {
+        let (done_tx, done_rx) = mpsc::channel();
+        self.tx
+            .send(PlaybackCommand::WaitUntilDone(done_tx))
+            .map_err(|_| VoxError::Audio("playback thread died".into()))?;
+        done_rx
+            .recv()
+            .map_err(|_| VoxError::Audio("playback thread died".into()))?
+            .map_err(VoxError::Audio)
     }
 }
 
