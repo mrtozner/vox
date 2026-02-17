@@ -460,7 +460,7 @@ async fn send_tts_event(
     let json = serde_json::to_string(event).unwrap_or_default();
     tx.send(Message::Text(json.into()))
         .await
-        .map_err(|e| axum::Error::new(e))
+        .map_err(axum::Error::new)
 }
 
 fn encode_wav_chunk(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, String> {
