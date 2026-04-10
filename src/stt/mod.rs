@@ -9,6 +9,12 @@ mod whisper;
 #[cfg(feature = "whisper")]
 pub use self::whisper::{WhisperBackend, WhisperConfig, WhisperModel};
 
+#[cfg(feature = "distil-whisper")]
+mod distil_whisper;
+
+#[cfg(feature = "distil-whisper")]
+pub use self::distil_whisper::{DistilWhisperBackend, DistilWhisperConfig, DistilWhisperModel};
+
 #[cfg(feature = "sherpa")]
 mod sherpa;
 

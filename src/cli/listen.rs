@@ -1,6 +1,9 @@
 //! Handler for `vox listen` — real-time microphone transcription.
 
-use super::models::{ensure_model, model_filename, whisper_download_name};
+use super::models::{
+    distil_whisper_download_name, distil_whisper_model_filename, ensure_model, model_filename,
+    whisper_download_name,
+};
 use vox::{SileroVad, Vox};
 
 /// Run the listen command.
@@ -12,6 +15,14 @@ pub async fn run(model: &str, stt_backend: &str, yes: bool) -> anyhow::Result<()
 
     match stt_backend {
         "whisper" => run_whisper(model, vad, yes).await,
+        #[cfg(feature = "distil-whisper")]
+        "distil-whisper" => run_distil_whisper(model, vad, yes).await,
+        #[cfg(not(feature = "distil-whisper"))]
+        "distil-whisper" => anyhow::bail!(
+            "Distil-Whisper STT requires the 'distil-whisper' feature.\n\n\
+             Rebuild with:\n\
+             \n  cargo build --features cli,distil-whisper --release\n"
+        ),
         #[cfg(feature = "sherpa")]
         "sherpa" => run_sherpa(vad, yes).await,
         #[cfg(not(feature = "sherpa"))]
@@ -29,7 +40,7 @@ pub async fn run(model: &str, stt_backend: &str, yes: bool) -> anyhow::Result<()
              \n  cargo build --features cli,sherpa --release\n"
         ),
         other => anyhow::bail!(
-            "Unknown STT backend: '{other}'. Use 'whisper', 'sherpa', or 'sherpa-streaming'."
+            "Unknown STT backend: '{other}'. Use 'whisper', 'distil-whisper', 'sherpa', or 'sherpa-streaming'."
         ),
     }
 }
@@ -41,6 +52,28 @@ async fn run_whisper(model: &str, vad: SileroVad, yes: bool) -> anyhow::Result<(
 
     println!("Loading Whisper model ({model})...");
     let stt = vox::WhisperBackend::from_model(&whisper_path)?;
+
+    let vox = Vox::builder()
+        .vad(vad)
+        .stt(stt)
+        .on_utterance(|result, _ctx| {
+            println!("[transcript] {}", result.text);
+        })
+        .build()?;
+
+    println!("Listening on default microphone... (Ctrl+C to stop)\n");
+    vox.listen().await?;
+    Ok(())
+}
+
+#[cfg(feature = "distil-whisper")]
+async fn run_distil_whisper(model: &str, vad: SileroVad, yes: bool) -> anyhow::Result<()> {
+    let distil_whisper_file = distil_whisper_model_filename(model);
+    let distil_whisper_name = distil_whisper_download_name(model);
+    let distil_whisper_path = ensure_model(&distil_whisper_name, &distil_whisper_file, yes).await?;
+
+    println!("Loading Distil-Whisper model ({model})...");
+    let stt = vox::DistilWhisperBackend::from_model(&distil_whisper_path)?;
 
     let vox = Vox::builder()
         .vad(vad)

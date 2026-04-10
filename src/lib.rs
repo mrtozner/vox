@@ -29,6 +29,7 @@
 pub mod audio;
 pub mod engine;
 pub mod error;
+pub mod model_cache;
 pub mod stt;
 pub mod traits;
 pub mod tts;
@@ -38,6 +39,7 @@ pub mod vad;
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
+pub use model_cache::{CacheKey, CacheStats, ModelCache};
 pub use traits::{
     StreamingSttBackend, StreamingTtsBackend, SttBackend, SttSession, TtsBackend, TtsChunk,
     TtsSession, VadBackend, VadEvent,
@@ -52,6 +54,9 @@ pub use vad::{SileroVad, VadConfig};
 
 #[cfg(feature = "whisper")]
 pub use stt::{WhisperBackend, WhisperConfig, WhisperModel};
+
+#[cfg(feature = "distil-whisper")]
+pub use stt::{DistilWhisperBackend, DistilWhisperConfig, DistilWhisperModel};
 
 #[cfg(feature = "sherpa")]
 pub use stt::{SherpaBackend, SherpaConfig, SherpaModel};

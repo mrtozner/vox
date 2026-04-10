@@ -364,3 +364,27 @@ pub async fn ollama_models(
 
     Ok(Json(OllamaModelsResponse { models }))
 }
+
+/// GET /v1/cache/stats — model cache statistics.
+pub async fn cache_stats(State(state): State<AppState>) -> impl IntoResponse {
+    if let Some(cache) = &state.model_cache {
+        let stats = cache.stats();
+        Json(CacheStatsResponse {
+            enabled: true,
+            entries: stats.entries,
+            max_entries: stats.max_entries,
+            hits: stats.hits,
+            misses: stats.misses,
+            hit_rate: stats.hit_rate,
+        })
+    } else {
+        Json(CacheStatsResponse {
+            enabled: false,
+            entries: 0,
+            max_entries: 0,
+            hits: 0,
+            misses: 0,
+            hit_rate: 0.0,
+        })
+    }
+}

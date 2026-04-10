@@ -32,7 +32,7 @@ enum Commands {
         /// Whisper model size (tiny.en, base.en, small.en)
         #[arg(long, default_value = "tiny.en")]
         model: String,
-        /// STT backend to use (whisper, sherpa, or sherpa-streaming)
+        /// STT backend to use (whisper, distil-whisper, sherpa, or sherpa-streaming)
         #[arg(long, default_value = "whisper")]
         stt_backend: String,
         /// Auto-download missing models without prompting
@@ -71,6 +71,16 @@ enum Commands {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Test audio I/O (record and playback)
+    Test,
+    /// Measure STT/TTS/VAD latency and performance
+    Benchmark {
+        /// Auto-download missing models without prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Interactive configuration wizard
+    Config,
     /// Start the HTTP API server
     #[cfg(feature = "server")]
     Serve {
@@ -80,6 +90,9 @@ enum Commands {
         /// Host to bind to
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
+        /// Enable model caching (reduces cold start latency)
+        #[arg(long)]
+        cache_models: bool,
     },
     /// Manage voice models (download, list, find paths)
     Models {
@@ -138,9 +151,22 @@ async fn main() -> anyhow::Result<()> {
         } => {
             cli::chat::run(&model, &llm, &ollama_host, yes).await?;
         }
+        Commands::Test => {
+            cli::test::run().await?;
+        }
+        Commands::Benchmark { yes } => {
+            cli::benchmark::run(yes).await?;
+        }
+        Commands::Config => {
+            cli::config::run().await?;
+        }
         #[cfg(feature = "server")]
-        Commands::Serve { host, port } => {
-            cli::serve::run(&host, port).await?;
+        Commands::Serve {
+            host,
+            port,
+            cache_models,
+        } => {
+            cli::serve::run(&host, port, cache_models).await?;
         }
         Commands::Models { action } => match action {
             ModelAction::List => {

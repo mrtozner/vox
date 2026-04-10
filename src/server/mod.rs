@@ -38,6 +38,7 @@ pub struct ServerState {
     pub stt_model_size: Option<u64>,
     pub tts_model_name: Option<String>,
     pub tts_model_size: Option<u64>,
+    pub model_cache: Option<vox::ModelCache>,
 }
 
 /// Cumulative request counters.
@@ -52,7 +53,10 @@ pub struct ServerStats {
 /// Attempts to load STT (Whisper) and TTS (Kokoro) backends from
 /// `~/.vox/models/`. Missing backends are tolerated -- the corresponding
 /// endpoints return 503 until models are available.
-pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
+///
+/// # Arguments
+/// - `cache_models`: Enable model caching (disabled by default for backwards compatibility)
+pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()> {
     let models_dir = dirs::data_dir()
         .map(|d| d.join("vox").join("models"))
         .unwrap_or_else(|| {
@@ -61,6 +65,14 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
                 .join(".vox")
                 .join("models")
         });
+
+    // Initialize model cache if enabled
+    let model_cache = if cache_models {
+        info!("model caching enabled (--cache-models)");
+        Some(vox::ModelCache::new(3)) // LRU cache with max 3 models
+    } else {
+        None
+    };
 
     #[cfg(feature = "whisper")]
     let (stt, stt_model_name, stt_model_size): (
@@ -179,6 +191,7 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         stt_model_size,
         tts_model_name,
         tts_model_size,
+        model_cache,
     });
 
     let app = Router::new()
@@ -190,6 +203,7 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/v1/synthesize", post(handlers::synthesize))
         .route("/v1/models", get(handlers::models))
         .route("/v1/stats", get(handlers::stats))
+        .route("/v1/cache/stats", get(handlers::cache_stats))
         .route("/health", get(handlers::health))
         .route("/v1/listen", get(ws::listen_ws))
         .route("/v1/speak", get(ws::speak_ws))
@@ -213,6 +227,7 @@ pub async fn run(host: &str, port: u16) -> anyhow::Result<()> {
     println!("    POST /v1/synthesize  — text-to-speech (JSON body)");
     println!("    GET  /v1/models      — list loaded backends");
     println!("    GET  /v1/stats       — server statistics");
+    println!("    GET  /v1/cache/stats — model cache statistics");
     println!("    WS   /v1/listen       — real-time voice transcription");
     println!("    WS   /v1/speak        — streaming text-to-speech");
     println!("    GET  /health         — health check");

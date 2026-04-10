@@ -4,7 +4,7 @@ exclude = ["vendor/sherpa-sys"]
 
 [package]
 name = "vox"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 authors = ["Mert Ozoner"]
 description = "Local-first voice AI framework. Whisper STT, Kokoro/Pocket TTS, Silero VAD. Zero cloud dependencies."
@@ -49,6 +49,7 @@ indicatif = { version = "0.17", optional = true }
 reqwest = { version = "0.12", features = ["stream", "json"], optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
 tokio-util = { version = "0.7", features = ["io"], optional = true }
+toml = { version = "0.8", optional = true }
 
 # Server dependencies
 axum = { version = "0.8", optional = true, features = ["ws"] }
@@ -60,6 +61,7 @@ serde_json = { version = "1", optional = true }
 [features]
 default = ["whisper", "silero"]
 whisper = ["dep:whisper-rs"]
+distil-whisper = ["whisper"]
 silero = ["dep:ort", "dep:ndarray"]
 kokoro = ["dep:kokoro-tts", "dep:ort", "dep:rodio"]
 sherpa = ["dep:sherpa-sys"]
@@ -72,7 +74,7 @@ chatterbox = ["dep:chatterbox-rs", "dep:ort", "dep:ndarray", "dep:rodio"]
 chatterbox-coreml = ["chatterbox", "chatterbox-rs/coreml"]
 cli = [
     "dep:clap", "dep:dirs", "dep:indicatif", "dep:reqwest",
-    "dep:tracing-subscriber", "dep:tokio-util",
+    "dep:tracing-subscriber", "dep:tokio-util", "dep:toml",
     "dep:serde", "dep:serde_json",
     "whisper", "silero",
 ]

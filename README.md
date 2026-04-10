@@ -62,12 +62,16 @@ vox listen                              # transcribe from microphone (Whisper)
 vox listen --model base.en              # use a larger Whisper model
 vox listen --stt-backend sherpa         # use Sherpa SenseVoice (multilingual)
 vox listen --stt-backend sherpa-streaming  # real-time streaming transcription
+vox listen --stt-backend distil-whisper # use Distil-Whisper (6x faster)
 vox speak "Hello from Vox!"             # text-to-speech (needs kokoro feature)
 vox speak "Hello" --voice am_adam       # pick a voice
 vox speak "Hallo" --backend piper --voice de  # multilingual TTS with Piper
 vox speak "Hi" --backend pocket          # pure Rust TTS (edge-ready, no external deps)
 vox speak "Hi" --backend chatterbox --voice ref.wav  # voice cloning
 vox chat --llm llama3.2                 # voice chat with Ollama
+vox test                                # run audio I/O diagnostics
+vox benchmark                           # benchmark STT/TTS performance
+vox config                              # interactive setup wizard
 vox models list                         # show downloaded models
 vox models download whisper-base.en     # download a specific model
 vox models download kokoro --force      # force re-download if corrupted
@@ -176,11 +180,17 @@ Audio captured via `cpal`, resampled to 16kHz mono, fed frame-by-frame to VAD. O
 | | Whisper base.en | 142MB | Better accuracy |
 | | Whisper small.en | 466MB | High accuracy |
 | | Whisper medium.en | 1.5GB | Highest accuracy |
+| | Distil-Whisper tiny.en | 75MB | 6x faster than Whisper |
+| | Distil-Whisper base.en | 142MB | 6x faster, high accuracy |
+| | Distil-Whisper tiny.en-int8 | 19MB | Quantized, 4x smaller |
+| | Distil-Whisper base.en-int8 | 35MB | Quantized, 4x smaller |
 | | Sherpa SenseVoice | 230MB | Multilingual (zh/en/ja/ko/yue) |
 | | Sherpa Streaming Zipformer | 27MB | Real-time partial results |
 | **TTS** | Kokoro | 310MB | 50+ voices |
+| | Kokoro INT8 | 77MB | Quantized, 4x smaller |
 | | Piper | 63MB/voice | Multilingual (en/de/es/fr/zh) |
 | | Pocket | 82MB | Pure Rust, edge/embedded |
+| | Pocket INT8 | 20MB | Quantized, edge-optimized |
 | | Chatterbox | 350MB | Voice cloning |
 
 ```bash
@@ -253,6 +263,110 @@ Pocket is ideal when you need:
 
 <br>
 
+## Performance Optimizations
+
+**Distil-Whisper Backend**
+
+Distil-Whisper is a distilled version of Whisper that runs 6x faster with minimal accuracy loss. Perfect for real-time applications and resource-constrained devices:
+
+```bash
+# Install with distil-whisper support
+cargo install --git https://github.com/mrtozner/vox --features cli,distil-whisper
+
+# Use distil-whisper for transcription
+vox listen --stt-backend distil-whisper
+vox listen --stt-backend distil-whisper --model base.en
+```
+
+Distil-Whisper is recommended when you need:
+- Real-time transcription on CPU
+- Lower latency (<100ms for short utterances)
+- Raspberry Pi deployment
+- Battery-powered devices
+
+**INT8 Quantization**
+
+Models can be quantized to INT8 for 4x smaller file sizes and faster inference with minimal quality loss:
+
+```bash
+# Quantized models are automatically downloaded when available
+vox models download whisper-base.en-int8    # 35MB vs 142MB
+vox models download kokoro-int8             # 77MB vs 310MB
+
+# Use quantized model
+vox listen --model base.en-int8
+vox speak "Hello" --quantize int8
+```
+
+Benefits:
+- 4x smaller download and disk usage
+- 2-3x faster inference on CPU
+- Lower memory footprint
+- Ideal for Raspberry Pi and edge devices
+
+**Model Caching**
+
+In server mode, models are cached after first load, eliminating cold start latency:
+
+```bash
+vox serve --port 3000 --cache-models
+```
+
+First request loads the model (~2s), subsequent requests are instant. Cache persists until server restart.
+
+<br>
+
+## Raspberry Pi Deployment
+
+Vox runs on Raspberry Pi 4 and newer. Recommended configuration for real-time performance:
+
+**Recommended Models:**
+- STT: Distil-Whisper tiny.en-int8 (6x faster, 4x smaller)
+- VAD: Silero VAD v5 (lightweight, runs at 50x real-time)
+- TTS: Pocket (pure Rust, no dependencies) or Piper with INT8
+
+**Performance Benchmarks (Raspberry Pi 4, 4GB RAM):**
+
+| Configuration | RTF (Real-Time Factor) | Memory | Notes |
+|--------------|----------------------|--------|-------|
+| Whisper base.en | 3.3x (unusable) | 450MB | Too slow for real-time |
+| Whisper base.en-int8 | 1.8x | 220MB | Still too slow |
+| Distil-Whisper base.en-int8 | 0.8x | 180MB | Real-time capable |
+| Distil-Whisper tiny.en-int8 | 0.3x | 120MB | 3x faster than real-time |
+
+RTF < 1.0 means faster than real-time (e.g., 0.3x = processes 3 seconds of audio in 1 second).
+
+**Installation on Raspberry Pi:**
+
+```bash
+# Install Rust if not already installed
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Install vox with recommended features
+cargo install --git https://github.com/mrtozner/vox \
+  --features cli,distil-whisper,pocket
+
+# Download quantized models
+vox models download silero-vad
+vox models download distil-whisper-tiny.en-int8
+vox models download pocket-int8
+
+# Run voice assistant
+vox listen --stt-backend distil-whisper --model tiny.en-int8
+vox speak "Hello" --backend pocket --quantize int8
+```
+
+**Memory Usage Guide:**
+- Base system + Vox: ~150MB
+- Distil-Whisper tiny.en-int8: +120MB
+- Silero VAD: +30MB
+- Pocket TTS: +50MB
+- **Total**: ~350MB (fits comfortably on 1GB+ Pi models)
+
+For Raspberry Pi 3 or Zero 2, use Sherpa streaming STT instead of Whisper.
+
+<br>
+
 ## Feature Flags
 
 | Flag | Default | Description |
@@ -260,6 +374,7 @@ Pocket is ideal when you need:
 | `cli` | no | CLI binary (`vox listen`, `vox speak`, `vox chat`, `vox serve`) |
 | `server` | no | HTTP/WebSocket API server |
 | `whisper` | yes | Whisper STT via whisper-rs |
+| `distil-whisper` | no | Distil-Whisper STT (6x faster, quantization support) |
 | `silero` | yes | Silero VAD via ONNX Runtime |
 | `sherpa` | no | Sherpa-ONNX STT (SenseVoice, Zipformer, streaming) |
 | `piper` | no | Piper TTS (multilingual) |

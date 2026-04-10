@@ -34,6 +34,13 @@ pub const MODELS: &[ModelInfo] = &[
         kind: "STT",
     },
     ModelInfo {
+        name: "whisper-tiny.en-int8",
+        filename: "ggml-tiny.en-int8.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q8_0.bin",
+        size_bytes: 42_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
         name: "whisper-base.en",
         filename: "ggml-base.en.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
@@ -41,10 +48,52 @@ pub const MODELS: &[ModelInfo] = &[
         kind: "STT",
     },
     ModelInfo {
+        name: "whisper-base.en-int8",
+        filename: "ggml-base.en-int8.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q8_0.bin",
+        size_bytes: 78_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "distil-whisper-tiny.en",
+        filename: "ggml-distil-tiny.en.bin",
+        url: "https://huggingface.co/distil-whisper/distil-large-v3/resolve/main/ggml-distil-tiny.en.bin",
+        size_bytes: 75_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "distil-whisper-base.en",
+        filename: "ggml-distil-base.en.bin",
+        url: "https://huggingface.co/distil-whisper/distil-large-v3/resolve/main/ggml-distil-base.en.bin",
+        size_bytes: 142_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "distil-whisper-small.en",
+        filename: "ggml-distil-small.en.bin",
+        url: "https://huggingface.co/distil-whisper/distil-small.en/resolve/main/ggml-model.bin",
+        size_bytes: 466_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "distil-whisper-medium.en",
+        filename: "ggml-distil-medium.en.bin",
+        url: "https://huggingface.co/distil-whisper/distil-medium.en/resolve/main/ggml-model.bin",
+        size_bytes: 1_500_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
         name: "kokoro",
         filename: "kokoro-v1.0.onnx",
         url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
         size_bytes: 325_532_387,
+        kind: "TTS",
+    },
+    ModelInfo {
+        name: "kokoro-int8",
+        filename: "kokoro-v1.0.int8.onnx",
+        url: "https://huggingface.co/onnx-community/Kokoro-82M-ONNX/resolve/main/onnx/model_quantized.onnx",
+        size_bytes: 85_000_000,
         kind: "TTS",
     },
     ModelInfo {
@@ -503,6 +552,38 @@ pub fn whisper_download_name(model: &str) -> String {
         "base.en" => "whisper-base.en".into(),
         "small.en" => "whisper-small.en".into(),
         other => format!("whisper-{other}"),
+    }
+}
+
+/// Map user-facing Distil-Whisper model name to GGML filename.
+pub fn distil_whisper_model_filename(model: &str) -> String {
+    match model {
+        "tiny" => "ggml-distil-tiny.bin".into(),
+        "tiny.en" => "ggml-distil-tiny.en.bin".into(),
+        "base" => "ggml-distil-base.bin".into(),
+        "base.en" => "ggml-distil-base.en.bin".into(),
+        "small" => "ggml-distil-small.bin".into(),
+        "small.en" => "ggml-distil-small.en.bin".into(),
+        "medium" => "ggml-distil-medium.bin".into(),
+        "medium.en" => "ggml-distil-medium.en.bin".into(),
+        other => {
+            if other.ends_with(".bin") {
+                other.to_string()
+            } else {
+                format!("ggml-distil-{other}.bin")
+            }
+        }
+    }
+}
+
+/// Map user model name to the distil-whisper download registry name.
+pub fn distil_whisper_download_name(model: &str) -> String {
+    match model {
+        "tiny.en" => "distil-whisper-tiny.en".into(),
+        "base.en" => "distil-whisper-base.en".into(),
+        "small.en" => "distil-whisper-small.en".into(),
+        "medium.en" => "distil-whisper-medium.en".into(),
+        other => format!("distil-whisper-{other}"),
     }
 }
 
