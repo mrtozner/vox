@@ -83,6 +83,27 @@ pub const MODELS: &[ModelInfo] = &[
         kind: "STT",
     },
     ModelInfo {
+        name: "whisper-large-v3-turbo",
+        filename: "ggml-large-v3-turbo.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+        size_bytes: 1_550_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "whisper-large-v3-turbo-q5",
+        filename: "ggml-large-v3-turbo-q5_0.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        size_bytes: 574_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
+        name: "whisper-large-v3-turbo-q8",
+        filename: "ggml-large-v3-turbo-q8_0.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin",
+        size_bytes: 842_000_000,
+        kind: "STT",
+    },
+    ModelInfo {
         name: "kokoro",
         filename: "kokoro-v1.0.onnx",
         url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
@@ -525,6 +546,9 @@ pub fn resolve_model(filename: &str) -> Option<PathBuf> {
 }
 
 /// Map user-facing Whisper model name to GGML filename.
+///
+/// WARNING: Whisper Turbo models (large-v3-turbo*) require GPU acceleration
+/// and are 24-35x SLOWER on CPU than tiny.en. Use with CoreML/GPU only.
 pub fn model_filename(model: &str) -> String {
     match model {
         "tiny" => "ggml-tiny.bin".into(),
@@ -535,6 +559,10 @@ pub fn model_filename(model: &str) -> String {
         "small.en" => "ggml-small.en.bin".into(),
         "medium" => "ggml-medium.bin".into(),
         "medium.en" => "ggml-medium.en.bin".into(),
+        // Whisper Turbo aliases
+        "turbo" => "ggml-large-v3-turbo.bin".into(),
+        "turbo-q5" => "ggml-large-v3-turbo-q5_0.bin".into(),
+        "turbo-q8" => "ggml-large-v3-turbo-q8_0.bin".into(),
         other => {
             if other.ends_with(".bin") {
                 other.to_string()
@@ -551,6 +579,10 @@ pub fn whisper_download_name(model: &str) -> String {
         "tiny.en" => "whisper-tiny.en".into(),
         "base.en" => "whisper-base.en".into(),
         "small.en" => "whisper-small.en".into(),
+        // Whisper Turbo aliases
+        "turbo" => "whisper-large-v3-turbo".into(),
+        "turbo-q5" => "whisper-large-v3-turbo-q5".into(),
+        "turbo-q8" => "whisper-large-v3-turbo-q8".into(),
         other => format!("whisper-{other}"),
     }
 }

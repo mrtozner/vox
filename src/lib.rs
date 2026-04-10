@@ -36,6 +36,12 @@ pub mod tts;
 pub mod types;
 pub mod vad;
 
+// Tier 1 quality optimizations
+#[cfg(any(feature = "cli", feature = "server"))]
+pub mod prompts;
+#[cfg(any(feature = "cli", feature = "server"))]
+pub mod streaming_chat;
+
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
@@ -47,6 +53,10 @@ pub use traits::{
 pub use types::{
     AudioChunk, PipelineStats, SttResult, TtsOutput, TtsRequest, Utterance, VoiceInfo,
 };
+
+// Tier 1: Voice-optimized prompts
+#[cfg(any(feature = "cli", feature = "server"))]
+pub use prompts::{build_system_prompt, VoicePromptMode};
 
 // Conditional backend re-exports for convenience
 #[cfg(feature = "silero")]
