@@ -2,7 +2,6 @@
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use vox::audio::AudioCapture;
-use vox::types::AudioChunk;
 
 #[cfg(any(
     feature = "kokoro",
@@ -12,6 +11,14 @@ use vox::types::AudioChunk;
     feature = "tts"
 ))]
 use vox::audio::AudioPlayer;
+#[cfg(any(
+    feature = "kokoro",
+    feature = "pocket",
+    feature = "chatterbox",
+    feature = "piper",
+    feature = "tts"
+))]
+use vox::types::AudioChunk;
 
 /// Run the audio test command.
 ///

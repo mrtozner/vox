@@ -4,7 +4,7 @@
 //! - CLI mode: always caches (better UX)
 //! - Server mode: opt-in via --cache-models flag (backwards compat)
 //!
-//! Thread-safe singleton pattern using Arc<Mutex<HashMap>>.
+//! Thread-safe singleton pattern using `Arc<Mutex<HashMap>>`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

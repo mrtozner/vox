@@ -6,6 +6,7 @@ use vox::traits::{SttBackend, VadBackend};
 use vox::types::{AudioChunk, Utterance};
 use vox::{SileroVad, WhisperBackend};
 
+#[cfg(feature = "kokoro")]
 const TEST_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
 const TEST_AUDIO_DURATION_MS: u64 = 3000; // 3 seconds of silence for VAD/STT test
 
