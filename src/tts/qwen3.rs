@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use qwen3_tts::{auto_device, Language, Qwen3TTS, Speaker, SynthesisOptions};
+use qwen3_tts::{Language, Qwen3TTS, Speaker, SynthesisOptions, auto_device};
 use tokio::sync::Mutex;
 
 use crate::error::VoxError;
@@ -120,9 +120,14 @@ impl Qwen3Backend {
             // New HF cache format (models--Org--Repo/snapshots/main)
             std::path::PathBuf::from(&cache_dir)
                 .join("hub")
-                .join(format!("models--{}--{}",
+                .join(format!(
+                    "models--{}--{}",
                     model_id.split('/').nth(0).unwrap_or("Qwen"),
-                    model_id.split('/').nth(1).unwrap_or("Qwen3-TTS-12Hz-0.6B-CustomVoice")))
+                    model_id
+                        .split('/')
+                        .nth(1)
+                        .unwrap_or("Qwen3-TTS-12Hz-0.6B-CustomVoice")
+                ))
                 .join("snapshots")
                 .join("main"),
             // Old HF cache format (hub/Org/Repo)
@@ -153,7 +158,8 @@ impl Qwen3Backend {
             tracing::info!(path = %model_path_str, "loading from local cache");
 
             // Select device
-            let device = auto_device().map_err(|e| VoxError::Tts(format!("failed to select device: {e}")))?;
+            let device = auto_device()
+                .map_err(|e| VoxError::Tts(format!("failed to select device: {e}")))?;
 
             // Load model from pretrained path
             let model = Qwen3TTS::from_pretrained(&model_path_str, device)
@@ -571,10 +577,16 @@ mod tests {
 
         // Verify US Male voices reference Aiden (not Ryan/Ethan)
         let male1 = voices.iter().find(|v| v.id == "en_us_male_1").unwrap();
-        assert!(male1.name.contains("Aiden"), "en_us_male_1 should mention Aiden in name");
+        assert!(
+            male1.name.contains("Aiden"),
+            "en_us_male_1 should mention Aiden in name"
+        );
 
         let male2 = voices.iter().find(|v| v.id == "en_us_male_2").unwrap();
-        assert!(male2.name.contains("Aiden"), "en_us_male_2 should mention Aiden in name");
+        assert!(
+            male2.name.contains("Aiden"),
+            "en_us_male_2 should mention Aiden in name"
+        );
     }
 
     #[test]
@@ -583,6 +595,9 @@ mod tests {
 
         // GB male can still use Ryan/Ethan naming
         let gb_male = voices.iter().find(|v| v.id == "en_gb_male_1").unwrap();
-        assert!(gb_male.name.contains("Ethan"), "en_gb_male_1 should mention Ethan");
+        assert!(
+            gb_male.name.contains("Ethan"),
+            "en_gb_male_1 should mention Ethan"
+        );
     }
 }

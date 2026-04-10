@@ -1,8 +1,8 @@
 //! Test non-streaming synthesis for comparison with streaming.
 
+use vox::traits::TtsBackend;
 use vox::tts::{Qwen3Backend, Qwen3Config};
 use vox::types::TtsRequest;
-use vox::traits::TtsBackend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,7 +46,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Verify expectations
     println!("\n=== Verification ===");
     let rtf_ok = rtf < 1.0;
-    println!("✓ RTF < 1.0 (faster than real-time): {}", if rtf_ok { "PASS" } else { "FAIL" });
+    println!(
+        "✓ RTF < 1.0 (faster than real-time): {}",
+        if rtf_ok { "PASS" } else { "FAIL" }
+    );
 
     if rtf_ok {
         println!("\n✅ Performance test PASSED");

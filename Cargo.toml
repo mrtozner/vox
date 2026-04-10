@@ -175,3 +175,11 @@ required-features = ["chatterbox"]
 [[example]]
 name = "piper_speak"
 required-features = ["piper"]
+
+[[example]]
+name = "test_streaming"
+required-features = ["qwen3"]
+
+[[example]]
+name = "test_non_streaming"
+required-features = ["qwen3"]

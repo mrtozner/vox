@@ -45,29 +45,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let first_chunk_time_clone = Arc::clone(&first_chunk_time);
 
     // Run streaming synthesis
-    let result = backend.synthesize_with_streaming(&request, move |chunk| {
-        let mut count = chunk_count_clone.lock().unwrap();
-        let mut samples = total_samples_clone.lock().unwrap();
-        let mut first_time = first_chunk_time_clone.lock().unwrap();
+    let result = backend
+        .synthesize_with_streaming(&request, move |chunk| {
+            let mut count = chunk_count_clone.lock().unwrap();
+            let mut samples = total_samples_clone.lock().unwrap();
+            let mut first_time = first_chunk_time_clone.lock().unwrap();
 
-        *count += 1;
-        *samples += chunk.samples.len();
+            *count += 1;
+            *samples += chunk.samples.len();
 
-        // Record time to first chunk
-        if first_time.is_none() {
-            *first_time = Some(start.elapsed());
-        }
+            // Record time to first chunk
+            if first_time.is_none() {
+                *first_time = Some(start.elapsed());
+            }
 
-        println!(
-            "Chunk {}: {} samples @ {}Hz (elapsed: {:.2}s)",
-            *count,
-            chunk.samples.len(),
-            chunk.sample_rate,
-            start.elapsed().as_secs_f64()
-        );
+            println!(
+                "Chunk {}: {} samples @ {}Hz (elapsed: {:.2}s)",
+                *count,
+                chunk.samples.len(),
+                chunk.sample_rate,
+                start.elapsed().as_secs_f64()
+            );
 
-        Ok(())
-    }).await?;
+            Ok(())
+        })
+        .await?;
 
     let total_time = start.elapsed();
     let audio_duration_sec = result.duration_ms as f64 / 1000.0;
@@ -83,7 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Total chunks: {}", final_chunk_count);
     println!("Total samples: {}", final_total_samples);
     println!("Audio duration: {:.2}s", audio_duration_sec);
-    println!("Time to first chunk: {:.3}s", final_first_chunk_time.unwrap_or_default().as_secs_f64());
+    println!(
+        "Time to first chunk: {:.3}s",
+        final_first_chunk_time.unwrap_or_default().as_secs_f64()
+    );
     println!("Total synthesis time: {:.2}s", total_time.as_secs_f64());
     println!("Real-Time Factor (RTF): {:.3}", rtf);
 
@@ -93,10 +98,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let streaming_ok = final_chunk_count > 1;
     let rtf_ok = rtf < 1.0;
 
-    println!("✓ First chunk < 1s: {}", if first_chunk_ok { "PASS" } else { "FAIL" });
-    println!("✓ Multiple chunks: {} {}", if streaming_ok { "PASS" } else { "FAIL" },
-             if streaming_ok { format!("({} chunks)", final_chunk_count) } else { String::new() });
-    println!("✓ RTF < 1.0 (faster than real-time): {}", if rtf_ok { "PASS" } else { "FAIL" });
+    println!(
+        "✓ First chunk < 1s: {}",
+        if first_chunk_ok { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "✓ Multiple chunks: {} {}",
+        if streaming_ok { "PASS" } else { "FAIL" },
+        if streaming_ok {
+            format!("({} chunks)", final_chunk_count)
+        } else {
+            String::new()
+        }
+    );
+    println!(
+        "✓ RTF < 1.0 (faster than real-time): {}",
+        if rtf_ok { "PASS" } else { "FAIL" }
+    );
 
     if first_chunk_ok && streaming_ok && rtf_ok {
         println!("\n✅ All streaming tests PASSED");
