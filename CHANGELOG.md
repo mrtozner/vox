@@ -5,6 +5,27 @@ All notable changes to Vox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Qwen3-TTS backend with state-of-the-art speech synthesis
+  - 0.6B and 1.7B CustomVoice model variants
+  - 20 voices across 10 languages (English, Chinese, Japanese, Korean, French, German, Spanish, Russian, Arabic, Portuguese)
+  - Apple Metal GPU acceleration for Apple Silicon
+  - NVIDIA CUDA GPU acceleration for Linux
+  - Streaming synthesis with chunked audio output (~800ms chunks)
+- Streaming TTS via `/v1/speak` WebSocket endpoint with gapless playback
+- Comprehensive Qwen3 examples: `test_streaming.rs`, `test_non_streaming.rs`
+
+### Changed
+- **BREAKING**: Renamed TTS HTTP endpoint from `/v1/tts` to `/v1/synthesize` for clarity
+- Default TTS backend priority: Qwen3 → Kokoro → Piper (when `qwen3` feature enabled)
+
+### Performance
+- M4 Pro performance: Qwen3 0.6B RTF 0.96 (2.6GB RAM), Qwen3 1.7B RTF 1.14 (4.4GB RAM)
+- First chunk latency: ~831ms for streaming synthesis
+- Metal GPU acceleration provides near real-time synthesis on Apple Silicon
+
 ## [0.5.0] - 2026-04-10
 
 ### Added
