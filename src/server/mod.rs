@@ -322,15 +322,15 @@ async fn load_tts(
     (None, None, None)
 }
 
-/// Scan models_dir/piper/ for any *.onnx.json config files and try to load the first valid one.
-#[cfg(feature = "piper")]
-fn try_load_piper(
-    models_dir: &std::path::Path,
-) -> Option<(
+type PiperLoadResult = Option<(
     Option<Arc<dyn vox::traits::TtsBackend>>,
     Option<String>,
     Option<u64>,
-)> {
+)>;
+
+/// Scan models_dir/piper/ for any *.onnx.json config files and try to load the first valid one.
+#[cfg(feature = "piper")]
+fn try_load_piper(models_dir: &std::path::Path) -> PiperLoadResult {
     let piper_dir = models_dir.join("piper");
     if !piper_dir.exists() {
         return None;

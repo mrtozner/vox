@@ -1,5 +1,6 @@
 //! Unit tests for the Vox engine, pipeline builder, types, and mock backends.
 //!
+#![allow(clippy::field_reassign_with_default)]
 //! These tests run with default features and require no model files
 //! or audio hardware. All backend dependencies are replaced with mocks.
 

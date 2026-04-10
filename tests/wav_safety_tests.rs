@@ -7,6 +7,9 @@
 //! Run with:
 //!   cargo test --features server --test wav_safety_tests
 
+#![allow(clippy::single_match)]
+#![allow(dead_code)]
+
 #[path = "../src/server/mod.rs"]
 mod server;
 
@@ -45,6 +48,7 @@ fn test_state_with_stt() -> Arc<ServerState> {
         tts_model_name: None,
         tts_model_size: None,
         streaming_stt: None,
+        model_cache: None,
     })
 }
 

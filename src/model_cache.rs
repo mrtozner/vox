@@ -273,6 +273,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     struct MockTtsBackend;
     #[async_trait]
     impl TtsBackend for MockTtsBackend {

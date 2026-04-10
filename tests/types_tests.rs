@@ -1,4 +1,6 @@
 //! Tests for core types.
+#![allow(dead_code)]
+#![allow(clippy::field_reassign_with_default)]
 
 use vox::{AudioChunk, PipelineStats, SttResult, TtsOutput, TtsRequest, Utterance};
 

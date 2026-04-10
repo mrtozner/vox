@@ -1,4 +1,5 @@
 //! Error handling and edge case tests for the Vox HTTP server.
+#![allow(dead_code)]
 //!
 //! Run with:
 //!   cargo test --features server --test error_edge_tests
@@ -41,6 +42,7 @@ fn test_state() -> Arc<ServerState> {
         tts_model_name: None,
         tts_model_size: None,
         streaming_stt: None,
+        model_cache: None,
     })
 }
 
@@ -368,6 +370,7 @@ mod wav_decoding {
             tts_model_name: None,
             tts_model_size: None,
             streaming_stt: None,
+            model_cache: None,
         })
     }
 }
