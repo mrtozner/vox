@@ -14,6 +14,7 @@ mod resampler;
     feature = "pocket",
     feature = "chatterbox",
     feature = "piper",
+    feature = "qwen3",
     feature = "tts"
 ))]
 mod playback;
@@ -27,6 +28,7 @@ pub use resampler::AudioResampler;
     feature = "pocket",
     feature = "chatterbox",
     feature = "piper",
+    feature = "qwen3",
     feature = "tts"
 ))]
 pub use playback::AudioPlayer;

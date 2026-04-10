@@ -17,6 +17,9 @@ mod chatterbox;
 #[cfg(feature = "piper")]
 mod piper;
 
+#[cfg(feature = "qwen3")]
+mod qwen3;
+
 mod streaming;
 
 #[cfg(feature = "kokoro")]
@@ -30,5 +33,8 @@ pub use chatterbox::{ChatterboxBackend, ChatterboxConfig};
 
 #[cfg(feature = "piper")]
 pub use self::piper::{PiperBackend, PiperConfig};
+
+#[cfg(feature = "qwen3")]
+pub use qwen3::{Qwen3Backend, Qwen3Config};
 
 pub use streaming::SentenceStreamingAdapter;

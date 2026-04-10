@@ -76,6 +76,9 @@ pub use tts::{ChatterboxBackend, ChatterboxConfig};
 #[cfg(feature = "piper")]
 pub use tts::{PiperBackend, PiperConfig};
 
+#[cfg(feature = "qwen3")]
+pub use tts::{Qwen3Backend, Qwen3Config};
+
 pub use tts::SentenceStreamingAdapter;
 
 #[cfg(any(
@@ -83,6 +86,7 @@ pub use tts::SentenceStreamingAdapter;
     feature = "pocket",
     feature = "chatterbox",
     feature = "piper",
+    feature = "qwen3",
     feature = "tts"
 ))]
 pub use audio::AudioPlayer;

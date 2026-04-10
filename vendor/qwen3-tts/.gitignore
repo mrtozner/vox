@@ -1,0 +1,34 @@
+/target/
+Cargo.lock
+
+# Downloaded test data (not tracked in git)
+/test_data/
+
+# Python virtual environments
+.venv/
+tools/.venv/
+
+# Generated audio files
+*.wav
+
+# Reference audio for voice cloning example (Qwen3-TTS official test audio)
+!/examples/data/clone_2.wav
+
+# README sample assets
+!/assets/audio/*.wav
+!/assets/images/*.png
+
+# Python cache
+__pycache__/
+*.pyc
+
+# UV lock file (large, can be regenerated)
+uv.lock
+/models/
+bench-*.json
+trace.json
+perf.data
+perf.data.old
+nsys_report.*
+/flamegraph.svg
+!/docs/flamegraph.svg

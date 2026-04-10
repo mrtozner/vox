@@ -1,0 +1,112 @@
+[package]
+name = "qwen3-tts"
+version = "0.3.0"
+edition = "2021"
+description = "Pure Rust inference for Qwen3-TTS"
+license = "MIT"
+autobenches = false
+
+[features]
+default = ["cpu"]
+cpu = []
+cli = ["clap", "indicatif"]
+hub = ["hf-hub"]
+
+# All platform-portable features. Use `cargo lint` / `cargo check-all` / `cargo test-all`
+# instead of --all-features (which fails because platform-specific features conflict).
+all-portable = ["cpu", "cli", "hub"]
+
+# Platform-specific — enable manually based on your hardware:
+#   macOS:         metal, accelerate
+#   Linux + Intel: mkl
+#   Linux + NVIDIA: cuda, flash-attn
+#   Raspberry Pi:  quantized (INT8 for memory efficiency)
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
+mkl = ["candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+flash-attn = ["cuda", "dep:candle-flash-attn"]
+profiling = ["dep:tracing-chrome"]
+quantized = []  # Enable INT8 quantization for memory-constrained devices
+
+[dependencies]
+# Candle ML framework
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+candle-flash-attn = { version = "0.9", optional = true }
+
+# Tokenization (HuggingFace tokenizers in Rust)
+tokenizers = "0.22"
+
+# Audio processing
+hound = "3.5"              # WAV I/O
+rubato = "1.0"            # High-quality resampling
+rustfft = "6.2"            # FFT for spectrograms
+
+# Serialization & model loading
+safetensors = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rayon = "1.10"             # Parallel CPU processing
+byteorder = "1.5"
+num-traits = "0.2"
+num-complex = "0.4"
+num_cpus = "1.16"          # CPU detection for thread pool tuning
+
+# CLI (optional)
+clap = { version = "4.5", features = ["derive"], optional = true }
+indicatif = { version = "0.18", optional = true }
+
+# HuggingFace Hub (optional) - uses ureq sync client, no OpenSSL needed
+hf-hub = { version = "0.4", default-features = false, features = ["ureq"], optional = true }
+audioadapter-buffers = "2.0.0"
+
+# Profiling (optional)
+tracing-chrome = { version = "0.7", optional = true }
+half = "2.7.1"
+
+[dev-dependencies]
+criterion = "0.8"
+approx = "0.5"
+tempfile = "3.15"
+ndarray = "0.17.2"
+ndarray-npy = "0.10.0"
+
+[[bin]]
+name = "generate_audio"
+path = "src/bin/generate_audio.rs"
+required-features = ["cli"]
+
+[[bench]]
+name = "sampling"
+harness = false
+
+[[bench]]
+name = "audio"
+harness = false
+
+[[bench]]
+name = "tensor_ops"
+harness = false
+
+[[bin]]
+name = "e2e_bench"
+path = "benches/e2e_bench.rs"
+required-features = ["cli"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[profile.profiling]
+inherits = "release"
+debug = true
+lto = false

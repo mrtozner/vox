@@ -1,0 +1,7 @@
+target/
+test_data/
+.git/
+.jj/
+.venv/
+*.wav
+!examples/data/clone_2.wav

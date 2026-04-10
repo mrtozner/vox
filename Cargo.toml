@@ -36,6 +36,7 @@ chatterbox-rs = { path = "vendor/cbx", optional = true }
 piper-rs = { path = "vendor/piper-rs", optional = true }
 sherpa-sys = { path = "vendor/sherpa-sys", optional = true }
 candle-core = { version = "0.9", optional = true }
+qwen3-tts = { path = "vendor/qwen3-tts", optional = true }
 hound = "3.5"
 tracing = "0.1"
 thiserror = "2"
@@ -72,6 +73,9 @@ pocket-metal = ["pocket", "pocket-tts/metal", "candle-core/metal"]
 pocket-mkl = ["pocket", "pocket-tts/mkl"]
 chatterbox = ["dep:chatterbox-rs", "dep:ort", "dep:ndarray", "dep:rodio"]
 chatterbox-coreml = ["chatterbox", "chatterbox-rs/coreml"]
+qwen3 = ["dep:qwen3-tts", "qwen3-tts/cpu", "dep:candle-core", "dep:rodio"]
+qwen3-cuda = ["qwen3", "qwen3-tts/cuda", "candle-core/cuda"]
+qwen3-metal = ["qwen3", "qwen3-tts/metal", "candle-core/metal"]
 cli = [
     "dep:clap", "dep:dirs", "dep:indicatif", "dep:reqwest",
     "dep:tracing-subscriber", "dep:tokio-util", "dep:toml",

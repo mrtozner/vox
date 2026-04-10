@@ -556,7 +556,7 @@ pub fn whisper_download_name(model: &str) -> String {
 }
 
 /// Map user-facing Distil-Whisper model name to GGML filename.
-#[allow(dead_code)]
+#[cfg(feature = "distil-whisper")]
 pub fn distil_whisper_model_filename(model: &str) -> String {
     match model {
         "tiny" => "ggml-distil-tiny.bin".into(),
@@ -578,7 +578,7 @@ pub fn distil_whisper_model_filename(model: &str) -> String {
 }
 
 /// Map user model name to the distil-whisper download registry name.
-#[allow(dead_code)]
+#[cfg(feature = "distil-whisper")]
 pub fn distil_whisper_download_name(model: &str) -> String {
     match model {
         "tiny.en" => "distil-whisper-tiny.en".into(),

@@ -239,7 +239,71 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
     Ok(())
 }
 
-#[cfg(feature = "kokoro")]
+#[cfg(feature = "qwen3")]
+async fn load_tts(
+    models_dir: &std::path::Path,
+) -> (
+    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<String>,
+    Option<u64>,
+) {
+    // Try Qwen3 first (if enabled)
+    match vox::tts::Qwen3Backend::new().await {
+        Ok(backend) => {
+            info!("loaded qwen3 TTS backend");
+            return (
+                Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
+                Some("qwen3".to_string()),
+                None, // Model size not applicable (auto-downloaded to HF cache)
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load qwen3 TTS backend, trying fallback");
+        }
+    }
+
+    // Fallback: try Kokoro if Qwen3 is unavailable
+    #[cfg(feature = "kokoro")]
+    {
+        let model_path = models_dir.join("kokoro-v1.0.onnx");
+        let voices_path = models_dir.join("voices.bin");
+        if model_path.exists() && voices_path.exists() {
+            match vox::tts::KokoroBackend::new(&model_path, &voices_path).await {
+                Ok(backend) => {
+                    info!("loaded kokoro TTS backend");
+                    let model_name = model_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.replace('-', " "))
+                        .unwrap_or_else(|| "kokoro".to_string());
+                    let model_size = std::fs::metadata(&model_path)
+                        .ok()
+                        .map(|m| m.len() / (1024 * 1024));
+                    return (
+                        Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
+                        Some(model_name),
+                        model_size,
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load kokoro TTS backend");
+                }
+            }
+        }
+    }
+
+    // Fallback: try Piper if Kokoro is unavailable
+    #[cfg(feature = "piper")]
+    {
+        if let Some(result) = try_load_piper(models_dir) {
+            return result;
+        }
+    }
+
+    (None, None, None)
+}
+
+#[cfg(all(feature = "kokoro", not(feature = "qwen3")))]
 async fn load_tts(
     models_dir: &std::path::Path,
 ) -> (
@@ -289,7 +353,7 @@ async fn load_tts(
     (None, None, None)
 }
 
-#[cfg(all(feature = "piper", not(feature = "kokoro")))]
+#[cfg(all(feature = "piper", not(any(feature = "kokoro", feature = "qwen3"))))]
 async fn load_tts(
     models_dir: &std::path::Path,
 ) -> (
@@ -307,7 +371,7 @@ async fn load_tts(
     (None, None, None)
 }
 
-#[cfg(not(any(feature = "kokoro", feature = "piper")))]
+#[cfg(not(any(feature = "kokoro", feature = "piper", feature = "qwen3")))]
 async fn load_tts(
     models_dir: &std::path::Path,
 ) -> (
@@ -316,7 +380,7 @@ async fn load_tts(
     Option<u64>,
 ) {
     tracing::warn!(
-        "TTS disabled (compiled without 'kokoro' or 'piper' feature); models dir: {}",
+        "TTS disabled (compiled without 'kokoro', 'piper', or 'qwen3' feature); models dir: {}",
         models_dir.display()
     );
     (None, None, None)
