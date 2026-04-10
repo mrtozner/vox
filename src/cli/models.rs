@@ -1,7 +1,7 @@
 //! Handler for `vox models` — model registry, download, and management.
 
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 /// Metadata for a downloadable model.
 pub struct ModelInfo {
@@ -287,7 +287,10 @@ pub async fn download(name: &str, force: bool) -> anyhow::Result<()> {
     if dest.exists() && !force {
         println!("Model '{}' is already downloaded at:", model.name);
         println!("  {}", dest.display());
-        println!("\nTo re-download, use: vox models download {} --force", name);
+        println!(
+            "\nTo re-download, use: vox models download {} --force",
+            name
+        );
         return Ok(());
     }
 
@@ -438,8 +441,16 @@ pub async fn download(name: &str, force: bool) -> anyhow::Result<()> {
         )
     })?;
 
-    println!("Successfully downloaded {} to {}", model.name, dest.display());
-    println!("File size: {} ({} bytes)", format_bytes(actual_size), actual_size);
+    println!(
+        "Successfully downloaded {} to {}",
+        model.name,
+        dest.display()
+    );
+    println!(
+        "File size: {} ({} bytes)",
+        format_bytes(actual_size),
+        actual_size
+    );
 
     Ok(())
 }
