@@ -10,9 +10,61 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # Quick checks that run on every commit
+  quick-check:
+    name: Quick Check
+    runs-on: ubuntu-latest
+    outputs:
+      should_test: ${{ steps.filter.outputs.code }}
+      should_test_cross_platform: ${{ steps.filter.outputs.cross_platform }}
+      should_build_python: ${{ steps.filter.outputs.python }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check changed files
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            docs:
+              - '**/*.md'
+              - 'LICENSE*'
+              - 'docs/**'
+              - '!CHANGELOG.md'
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'benches/**'
+              - 'examples/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            cross_platform:
+              - 'src/**/*.rs'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '!src/**/*_test.rs'
+              - '!**/*.md'
+            python:
+              - 'python/**'
+              - 'src/**'
+              - 'Cargo.toml'
+
+      - name: Report filter results
+        run: |
+          echo "Changed files analysis:"
+          echo "  Documentation only: ${{ steps.filter.outputs.docs }}"
+          echo "  Code changes: ${{ steps.filter.outputs.code }}"
+          echo "  Cross-platform relevant: ${{ steps.filter.outputs.cross_platform }}"
+          echo "  Python changes: ${{ steps.filter.outputs.python }}"
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    needs: quick-check
+    # Always run format check unless it's pure docs changes
+    if: needs.quick-check.outputs.should_test == 'true' || github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -23,10 +75,14 @@ jobs:
   clippy:
     name: Clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: [quick-check, fmt]
+    # Only run cross-platform clippy for code changes
+    if: needs.quick-check.outputs.should_test == 'true'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Only run Ubuntu by default, expand to all platforms for cross-platform changes
+        os: ${{ needs.quick-check.outputs.should_test_cross_platform == 'true' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -88,10 +144,14 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: [quick-check, fmt]
+    # Only run tests if code changed
+    if: needs.quick-check.outputs.should_test == 'true'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Only run Ubuntu for quick feedback, expand to all platforms for cross-platform changes
+        os: ${{ needs.quick-check.outputs.should_test_cross_platform == 'true' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -165,6 +225,9 @@ jobs:
   doc:
     name: Documentation
     runs-on: ubuntu-latest
+    needs: quick-check
+    # Run doc build if code changed
+    if: needs.quick-check.outputs.should_test == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -177,6 +240,9 @@ jobs:
   python:
     name: Python bindings
     runs-on: macos-latest
+    needs: quick-check
+    # Only run if Python files or core code changed
+    if: needs.quick-check.outputs.should_build_python == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -207,3 +273,35 @@ jobs:
         run: |
           source ../.venv/bin/activate
           pytest tests/ -v
+
+  # Summary job that all branch protection rules should depend on
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [quick-check, fmt, clippy, test, doc, python]
+    # Run even if some jobs are skipped, but fail if any required job failed
+    if: always()
+    steps:
+      - name: Check job results
+        run: |
+          # Check if any required job failed
+          if [[ "${{ needs.fmt.result }}" == "failure" ]] || \
+             [[ "${{ needs.clippy.result }}" == "failure" ]] || \
+             [[ "${{ needs.test.result }}" == "failure" ]] || \
+             [[ "${{ needs.doc.result }}" == "failure" ]] || \
+             [[ "${{ needs.python.result }}" == "failure" ]]; then
+            echo "One or more required jobs failed"
+            exit 1
+          fi
+
+          # Check if jobs were skipped when they should have run
+          if [[ "${{ needs.quick-check.outputs.should_test }}" == "true" ]]; then
+            if [[ "${{ needs.fmt.result }}" == "skipped" ]] || \
+               [[ "${{ needs.clippy.result }}" == "skipped" ]] || \
+               [[ "${{ needs.test.result }}" == "skipped" ]]; then
+              echo "Required jobs were skipped when code changed"
+              exit 1
+            fi
+          fi
+
+          echo "All required CI checks passed or were appropriately skipped"

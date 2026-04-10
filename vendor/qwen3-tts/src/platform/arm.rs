@@ -7,7 +7,10 @@ use std::arch::aarch64::*;
 #[cfg(target_arch = "aarch64")]
 pub fn dot_product_neon(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());
-    assert!(a.len().is_multiple_of(4), "length must be multiple of 4 for NEON");
+    assert!(
+        a.len().is_multiple_of(4),
+        "length must be multiple of 4 for NEON"
+    );
 
     unsafe {
         let mut sum = vdupq_n_f32(0.0);
