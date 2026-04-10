@@ -14,7 +14,7 @@
 Speech-to-text, text-to-speech, and voice chat running locally. No API keys, no cloud, no data leaving your machine.
 
 ```
-Mic --> VAD (Silero) --> STT (Whisper/Sherpa/Streaming) --> Your Code --> TTS (Kokoro/Piper/Chatterbox) --> Speaker
+Mic --> VAD (Silero) --> STT (Whisper/Sherpa/Streaming) --> Your Code --> TTS (Kokoro/Qwen3/Piper/Chatterbox/Pocket) --> Speaker
 ```
 
 <br>
@@ -43,7 +43,7 @@ Models auto-download on first run. Pass `-y` to skip prompts.
 ## What It Does
 
 - **Speech-to-Text** &mdash; Whisper (tiny to medium), Sherpa-ONNX (SenseVoice, Zipformer, Paraformer), or streaming Sherpa for real-time partial transcription
-- **Text-to-Speech** &mdash; Natural synthesis with Kokoro (50+ voices), Piper (multilingual), Pocket (pure Rust, edge-ready), or Chatterbox (voice cloning)
+- **Text-to-Speech** &mdash; Natural synthesis with Qwen3 (state-of-the-art, 20 voices), Kokoro (50+ voices), Piper (multilingual), Pocket (pure Rust, edge-ready), or Chatterbox (voice cloning)
 - **Voice Chat** &mdash; Talk to any Ollama LLM and hear responses
 - **Web Interface** &mdash; Browser UI for demos and testing (`vox serve`)
 - **Python Bindings** &mdash; Same pipeline from Python via PyO3
@@ -63,8 +63,9 @@ vox listen --model base.en              # use a larger Whisper model
 vox listen --stt-backend sherpa         # use Sherpa SenseVoice (multilingual)
 vox listen --stt-backend sherpa-streaming  # real-time streaming transcription
 vox listen --stt-backend distil-whisper # use Distil-Whisper (6x faster)
-vox speak "Hello from Vox!"             # text-to-speech (needs kokoro feature)
-vox speak "Hello" --voice am_adam       # pick a voice
+vox speak "Hello from Vox!"             # text-to-speech (needs TTS backend feature)
+vox speak "Hello" --backend qwen3 --voice en_us_female_1  # state-of-the-art TTS (20 voices)
+vox speak "Hello" --voice am_adam       # kokoro TTS with voice selection
 vox speak "Hallo" --backend piper --voice de  # multilingual TTS with Piper
 vox speak "Hi" --backend pocket          # pure Rust TTS (edge-ready, no external deps)
 vox speak "Hi" --backend chatterbox --voice ref.wav  # voice cloning
@@ -81,11 +82,11 @@ vox models path                         # show where models are stored
 ### Web UI
 
 ```bash
-cargo install --git https://github.com/mrtozner/vox --features cli,server,kokoro
+cargo install --git https://github.com/mrtozner/vox --features cli,server,qwen3-metal
 vox serve --port 3000
 ```
 
-Opens a browser interface at `http://localhost:3000` with real-time mic transcription, TTS synthesis, voice chat with Ollama, and a status dashboard. No separate frontend build.
+Opens a browser interface at `http://localhost:3000` with real-time mic transcription, TTS synthesis, voice chat with Ollama, and a status dashboard. Includes WebSocket streaming for real-time TTS with gapless playback. No separate frontend build.
 
 ### HTTP API
 
@@ -103,7 +104,9 @@ curl -X POST http://localhost:3000/v1/synthesize \
   -d '{"text": "Hello from Vox!"}'
 ```
 
-WebSocket streaming at `ws://localhost:3000/v1/listen` &mdash; send PCM f32 LE frames at 16kHz mono, receive JSON events in real time:
+**WebSocket Endpoints:**
+
+STT streaming at `ws://localhost:3000/v1/listen` &mdash; send PCM f32 LE frames at 16kHz mono, receive JSON events in real time:
 
 ```json
 {"type": "speech_start"}
@@ -113,7 +116,13 @@ WebSocket streaming at `ws://localhost:3000/v1/listen` &mdash; send PCM f32 LE f
 {"type": "speech_end"}
 ```
 
-When a streaming STT backend is available (sherpa-streaming model downloaded), partial results arrive incrementally as you speak. Without it, partials are omitted and you get the final transcript on speech end.
+TTS streaming at `ws://localhost:3000/v1/speak` &mdash; send JSON text requests, receive audio chunks for gapless playback:
+
+```json
+{"text": "Hello world", "voice": "en_us_female_1"}
+```
+
+Receive chunked audio frames (~800ms chunks) for low-latency playback while synthesis continues.
 
 ### Rust Library
 
@@ -186,7 +195,9 @@ Audio captured via `cpal`, resampled to 16kHz mono, fed frame-by-frame to VAD. O
 | | Distil-Whisper base.en-int8 | 35MB | Quantized, 4x smaller |
 | | Sherpa SenseVoice | 230MB | Multilingual (zh/en/ja/ko/yue) |
 | | Sherpa Streaming Zipformer | 27MB | Real-time partial results |
-| **TTS** | Kokoro | 310MB | 50+ voices |
+| **TTS** | Qwen3 0.6B CustomVoice | 1.2GB | 20 voices, 10 languages, RTF 0.96 (M4 Pro) |
+| | Qwen3 1.7B CustomVoice | 3.4GB | 20 voices, higher quality, RTF 1.14 (M4 Pro) |
+| | Kokoro | 310MB | 50+ voices |
 | | Kokoro INT8 | 77MB | Quantized, 4x smaller |
 | | Piper | 63MB/voice | Multilingual (en/de/es/fr/zh) |
 | | Pocket | 82MB | Pure Rust, edge/embedded |
@@ -196,10 +207,14 @@ Audio captured via `cpal`, resampled to 16kHz mono, fed frame-by-frame to VAD. O
 ```bash
 vox models download silero-vad          # 2MB
 vox models download whisper-tiny.en     # 75MB
+vox models download qwen3-0.6b          # 1.2GB (auto-downloads from HuggingFace)
+vox models download qwen3-1.7b          # 3.4GB (higher quality)
 vox models download kokoro              # 310MB
 vox models download kokoro-voices       # 27MB
 vox models download piper-en-us         # 63MB (+ piper-en-us-config)
 ```
+
+**Note:** Qwen3 models auto-download from HuggingFace Hub on first use. Uses Metal GPU acceleration on Apple Silicon for optimal performance.
 
 ### Model Management and Troubleshooting
 
@@ -238,6 +253,37 @@ vox models download kokoro --force
 # Verify the download
 vox models list
 ```
+
+**TTS Backend: Qwen3**
+
+Qwen3 is a state-of-the-art TTS model offering natural synthesis across 20 voices and 10 languages with streaming support:
+
+```bash
+# Install with Qwen3 Metal GPU support (macOS)
+cargo install --git https://github.com/mrtozner/vox --features cli,qwen3-metal
+
+# Use Qwen3 TTS
+vox speak "Hello from Qwen3" --backend qwen3 --voice en_us_female_1
+
+# Available voices (20 total):
+# US English: en_us_female_1, en_us_female_2, en_us_male_1, en_us_male_2
+# GB English: en_gb_female_1, en_gb_male_1
+# Chinese: zh_cn_female_1, zh_cn_female_2, zh_cn_male_1
+# Japanese: ja_jp_female_1, ja_jp_male_1
+# Spanish: es_es_female_1, es_es_male_1
+# French: fr_fr_female_1, fr_fr_male_1
+# German: de_de_female_1, de_de_male_1
+# Italian: it_it_female_1
+# Portuguese: pt_br_female_1
+# Russian: ru_ru_female_1
+```
+
+Qwen3 offers:
+- State-of-the-art natural voice quality
+- Streaming synthesis with ~800ms chunk latency
+- Metal GPU acceleration (0.96 RTF on M4 Pro with 0.6B model)
+- 20 preset voices across 10 languages
+- Real-time performance (faster than real-time on modern hardware)
 
 **TTS Backend: Pocket**
 
@@ -377,6 +423,9 @@ For Raspberry Pi 3 or Zero 2, use Sherpa streaming STT instead of Whisper.
 | `distil-whisper` | no | Distil-Whisper STT (6x faster, quantization support) |
 | `silero` | yes | Silero VAD via ONNX Runtime |
 | `sherpa` | no | Sherpa-ONNX STT (SenseVoice, Zipformer, streaming) |
+| `qwen3` | no | Qwen3 TTS (state-of-the-art, 20 voices) |
+| `qwen3-metal` | no | Qwen3 with Apple Metal GPU (macOS) |
+| `qwen3-cuda` | no | Qwen3 with NVIDIA CUDA GPU (Linux) |
 | `piper` | no | Piper TTS (multilingual) |
 | `kokoro` | no | Kokoro TTS (50+ voices) |
 | `pocket` | no | Pocket TTS (pure Rust) |
@@ -408,9 +457,13 @@ Measured on Apple M1 MacBook Pro:
 | Whisper STT (3s utterance) | ~200ms |
 | Streaming STT (per chunk) | <1ms (0.03x real-time) |
 | End-to-end (speech end to text) | ~250ms |
+| Qwen3 0.6B TTS (streaming) | 831ms first chunk, 0.96 RTF (M4 Pro) |
+| Qwen3 1.7B TTS (streaming) | 1.14 RTF (M4 Pro), higher quality |
 | Piper TTS ("Hello world") | ~200ms |
 | Chatterbox TTS ("Hello world") | ~2s |
 | Memory (idle pipeline) | ~150MB |
+| Memory (Qwen3 0.6B loaded) | ~2.6GB |
+| Memory (Qwen3 1.7B loaded) | ~4.4GB |
 
 <br>
 
@@ -419,9 +472,12 @@ Measured on Apple M1 MacBook Pro:
 ```bash
 cargo run --example simple_listen --features whisper,silero       # mic to text
 cargo run --example vad_only --features silero                    # speech detection only
-cargo run --example voice_assistant --features whisper,silero,kokoro  # voice assistant
+cargo run --example voice_assistant --features whisper,silero,qwen3-metal  # voice assistant
 cargo run --example tts_speak --features kokoro                   # kokoro TTS
+cargo run --example test_streaming --features qwen3-metal         # qwen3 streaming TTS
+cargo run --example test_non_streaming --features qwen3-metal     # qwen3 non-streaming TTS
 cargo run --example piper_speak --features piper                  # piper TTS
+cargo run --example pocket_speak --features pocket                # pocket TTS
 cargo run --example chatterbox_speak --features chatterbox        # voice cloning
 ```
 
