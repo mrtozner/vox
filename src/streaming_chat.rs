@@ -164,7 +164,7 @@ impl SentenceBuffer {
 /// ```
 #[cfg(any(feature = "cli", feature = "server"))]
 #[allow(clippy::too_many_arguments)]
-pub async fn stream_chat_with_tts<F>(
+pub async fn stream_chat_with_tts<F, Fut>(
     client: &reqwest::Client,
     host: &str,
     model: &str,
@@ -175,7 +175,8 @@ pub async fn stream_chat_with_tts<F>(
     mut on_sentence: F,
 ) -> Result<(), VoxError>
 where
-    F: FnMut(&str) -> Result<(), VoxError>,
+    F: FnMut(&str) -> Fut,
+    Fut: std::future::Future<Output = Result<(), VoxError>>,
 {
     let url = format!("http://{}/api/generate", host);
 
@@ -205,44 +206,54 @@ where
 
     let mut stream = response.bytes_stream();
     let mut buffer = SentenceBuffer::new();
+    let mut line_buffer: Vec<u8> = Vec::new(); // Persistent buffer for incomplete JSON lines
 
     // Process streaming response
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| VoxError::Pipeline(format!("Stream error: {}", e)))?;
 
-        // Parse each line as JSON (Ollama sends newline-delimited JSON)
-        for line in chunk.split(|&b| b == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
+        // Append chunk to line buffer
+        line_buffer.extend_from_slice(&chunk);
 
-            let ollama_chunk: OllamaChunk = serde_json::from_slice(line)
-                .map_err(|e| VoxError::Pipeline(format!("JSON parse error: {}", e)))?;
+        // Process complete lines (ending with \n)
+        let mut start = 0;
+        for (i, &byte) in line_buffer.iter().enumerate() {
+            if byte == b'\n' {
+                let line = &line_buffer[start..i];
+                if !line.is_empty() {
+                    let ollama_chunk: OllamaChunk = serde_json::from_slice(line)
+                        .map_err(|e| VoxError::Pipeline(format!("JSON parse error: {}", e)))?;
 
-            if !ollama_chunk.response.is_empty() {
-                print!("{}", ollama_chunk.response); // Show tokens as they arrive
-                use std::io::Write;
-                std::io::stdout().flush().ok();
+                    if !ollama_chunk.response.is_empty() {
+                        print!("{}", ollama_chunk.response); // Show tokens as they arrive
+                        use std::io::Write;
+                        std::io::stdout().flush().ok();
 
-                // Check for complete sentences
-                let sentences = buffer.push(&ollama_chunk.response);
+                        // Check for complete sentences
+                        let sentences = buffer.push(&ollama_chunk.response);
 
-                // Call handler for each complete sentence
-                for sentence in sentences {
-                    on_sentence(&sentence)?;
+                        // Call handler for each complete sentence
+                        for sentence in sentences {
+                            on_sentence(&sentence).await?;
+                        }
+                    }
+
+                    if ollama_chunk.done {
+                        break;
+                    }
                 }
-            }
-
-            if ollama_chunk.done {
-                break;
+                start = i + 1;
             }
         }
+
+        // Keep incomplete line in buffer for next chunk
+        line_buffer.drain(..start);
     }
 
     // Handle any remaining text (incomplete sentence at the end)
     let remaining = buffer.flush();
     for sentence in remaining {
-        on_sentence(&sentence)?;
+        on_sentence(&sentence).await?;
     }
 
     println!(); // Newline after streaming text
