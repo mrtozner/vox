@@ -65,10 +65,13 @@ vox listen --stt-backend sherpa-streaming  # real-time streaming transcription
 vox speak "Hello from Vox!"             # text-to-speech (needs kokoro feature)
 vox speak "Hello" --voice am_adam       # pick a voice
 vox speak "Hallo" --backend piper --voice de  # multilingual TTS with Piper
+vox speak "Hi" --backend pocket          # pure Rust TTS (edge-ready, no external deps)
 vox speak "Hi" --backend chatterbox --voice ref.wav  # voice cloning
 vox chat --llm llama3.2                 # voice chat with Ollama
 vox models list                         # show downloaded models
 vox models download whisper-base.en     # download a specific model
+vox models download kokoro --force      # force re-download if corrupted
+vox models path                         # show where models are stored
 ```
 
 ### Web UI
@@ -187,6 +190,66 @@ vox models download kokoro              # 310MB
 vox models download kokoro-voices       # 27MB
 vox models download piper-en-us         # 63MB (+ piper-en-us-config)
 ```
+
+### Model Management and Troubleshooting
+
+**Models Directory Location:**
+
+Models are stored in platform-specific directories:
+- **macOS**: `~/Library/Application Support/vox/models`
+- **Linux**: `~/.local/share/vox/models`
+- **Windows**: `{FOLDERPATH}/vox/models`
+
+To find your models directory:
+```bash
+vox models path
+```
+
+**Corrupted or Partial Downloads:**
+
+If a download is interrupted (e.g., disk full, network failure), you may see ONNX Runtime errors like:
+```
+External initializer offset out of bounds
+```
+
+To fix:
+1. **Automatic cleanup**: Run `vox models list` to auto-clean partial downloads (`.part` files)
+2. **Force re-download**: Use `vox models download <model-name> --force` to replace corrupted files
+3. **Manual cleanup**: Delete corrupted files from the models directory (use `vox models path` to locate)
+
+Example recovery workflow:
+```bash
+# Check for partial downloads and clean them up
+vox models list
+
+# Force re-download a corrupted model
+vox models download kokoro --force
+
+# Verify the download
+vox models list
+```
+
+**TTS Backend: Pocket**
+
+Pocket is a pure Rust TTS backend that requires no external dependencies and is optimized for edge/embedded devices:
+
+```bash
+# Install with pocket support
+cargo install --git https://github.com/mrtozner/vox --features cli,pocket
+
+# Use pocket TTS
+vox speak "Hello" --backend pocket
+
+# With Apple Metal GPU acceleration (macOS only)
+cargo install --git https://github.com/mrtozner/vox --features cli,pocket-metal
+vox speak "Hello" --backend pocket
+```
+
+Pocket is ideal when you need:
+- Minimal dependencies
+- Fast cold start
+- Edge/embedded deployment
+- Apple Silicon GPU acceleration (with `pocket-metal`)
 
 <br>
 

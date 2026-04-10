@@ -96,6 +96,9 @@ enum ModelAction {
     Download {
         /// Model name (e.g. silero-vad, whisper-tiny.en, kokoro, kokoro-voices)
         name: String,
+        /// Force re-download even if the file already exists
+        #[arg(long)]
+        force: bool,
     },
     /// Show the models directory path
     Path,
@@ -143,8 +146,8 @@ async fn main() -> anyhow::Result<()> {
             ModelAction::List => {
                 cli::models::list()?;
             }
-            ModelAction::Download { name } => {
-                cli::models::download(&name).await?;
+            ModelAction::Download { name, force } => {
+                cli::models::download(&name, force).await?;
             }
             ModelAction::Path => {
                 cli::models::path()?;

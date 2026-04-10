@@ -1,6 +1,7 @@
 //! Handler for `vox models` — model registry, download, and management.
 
 use std::path::PathBuf;
+use std::fs;
 
 /// Metadata for a downloadable model.
 pub struct ModelInfo {
@@ -21,8 +22,8 @@ pub const MODELS: &[ModelInfo] = &[
     ModelInfo {
         name: "silero-vad",
         filename: "silero_vad.onnx",
-        url: "https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx",
-        size_bytes: 2_000_000,
+        url: "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx",
+        size_bytes: 2_327_524,
         kind: "VAD",
     },
     ModelInfo {
@@ -42,15 +43,15 @@ pub const MODELS: &[ModelInfo] = &[
     ModelInfo {
         name: "kokoro",
         filename: "kokoro-v1.0.onnx",
-        url: "https://github.com/hexgrad/kokoro/releases/download/v1.0/kokoro-v1.0.onnx",
-        size_bytes: 310_000_000,
+        url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
+        size_bytes: 325_532_387,
         kind: "TTS",
     },
     ModelInfo {
         name: "kokoro-voices",
         filename: "voices.bin",
-        url: "https://github.com/hexgrad/kokoro/releases/download/v1.0/voices-v1.0.bin",
-        size_bytes: 27_000_000,
+        url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
+        size_bytes: 28_214_398,
         kind: "TTS",
     },
     ModelInfo {
@@ -194,6 +195,26 @@ pub fn models_dir() -> PathBuf {
     dir
 }
 
+/// Clean up any orphaned .part files from previous incomplete downloads.
+pub fn cleanup_partial_downloads() -> anyhow::Result<usize> {
+    let dir = models_dir();
+    let mut cleaned = 0;
+
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(ext) = path.extension() {
+                if ext == "part" && fs::remove_file(&path).is_ok() {
+                    cleaned += 1;
+                    println!("  Cleaned up partial download: {}", path.display());
+                }
+            }
+        }
+    }
+
+    Ok(cleaned)
+}
+
 /// Format a byte count as a human-readable string.
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -216,6 +237,14 @@ pub fn list() -> anyhow::Result<()> {
     let dir = models_dir();
 
     println!("Models directory: {}\n", dir.display());
+
+    // Clean up partial downloads on startup
+    if let Ok(cleaned) = cleanup_partial_downloads() {
+        if cleaned > 0 {
+            println!("Cleaned up {cleaned} partial download(s)\n");
+        }
+    }
+
     println!("  {:<20} {:<6} {:<12} STATUS", "NAME", "KIND", "SIZE");
     println!("  {}", "-".repeat(55));
 
@@ -242,7 +271,7 @@ pub fn list() -> anyhow::Result<()> {
 }
 
 /// Download a model by name with a progress bar.
-pub async fn download(name: &str) -> anyhow::Result<()> {
+pub async fn download(name: &str, force: bool) -> anyhow::Result<()> {
     let model = MODELS.iter().find(|m| m.name == name).ok_or_else(|| {
         let available: Vec<&str> = MODELS.iter().map(|m| m.name).collect();
         anyhow::anyhow!(
@@ -254,10 +283,25 @@ pub async fn download(name: &str) -> anyhow::Result<()> {
     let dir = models_dir();
     let dest = dir.join(model.filename);
 
-    if dest.exists() {
+    // Check for existing file
+    if dest.exists() && !force {
         println!("Model '{}' is already downloaded at:", model.name);
         println!("  {}", dest.display());
+        println!("\nTo re-download, use: vox models download {} --force", name);
         return Ok(());
+    }
+
+    // Clean up any existing .part file from a previous failed download
+    let tmp_dest = dest.with_extension("part");
+    if tmp_dest.exists() {
+        println!("Found partial download from previous attempt, cleaning up...");
+        let _ = tokio::fs::remove_file(&tmp_dest).await;
+    }
+
+    // If forcing a re-download, remove the existing file
+    if force && dest.exists() {
+        println!("Removing existing file for forced re-download...");
+        tokio::fs::remove_file(&dest).await?;
     }
 
     println!(
@@ -302,28 +346,100 @@ pub async fn download(name: &str) -> anyhow::Result<()> {
     }
 
     // Write to a temporary file first, then rename (atomic-ish)
-    let tmp_dest = dest.with_extension("part");
-
-    let mut file = tokio::fs::File::create(&tmp_dest).await?;
+    let mut file = tokio::fs::File::create(&tmp_dest).await.map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to create temporary download file: {}\n\n\
+             This may indicate insufficient disk space or permission issues.\n\
+             Models directory: {}",
+            e,
+            dir.display()
+        )
+    })?;
     let mut stream = response.bytes_stream();
 
     use tokio::io::AsyncWriteExt;
     use tokio_stream::StreamExt;
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| anyhow::anyhow!("Download stream error: {e}"))?;
-        file.write_all(&chunk).await?;
+        let chunk = chunk.map_err(|e| {
+            anyhow::anyhow!(
+                "Download stream error: {}\n\n\
+                 The download may have been interrupted due to network issues.\n\
+                 Partial file will be cleaned up automatically on next run.\n\
+                 To retry, run: vox models download {}",
+                e,
+                model.name
+            )
+        })?;
+
+        file.write_all(&chunk).await.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to write downloaded data: {}\n\n\
+                 This typically indicates insufficient disk space.\n\
+                 Partial download location: {}\n\
+                 Required space: {}\n\n\
+                 To clean up partial downloads, run: vox models list\n\
+                 To retry after freeing space, run: vox models download {}",
+                e,
+                tmp_dest.display(),
+                format_bytes(model.size_bytes),
+                model.name
+            )
+        })?;
+
         pb.inc(chunk.len() as u64);
     }
 
     file.flush().await?;
     drop(file);
 
-    // Move into place
-    tokio::fs::rename(&tmp_dest, &dest).await?;
-
     pb.finish_and_clear();
-    println!("Downloaded {} to {}", model.name, dest.display());
+
+    // Validate the downloaded file size
+    let actual_size = tokio::fs::metadata(&tmp_dest).await?.len();
+
+    // Allow some tolerance (within 1% or the exact expected size)
+    let size_diff = actual_size.abs_diff(model.size_bytes);
+    let tolerance = model.size_bytes / 100; // 1% tolerance
+
+    if size_diff > tolerance && actual_size != total_size {
+        let _ = tokio::fs::remove_file(&tmp_dest).await;
+        anyhow::bail!(
+            "Downloaded file size mismatch!\n\n\
+             Expected: {} ({} bytes)\n\
+             Downloaded: {} ({} bytes)\n\
+             Difference: {}\n\n\
+             The download may have been corrupted or interrupted.\n\
+             Partial file has been removed.\n\
+             Models directory: {}\n\n\
+             To retry the download, run: vox models download {}",
+            format_bytes(model.size_bytes),
+            model.size_bytes,
+            format_bytes(actual_size),
+            actual_size,
+            format_bytes(size_diff),
+            dir.display(),
+            model.name
+        );
+    }
+
+    // Move into place
+    tokio::fs::rename(&tmp_dest, &dest).await.map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to finalize download: {}\n\n\
+             The file was downloaded successfully but could not be moved to final location.\n\
+             Temporary file: {}\n\
+             Final location: {}\n\
+             Models directory: {}",
+            e,
+            tmp_dest.display(),
+            dest.display(),
+            dir.display()
+        )
+    })?;
+
+    println!("Successfully downloaded {} to {}", model.name, dest.display());
+    println!("File size: {} ({} bytes)", format_bytes(actual_size), actual_size);
 
     Ok(())
 }
@@ -407,7 +523,7 @@ pub async fn ensure_model(
         return Ok(p);
     }
     if prompt_download(model_name, filename, auto_yes)? {
-        download(model_name).await?;
+        download(model_name, false).await?;
         resolve_model(filename).ok_or_else(|| {
             anyhow::anyhow!("Download of '{model_name}' succeeded but file not found")
         })
