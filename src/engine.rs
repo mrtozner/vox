@@ -46,6 +46,7 @@ pub struct VoxContext {
         feature = "kokoro",
         feature = "pocket",
         feature = "chatterbox",
+        feature = "piper",
         feature = "tts"
     ))]
     audio_player: Option<Arc<crate::audio::AudioPlayer>>,
@@ -73,6 +74,7 @@ impl VoxContext {
         feature = "kokoro",
         feature = "pocket",
         feature = "chatterbox",
+        feature = "piper",
         feature = "tts"
     ))]
     pub async fn speak_and_play(&self, text: &str) -> Result<TtsOutput, VoxError> {
@@ -193,6 +195,7 @@ impl VoxBuilder {
             feature = "kokoro",
             feature = "pocket",
             feature = "chatterbox",
+            feature = "piper",
             feature = "tts"
         ))]
         let audio_player = if tts.is_some() {
@@ -218,6 +221,7 @@ impl VoxBuilder {
                 feature = "kokoro",
                 feature = "pocket",
                 feature = "chatterbox",
+                feature = "piper",
                 feature = "tts"
             ))]
             audio_player,
@@ -252,6 +256,7 @@ pub struct Vox {
         feature = "kokoro",
         feature = "pocket",
         feature = "chatterbox",
+        feature = "piper",
         feature = "tts"
     ))]
     audio_player: Option<Arc<crate::audio::AudioPlayer>>,
@@ -419,6 +424,7 @@ impl Vox {
                                     feature = "kokoro",
                                     feature = "pocket",
                                     feature = "chatterbox",
+                                    feature = "piper",
                                     feature = "tts"
                                 ))]
                                 audio_player: self.audio_player.clone(),

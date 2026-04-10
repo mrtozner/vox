@@ -1,10 +1,10 @@
 //! Handler for `vox chat` -- voice conversation with an LLM via Ollama.
 
-#[cfg(feature = "kokoro")]
+#[cfg(feature = "piper")]
 use super::models::{ensure_model, model_filename, whisper_download_name};
 
 /// Ollama generate request.
-#[cfg(feature = "kokoro")]
+#[cfg(feature = "piper")]
 #[derive(serde::Serialize)]
 struct OllamaRequest {
     model: String,
@@ -15,14 +15,14 @@ struct OllamaRequest {
 }
 
 /// Ollama generate response.
-#[cfg(feature = "kokoro")]
+#[cfg(feature = "piper")]
 #[derive(serde::Deserialize)]
 struct OllamaResponse {
     response: String,
 }
 
 /// Call the Ollama HTTP API.
-#[cfg(feature = "kokoro")]
+#[cfg(feature = "piper")]
 async fn ask_ollama(
     client: &reqwest::Client,
     host: &str,
@@ -56,7 +56,7 @@ async fn ask_ollama(
 }
 
 /// Run the chat command.
-#[cfg(feature = "kokoro")]
+#[cfg(feature = "piper")]
 pub async fn run(
     whisper_model: &str,
     ollama_model: &str,
@@ -64,6 +64,8 @@ pub async fn run(
     yes: bool,
     voice_mode: bool,
 ) -> anyhow::Result<()> {
+    use super::models::{ensure_piper_voice, piper_voice_alias};
+
     // Resolve all required models (auto-download if --yes)
     let vad_path = ensure_model("silero-vad", "silero_vad.onnx", yes).await?;
 
@@ -71,8 +73,9 @@ pub async fn run(
     let whisper_name = whisper_download_name(whisper_model);
     let whisper_path = ensure_model(&whisper_name, &whisper_file, yes).await?;
 
-    let kokoro_path = ensure_model("kokoro", "kokoro-v1.0.onnx", yes).await?;
-    let voices_path = ensure_model("kokoro-voices", "voices.bin", yes).await?;
+    // Download Piper model (default to en-us for best English pronunciation)
+    let piper_voice = piper_voice_alias("en-us");
+    let piper_config = ensure_piper_voice(&piper_voice, yes).await?;
 
     // Initialize backends
     println!("Loading VAD model...");
@@ -81,8 +84,8 @@ pub async fn run(
     println!("Loading Whisper model ({whisper_model})...");
     let stt = vox::WhisperBackend::from_model(&whisper_path)?;
 
-    println!("Loading Kokoro TTS...");
-    let tts = vox::KokoroBackend::new(&kokoro_path, &voices_path).await?;
+    println!("Loading Piper TTS...");
+    let tts = vox::PiperBackend::new(&piper_config)?;
 
     // Build system prompt based on voice mode
     let mode = if voice_mode {
@@ -159,8 +162,8 @@ pub async fn run(
     Ok(())
 }
 
-/// Stub when kokoro feature is disabled.
-#[cfg(not(feature = "kokoro"))]
+/// Stub when piper feature is disabled.
+#[cfg(not(feature = "piper"))]
 pub async fn run(
     _whisper_model: &str,
     _ollama_model: &str,
@@ -169,8 +172,8 @@ pub async fn run(
     _voice_mode: bool,
 ) -> anyhow::Result<()> {
     anyhow::bail!(
-        "Chat requires the 'kokoro' feature for TTS.\n\n\
+        "Chat requires the 'piper' feature for TTS.\n\n\
          Rebuild with:\n\
-         \n  cargo install vox --features cli,kokoro\n"
+         \n  cargo install vox --features cli,piper\n"
     );
 }
