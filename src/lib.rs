@@ -56,7 +56,7 @@ pub use types::{
 
 // Tier 1: Voice-optimized prompts
 #[cfg(any(feature = "cli", feature = "server"))]
-pub use prompts::{build_system_prompt, VoicePromptMode};
+pub use prompts::{VoicePromptMode, build_system_prompt};
 
 // Conditional backend re-exports for convenience
 #[cfg(feature = "silero")]

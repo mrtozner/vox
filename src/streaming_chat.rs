@@ -40,6 +40,13 @@ pub struct SentenceBuffer {
 }
 
 #[cfg(any(feature = "cli", feature = "server"))]
+impl Default for SentenceBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(feature = "cli", feature = "server"))]
 impl SentenceBuffer {
     pub fn new() -> Self {
         Self {
@@ -63,7 +70,7 @@ impl SentenceBuffer {
         let mut completed = Vec::new();
 
         // Check if new token starts with whitespace - this confirms previous sentence
-        let starts_with_whitespace = token.chars().next().map_or(false, |c| c.is_whitespace());
+        let starts_with_whitespace = token.chars().next().is_some_and(|c| c.is_whitespace());
 
         // If buffer ends with sentence punctuation AND new token starts with space,
         // the buffered text is a complete sentence
@@ -156,14 +163,15 @@ impl SentenceBuffer {
 /// Perceived wait: Only first sentence latency (~500-800ms)
 /// ```
 #[cfg(any(feature = "cli", feature = "server"))]
+#[allow(clippy::too_many_arguments)]
 pub async fn stream_chat_with_tts<F>(
     client: &reqwest::Client,
     host: &str,
     model: &str,
     prompt: &str,
-    tts: Arc<dyn TtsBackend>,
+    _tts: Arc<dyn TtsBackend>,
     system_prompt: Option<String>,
-    voice: Option<String>,
+    _voice: Option<String>,
     mut on_sentence: F,
 ) -> Result<(), VoxError>
 where

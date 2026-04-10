@@ -70,6 +70,9 @@ enum Commands {
         /// Auto-download missing models without prompting
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Use voice-optimized prompts for better TTS output
+        #[arg(long)]
+        voice_mode: bool,
     },
     /// Test audio I/O (record and playback)
     Test,
@@ -148,8 +151,9 @@ async fn main() -> anyhow::Result<()> {
             llm,
             ollama_host,
             yes,
+            voice_mode,
         } => {
-            cli::chat::run(&model, &llm, &ollama_host, yes).await?;
+            cli::chat::run(&model, &llm, &ollama_host, yes, voice_mode).await?;
         }
         Commands::Test => {
             cli::test::run().await?;

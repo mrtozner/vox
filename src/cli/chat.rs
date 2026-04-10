@@ -10,6 +10,8 @@ struct OllamaRequest {
     model: String,
     prompt: String,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
 }
 
 /// Ollama generate response.
@@ -26,12 +28,14 @@ async fn ask_ollama(
     host: &str,
     model: &str,
     prompt: &str,
+    system_prompt: Option<&str>,
 ) -> anyhow::Result<String> {
     let url = format!("http://{host}/api/generate");
     let body = OllamaRequest {
         model: model.to_string(),
         prompt: prompt.to_string(),
         stream: false,
+        system: system_prompt.map(|s| s.to_string()),
     };
 
     let resp = client.post(&url).json(&body).send().await.map_err(|e| {
@@ -58,6 +62,7 @@ pub async fn run(
     ollama_model: &str,
     ollama_host: &str,
     yes: bool,
+    voice_mode: bool,
 ) -> anyhow::Result<()> {
     // Resolve all required models (auto-download if --yes)
     let vad_path = ensure_model("silero-vad", "silero_vad.onnx", yes).await?;
@@ -78,6 +83,15 @@ pub async fn run(
 
     println!("Loading Kokoro TTS...");
     let tts = vox::KokoroBackend::new(&kokoro_path, &voices_path).await?;
+
+    // Build system prompt based on voice mode
+    let mode = if voice_mode {
+        println!("Using voice-optimized prompts for natural TTS output");
+        vox::VoicePromptMode::Voice
+    } else {
+        vox::VoicePromptMode::Standard
+    };
+    let system_prompt = vox::build_system_prompt(mode);
 
     // Verify Ollama is reachable
     let client = reqwest::Client::new();
@@ -102,6 +116,9 @@ pub async fn run(
     // Clone model name for the println after the closure captures it.
     let model_display = ollama_model.clone();
 
+    // Clone system prompt for the closure
+    let system_prompt_clone = system_prompt.clone();
+
     // Build pipeline
     let pipeline = vox::Vox::builder()
         .vad(vad)
@@ -113,10 +130,11 @@ pub async fn run(
             let client = client.clone();
             let host = ollama_host.clone();
             let model = ollama_model.clone();
+            let system = system_prompt_clone.clone();
 
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(async {
-                    match ask_ollama(&client, &host, &model, &result.text).await {
+                    match ask_ollama(&client, &host, &model, &result.text, Some(&system)).await {
                         Ok(response) => {
                             println!("[Assistant] {response}");
                             if let Err(e) = ctx.speak_and_play(&response).await {
@@ -148,6 +166,7 @@ pub async fn run(
     _ollama_model: &str,
     _ollama_host: &str,
     _yes: bool,
+    _voice_mode: bool,
 ) -> anyhow::Result<()> {
     anyhow::bail!(
         "Chat requires the 'kokoro' feature for TTS.\n\n\
