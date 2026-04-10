@@ -1,11 +1,8 @@
 //! Handler for `vox listen` — real-time microphone transcription.
 
-use super::models::{
-    ensure_model, model_filename,
-    whisper_download_name,
-};
 #[cfg(feature = "distil-whisper")]
 use super::models::{distil_whisper_download_name, distil_whisper_model_filename};
+use super::models::{ensure_model, model_filename, whisper_download_name};
 use vox::{SileroVad, Vox};
 
 /// Run the listen command.
