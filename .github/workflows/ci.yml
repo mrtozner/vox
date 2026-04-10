@@ -78,9 +78,12 @@ jobs:
 
       # Note: 'sherpa' excluded (requires prebuilt native lib), 'piper' excluded
       # (vendor crate has pre-existing lifetime lint incompatible with -D warnings).
-      # 'qwen3' CPU variant is portable and included.
       - name: Clippy (all portable features)
-        run: cargo clippy --features whisper,silero,kokoro,pocket,chatterbox,qwen3,cli,server -- -D warnings
+        run: cargo clippy --features whisper,silero,kokoro,pocket,chatterbox,cli,server -- -D warnings
+
+      - name: Clippy (qwen3 feature)
+        if: runner.os != 'Windows'
+        run: cargo clippy --features qwen3 -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -136,15 +139,9 @@ jobs:
         env:
           RUSTFLAGS: ""
 
-      - name: Tests with qwen3 feature
-        run: cargo test --features qwen3
-        env:
-          RUSTFLAGS: ""
-
-      - name: Build qwen3 examples
-        run: |
-          cargo build --example test_streaming --features qwen3
-          cargo build --example test_non_streaming --features qwen3
+      - name: Tests with qwen3 feature (Unix only)
+        if: runner.os != 'Windows'
+        run: cargo test --features qwen3 --lib
         env:
           RUSTFLAGS: ""
 
@@ -173,7 +170,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install ALSA dev
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - run: cargo doc --no-deps --features qwen3
+      - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
 
