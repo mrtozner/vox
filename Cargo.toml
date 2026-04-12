@@ -235,18 +235,6 @@ name = "demo_voice_mode"
 required-features = ["cli"]
 
 [[example]]
-name = "test_variance"
-required-features = ["qwen3"]
-
-[[example]]
-name = "test_warmup"
-required-features = ["qwen3"]
-
-[[example]]
-name = "benchmark_turbo"
-required-features = ["whisper", "silero"]
-
-[[example]]
 name = "voice_memory_demo"
 required-features = ["intelligence"]
 

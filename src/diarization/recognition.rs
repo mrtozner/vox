@@ -184,11 +184,7 @@ impl SpeakerRegistry {
     ///
     /// # Returns
     /// `Ok(())` on success, `Err` if the speaker ID is unknown.
-    pub fn rename(
-        &mut self,
-        id: &str,
-        new_label: impl Into<String>,
-    ) -> Result<(), VoxError> {
+    pub fn rename(&mut self, id: &str, new_label: impl Into<String>) -> Result<(), VoxError> {
         let speaker = self
             .speakers
             .get_mut(id)
@@ -412,11 +408,16 @@ mod tests {
         // Should still identify as Alice
         let query = make_embedding(&[0.9, 0.1, 0.0]);
         let result = registry.identify(&query).unwrap();
-        assert!(matches!(result, Recognition::Identified { speaker_id, .. } if speaker_id == "alice"));
+        assert!(
+            matches!(result, Recognition::Identified { speaker_id, .. } if speaker_id == "alice")
+        );
 
         // Verify embedding was actually modified (not identical to original)
         let speaker = registry.get_speaker("alice").unwrap();
-        assert!((speaker.embedding[0] - 1.0).abs() > 0.01, "embedding should have shifted");
+        assert!(
+            (speaker.embedding[0] - 1.0).abs() > 0.01,
+            "embedding should have shifted"
+        );
     }
 
     #[test]

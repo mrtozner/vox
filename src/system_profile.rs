@@ -141,22 +141,14 @@ impl SystemProfile {
     /// thread doesn't starve.
     pub fn recommended_inference_threads(&self) -> i32 {
         let n = self.num_cpus as i32;
-        if n <= 2 {
-            n
-        } else {
-            n - 1
-        }
+        if n <= 2 { n } else { n - 1 }
     }
 
     /// One-line human-readable summary for startup logs.
     pub fn summary(&self) -> String {
         format!(
             "{} {} · {} MB RAM · {} cores · class={}",
-            self.device,
-            self.arch,
-            self.total_ram_mb,
-            self.num_cpus,
-            self.class,
+            self.device, self.arch, self.total_ram_mb, self.num_cpus, self.class,
         )
     }
 }

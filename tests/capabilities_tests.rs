@@ -23,7 +23,10 @@ async fn hardware_facts_match_system_profile() {
 fn feature_flags_reflect_compile_features() {
     let flags = FeatureFlags::detect();
     // On a server build these two must be on
-    assert!(flags.whisper, "whisper feature should be on in server build");
+    assert!(
+        flags.whisper,
+        "whisper feature should be on in server build"
+    );
     assert!(flags.silero, "silero feature should be on in server build");
 }
 
@@ -130,16 +133,8 @@ async fn flat_list_includes_backends() {
 async fn registry_is_serializable() {
     let profile = SystemProfile::detect();
     let http = reqwest::Client::new();
-    let registry = CapabilityRegistry::build(
-        &profile,
-        None,
-        None,
-        None,
-        None,
-        "127.0.0.1:1",
-        &http,
-    )
-    .await;
+    let registry =
+        CapabilityRegistry::build(&profile, None, None, None, None, "127.0.0.1:1", &http).await;
 
     let json = serde_json::to_string(&registry).unwrap();
     assert!(json.contains("hardware"));

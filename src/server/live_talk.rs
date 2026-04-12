@@ -5,8 +5,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
@@ -15,11 +15,11 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "silero")]
 use tracing::{debug, info};
 
+use super::ServerState;
 use super::error::ServerError;
 use super::models::{
     CancelReason, LiveTalkClientMsg, LiveTalkConfig, LiveTalkMode, LiveTalkWsEvent,
 };
-use super::ServerState;
 
 /// Shared WebSocket sender for interleaved events from main loop and worker tasks.
 type WsSink = Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>;
@@ -291,11 +291,8 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
                     Ok(LiveTalkClientMsg::Cancel) => {
                         if let Some(turn) = active_turn.take() {
                             turn.cancel.cancel();
-                            let _ = tokio::time::timeout(
-                                Duration::from_millis(100),
-                                turn.handle,
-                            )
-                            .await;
+                            let _ =
+                                tokio::time::timeout(Duration::from_millis(100), turn.handle).await;
                         }
                         // Reset VAD after cancellation so echo-primed LSTM
                         // state doesn't bleed into the next utterance.
@@ -314,11 +311,8 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
                         ptt_buffer.clear();
                         if let Some(turn) = active_turn.take() {
                             turn.cancel.cancel();
-                            let _ = tokio::time::timeout(
-                                Duration::from_millis(100),
-                                turn.handle,
-                            )
-                            .await;
+                            let _ =
+                                tokio::time::timeout(Duration::from_millis(100), turn.handle).await;
                             vad.reset();
                             audio_residual.clear();
                             let _ = send_live_event(
@@ -335,8 +329,7 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
                         ptt_active = false;
                         if matches!(mode, LiveTalkMode::PushToTalk) && !ptt_buffer.is_empty() {
                             let samples = std::mem::take(&mut ptt_buffer);
-                            let duration_ms =
-                                (samples.len() as u64 * 1000) / 16_000;
+                            let duration_ms = (samples.len() as u64 * 1000) / 16_000;
                             let utterance = vox::Utterance {
                                 audio: vox::AudioChunk {
                                     samples,
@@ -616,10 +609,13 @@ async fn run_turn_cancellable(
             }
 
             let index = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if !send_live_event(&ws, &LiveTalkWsEvent::Sentence {
-                index,
-                text: text.clone(),
-            })
+            if !send_live_event(
+                &ws,
+                &LiveTalkWsEvent::Sentence {
+                    index,
+                    text: text.clone(),
+                },
+            )
             .await
             {
                 return Err(vox::VoxError::Pipeline("client disconnected".into()));
@@ -636,18 +632,12 @@ async fn run_turn_cancellable(
                 return Err(vox::VoxError::Pipeline("client disconnected".into()));
             }
 
-            let wav_bytes = super::ws::encode_wav_chunk(
-                &output.audio.samples,
-                output.audio.sample_rate,
-            )
-            .map_err(vox::VoxError::Tts)?;
+            let wav_bytes =
+                super::ws::encode_wav_chunk(&output.audio.samples, output.audio.sample_rate)
+                    .map_err(vox::VoxError::Tts)?;
             {
                 let mut sink = ws.lock().await;
-                if sink
-                    .send(Message::Binary(wav_bytes.into()))
-                    .await
-                    .is_err()
-                {
+                if sink.send(Message::Binary(wav_bytes.into())).await.is_err() {
                     return Err(vox::VoxError::Pipeline("client disconnected".into()));
                 }
             }
@@ -671,11 +661,7 @@ async fn run_turn_cancellable(
     match stop {
         Ok(vox::streaming_chat::StopReason::Finished) => {
             let total = counter.load(std::sync::atomic::Ordering::Relaxed);
-            let _ = send_live_event(
-                &ws_tx,
-                &LiveTalkWsEvent::TurnDone { sentences: total },
-            )
-            .await;
+            let _ = send_live_event(&ws_tx, &LiveTalkWsEvent::TurnDone { sentences: total }).await;
         }
         Ok(vox::streaming_chat::StopReason::Cancelled) => {
             debug!("live_talk: turn cancelled");

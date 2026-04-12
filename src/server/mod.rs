@@ -151,7 +151,10 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
     #[cfg(feature = "piper")]
     let conversation_tts: Option<Arc<dyn vox::traits::TtsBackend>> = {
         // Only load separately if main TTS isn't already Piper
-        if tts_model_name.as_deref().is_some_and(|n| n.starts_with("piper")) {
+        if tts_model_name
+            .as_deref()
+            .is_some_and(|n| n.starts_with("piper"))
+        {
             tts.clone() // Main TTS is already Piper, reuse it
         } else {
             match try_load_piper(&models_dir) {
@@ -225,19 +228,18 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
     };
 
     // Infer TTS backend name from model name prefix if possible.
-    let tts_tuple: Option<(&str, &str, Option<u64>)> =
-        tts_model_name.as_deref().map(|name| {
-            let backend = if name.starts_with("piper") {
-                "piper"
-            } else if name == "qwen3" {
-                "qwen3"
-            } else if name.starts_with("kokoro") {
-                "kokoro"
-            } else {
-                "tts"
-            };
-            (backend, name, tts_model_size)
-        });
+    let tts_tuple: Option<(&str, &str, Option<u64>)> = tts_model_name.as_deref().map(|name| {
+        let backend = if name.starts_with("piper") {
+            "piper"
+        } else if name == "qwen3" {
+            "qwen3"
+        } else if name.starts_with("kokoro") {
+            "kokoro"
+        } else {
+            "tts"
+        };
+        (backend, name, tts_model_size)
+    });
 
     let capabilities = Arc::new(
         vox::CapabilityRegistry::build(
@@ -599,7 +601,9 @@ async fn load_diarization(
     // Clear stale speakers if embedding pipeline version changed.
     // Different preprocessing (CMVN, thresholds) produces incompatible embeddings.
     const EMBEDDING_VERSION: &str = "v2-cmvn";
-    let stored_version = db.get_system_preference("embedding_version").await
+    let stored_version = db
+        .get_system_preference("embedding_version")
+        .await
         .unwrap_or_default()
         .unwrap_or_default();
     if stored_version != EMBEDDING_VERSION {
@@ -611,7 +615,9 @@ async fn load_diarization(
         if let Err(e) = db.clear_speakers().await {
             tracing::warn!(error = %e, "failed to clear stale speakers");
         }
-        let _ = db.set_system_preference("embedding_version", EMBEDDING_VERSION).await;
+        let _ = db
+            .set_system_preference("embedding_version", EMBEDDING_VERSION)
+            .await;
     }
 
     // Hydrate in-memory registry from persisted speakers.

@@ -180,10 +180,7 @@ impl CapabilityRegistry {
         }
 
         if let Some(vad) = &self.models.vad {
-            out.push_str(&format!(
-                "- Voice activity detection: {}\n",
-                vad.backend,
-            ));
+            out.push_str(&format!("- Voice activity detection: {}\n", vad.backend,));
         } else {
             out.push_str("- Voice activity detection: not loaded\n");
         }
@@ -288,10 +285,7 @@ impl CapabilityRegistry {
             out.push(Capability {
                 id: format!("ollama.{}", m.name),
                 label: m.name.clone(),
-                summary: format!(
-                    "Local Ollama model ({} MB)",
-                    m.size_mb.unwrap_or(0),
-                ),
+                summary: format!("Local Ollama model ({} MB)", m.size_mb.unwrap_or(0),),
                 available: true,
                 details: serde_json::to_value(m).ok(),
             });

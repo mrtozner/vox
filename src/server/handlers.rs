@@ -422,24 +422,24 @@ pub async fn ollama_models(
     // Global cap on the whole fan-out. If Ollama is really stuck, we return
     // whatever we have (possibly empty) rather than blocking the client.
     let all = futures_util::future::join_all(probes);
-    let models: Vec<OllamaModelInfo> =
-        match tokio::time::timeout(Duration::from_secs(3), all).await {
-            Ok(results) => results.into_iter().flatten().collect(),
-            Err(_) => {
-                // Budget exceeded — fall back to a best-effort list from /api/tags
-                // without template filtering. User still sees their chat models.
-                if let Some(arr) = body["models"].as_array() {
-                    arr.iter()
-                        .map(|m| OllamaModelInfo {
-                            name: m["name"].as_str().unwrap_or("unknown").to_string(),
-                            size: m["size"].as_u64(),
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                }
+    let models: Vec<OllamaModelInfo> = match tokio::time::timeout(Duration::from_secs(3), all).await
+    {
+        Ok(results) => results.into_iter().flatten().collect(),
+        Err(_) => {
+            // Budget exceeded — fall back to a best-effort list from /api/tags
+            // without template filtering. User still sees their chat models.
+            if let Some(arr) = body["models"].as_array() {
+                arr.iter()
+                    .map(|m| OllamaModelInfo {
+                        name: m["name"].as_str().unwrap_or("unknown").to_string(),
+                        size: m["size"].as_u64(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
             }
-        };
+        }
+    };
 
     Ok(Json(OllamaModelsResponse { models }))
 }

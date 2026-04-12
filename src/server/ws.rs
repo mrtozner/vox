@@ -111,7 +111,10 @@ const SPEAKER_PALETTE: &[&str] = &[
 
 fn color_for(id: &str) -> String {
     // For auto-enrolled speaker_N IDs, use index for maximum distinction
-    if let Some(n) = id.strip_prefix("speaker_").and_then(|n| n.parse::<usize>().ok()) {
+    if let Some(n) = id
+        .strip_prefix("speaker_")
+        .and_then(|n| n.parse::<usize>().ok())
+    {
         let idx = n.saturating_sub(1) % SPEAKER_PALETTE.len();
         return SPEAKER_PALETTE[idx].to_string();
     }
@@ -229,14 +232,8 @@ async fn handle_ws(
                     // Diagnostic: first message in a connection dumps sample stats
                     // so we can tell instantly whether the bytes-to-f32 decode is
                     // producing sane values (range ~[-1,1]) or garbage.
-                    let peek_min = samples
-                        .iter()
-                        .copied()
-                        .fold(f32::INFINITY, f32::min);
-                    let peek_max = samples
-                        .iter()
-                        .copied()
-                        .fold(f32::NEG_INFINITY, f32::max);
+                    let peek_min = samples.iter().copied().fold(f32::INFINITY, f32::min);
+                    let peek_max = samples.iter().copied().fold(f32::NEG_INFINITY, f32::max);
                     let peek_rms = {
                         let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
                         (sum_sq / samples.len().max(1) as f32).sqrt()
@@ -397,9 +394,11 @@ async fn handle_ws(
                                             // push a SpeakerUpdate so the sidebar appears
                                             // without the client having to poll.
                                             if let Some(update) = new_speaker_update {
-                                                if let Ok(json) = serde_json::to_string(
-                                                    &WsEvent::SpeakerUpdate { speaker: update },
-                                                ) {
+                                                if let Ok(json) =
+                                                    serde_json::to_string(&WsEvent::SpeakerUpdate {
+                                                        speaker: update,
+                                                    })
+                                                {
                                                     let _ = ws_tx
                                                         .send(Message::Text(json.into()))
                                                         .await;
@@ -441,8 +440,7 @@ async fn handle_ws(
                                     let _ = ws_tx
                                         .send(Message::Text(
                                             serde_json::to_string(&WsEvent::Error {
-                                                message: "diarization unavailable on server"
-                                                    .into(),
+                                                message: "diarization unavailable on server".into(),
                                             })
                                             .unwrap_or_default()
                                             .into(),
@@ -463,9 +461,8 @@ async fn handle_ws(
                                                     speakers: list,
                                                 })
                                             {
-                                                let _ = ws_tx
-                                                    .send(Message::Text(json.into()))
-                                                    .await;
+                                                let _ =
+                                                    ws_tx.send(Message::Text(json.into())).await;
                                             }
                                         }
                                     }
@@ -484,9 +481,9 @@ async fn handle_ws(
                                     ))
                                     .await;
                             } else if let Some(list) = current_speaker_list(&state).await {
-                                if let Ok(json) = serde_json::to_string(&WsEvent::SpeakerList {
-                                    speakers: list,
-                                }) {
+                                if let Ok(json) =
+                                    serde_json::to_string(&WsEvent::SpeakerList { speakers: list })
+                                {
                                     let _ = ws_tx.send(Message::Text(json.into())).await;
                                 }
                             }
@@ -503,9 +500,9 @@ async fn handle_ws(
                                     ))
                                     .await;
                             } else if let Some(list) = current_speaker_list(&state).await {
-                                if let Ok(json) = serde_json::to_string(&WsEvent::SpeakerList {
-                                    speakers: list,
-                                }) {
+                                if let Ok(json) =
+                                    serde_json::to_string(&WsEvent::SpeakerList { speakers: list })
+                                {
                                     let _ = ws_tx.send(Message::Text(json.into())).await;
                                 }
                             }
@@ -984,7 +981,9 @@ pub async fn converse_ws(
     let stt = Arc::clone(stt);
 
     let tts = state
-        .conversation_tts.as_ref().or(state.tts.as_ref())
+        .conversation_tts
+        .as_ref()
+        .or(state.tts.as_ref())
         .ok_or_else(|| ServerError::service_unavailable("TTS backend not loaded"))?;
     let tts = Arc::clone(tts);
 
@@ -1129,14 +1128,9 @@ async fn handle_converse_ws(
             // was synthesizing TTS — these almost certainly captured our own
             // playback via the user's mic and would otherwise self-trigger
             // a feedback loop.
-            let drain_deadline =
-                std::time::Instant::now() + std::time::Duration::from_millis(400);
+            let drain_deadline = std::time::Instant::now() + std::time::Duration::from_millis(400);
             while std::time::Instant::now() < drain_deadline {
-                match tokio::time::timeout(
-                    std::time::Duration::from_millis(20),
-                    ws_rx.next(),
-                )
-                .await
+                match tokio::time::timeout(std::time::Duration::from_millis(20), ws_rx.next()).await
                 {
                     Ok(Some(Ok(Message::Binary(_)))) => {
                         // discard stale mic frames from during TTS playback

@@ -6,8 +6,7 @@ use std::process::Command;
 /// sherpa-onnx release used for auto-download. Must have matching Linux
 /// shared-library archives on GitHub releases.
 const SHERPA_ONNX_VERSION: &str = "v1.12.20";
-const SHERPA_ONNX_RELEASE_BASE: &str =
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download";
+const SHERPA_ONNX_RELEASE_BASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SHERPA");
@@ -287,9 +286,8 @@ fn autodownload_sherpa() -> Result<PathBuf, String> {
     if nested_lib.is_dir() && !lib_dir.is_dir() {
         // Copy files out (rather than rename) so we don't disturb the rest of
         // the extracted tree — users may want the headers for manual rebuilds.
-        fs::create_dir_all(&lib_dir).map_err(|e| {
-            format!("failed to create lib cache dir {}: {e}", lib_dir.display())
-        })?;
+        fs::create_dir_all(&lib_dir)
+            .map_err(|e| format!("failed to create lib cache dir {}: {e}", lib_dir.display()))?;
         for entry in fs::read_dir(&nested_lib)
             .map_err(|e| format!("failed to read {}: {e}", nested_lib.display()))?
         {
@@ -302,8 +300,9 @@ fn autodownload_sherpa() -> Result<PathBuf, String> {
                 continue;
             };
             let dst = lib_dir.join(name);
-            fs::copy(&src, &dst)
-                .map_err(|e| format!("failed to copy {} -> {}: {e}", src.display(), dst.display()))?;
+            fs::copy(&src, &dst).map_err(|e| {
+                format!("failed to copy {} -> {}: {e}", src.display(), dst.display())
+            })?;
         }
     }
 
@@ -333,7 +332,7 @@ fn cache_dir() -> Result<PathBuf, String> {
     }
     // Last resort: use cargo's OUT_DIR so at least the build succeeds, at the
     // cost of re-downloading on every `cargo clean`.
-    let out_dir = env::var("OUT_DIR")
-        .map_err(|_| "no HOME, XDG_CACHE_HOME, or OUT_DIR set".to_string())?;
+    let out_dir =
+        env::var("OUT_DIR").map_err(|_| "no HOME, XDG_CACHE_HOME, or OUT_DIR set".to_string())?;
     Ok(PathBuf::from(out_dir).join("sherpa-onnx-cache"))
 }

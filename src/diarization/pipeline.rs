@@ -60,7 +60,10 @@ impl DiarizationPipeline {
         let max_num = registry
             .list_speakers()
             .iter()
-            .filter_map(|s| s.id.strip_prefix("speaker_").and_then(|n| n.parse::<u32>().ok()))
+            .filter_map(|s| {
+                s.id.strip_prefix("speaker_")
+                    .and_then(|n| n.parse::<u32>().ok())
+            })
             .max()
             .unwrap_or(0);
 
@@ -113,7 +116,9 @@ impl DiarizationPipeline {
         };
 
         // Identify speaker
-        let mut registry = self.registry.lock()
+        let mut registry = self
+            .registry
+            .lock()
             .map_err(|e| VoxError::Diarization(format!("registry mutex poisoned: {e}")))?;
         let recognition = registry.identify(&embedding)?;
 
@@ -138,8 +143,9 @@ impl DiarizationPipeline {
                 );
 
                 if self.config.auto_enroll {
-                    let mut counter = self.unknown_counter.lock()
-                        .map_err(|e| VoxError::Diarization(format!("counter mutex poisoned: {e}")))?;
+                    let mut counter = self.unknown_counter.lock().map_err(|e| {
+                        VoxError::Diarization(format!("counter mutex poisoned: {e}"))
+                    })?;
                     *counter += 1;
                     let id = format!("speaker_{}", *counter);
                     let name = format!("Speaker {}", *counter);
@@ -184,7 +190,9 @@ impl DiarizationPipeline {
         .await
         .map_err(|e| VoxError::Diarization(format!("embedding task panicked: {e}")))??;
 
-        let mut registry = self.registry.lock()
+        let mut registry = self
+            .registry
+            .lock()
             .map_err(|e| VoxError::Diarization(format!("registry mutex poisoned: {e}")))?;
         registry.enroll(id, name, embedding)?;
 

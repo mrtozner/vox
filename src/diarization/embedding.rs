@@ -253,7 +253,8 @@ impl SpeakerEmbedding {
 
         // Per-utterance CMVN: subtract mean of each mel bin across time frames.
         // This removes channel/volume effects and is standard for speaker verification.
-        let mean = log_mel_spec.mean_axis(ndarray::Axis(0))
+        let mean = log_mel_spec
+            .mean_axis(ndarray::Axis(0))
             .ok_or_else(|| VoxError::Diarization("empty mel spectrogram".to_string()))?;
         let normalized = &log_mel_spec - &mean;
         Ok(normalized)
@@ -266,10 +267,11 @@ impl SpeakerEmbedding {
         // Create an owned tensor so ONNX Runtime doesn't hold a
         // borrowed pointer that can dangle between async task migrations.
         let input_data: Vec<f32> = mel_features.iter().copied().collect();
-        let input_tensor = Tensor::from_array(([1usize, num_frames, n_mels], input_data.into_boxed_slice()))
-            .map_err(|e| {
-                VoxError::Diarization(format!("failed to create input tensor: {e}"))
-            })?;
+        let input_tensor =
+            Tensor::from_array(([1usize, num_frames, n_mels], input_data.into_boxed_slice()))
+                .map_err(|e| {
+                    VoxError::Diarization(format!("failed to create input tensor: {e}"))
+                })?;
 
         // Use the input name discovered at model load time (avoids calling
         // session.run() with wrong names, which can corrupt ONNX state).
