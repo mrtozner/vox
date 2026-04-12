@@ -43,6 +43,11 @@ fn test_state() -> Arc<ServerState> {
         tts_model_size: None,
         streaming_stt: None,
         model_cache: None,
+        capabilities: Arc::new(vox::CapabilityRegistry::default()),
+        #[cfg(feature = "diarization")]
+        diarization: None,
+        #[cfg(feature = "diarization")]
+        speaker_db: None,
     })
 }
 
@@ -348,6 +353,8 @@ mod wav_decoding {
                 language: Some("en".into()),
                 duration_ms: audio.duration_ms,
                 processing_time_ms: 1,
+                #[cfg(feature = "diarization")]
+                speaker_id: None,
             })
         }
     }
@@ -371,6 +378,11 @@ mod wav_decoding {
             tts_model_size: None,
             streaming_stt: None,
             model_cache: None,
+            capabilities: Arc::new(vox::CapabilityRegistry::default()),
+            #[cfg(feature = "diarization")]
+            diarization: None,
+            #[cfg(feature = "diarization")]
+            speaker_db: None,
         })
     }
 }

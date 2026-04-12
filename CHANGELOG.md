@@ -7,24 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-12
+
 ### Added
+- **Speaker Diarization** *(experimental)* — real-time speaker identification in the Listen tab
+  - ECAPA-TDNN speaker encoder with 512-dimensional voice embeddings
+  - Automatic speaker enrollment and recognition with cosine similarity
+  - SQLite-backed speaker database (`~/Library/Application Support/vox/speakers.db`)
+  - Per-speaker colored transcript entries (Tableau 10 colorblind-friendly palette)
+  - Speaker sidebar with rename and forget controls
+  - `diarization` feature flag (auto-enabled by `server`)
+- **Live Talk** — barge-in voice chat (`/v1/live-talk` WebSocket, experimental)
+  - Full-duplex conversation: speak while the LLM is still responding
+  - VAD + STT + LLM + TTS in a single WebSocket connection
+  - Interrupt TTS playback by speaking (barge-in)
+  - Voice and LLM model selection in the web UI
+- **Continuous Voice Chat** — `/v1/converse` WebSocket endpoint
+  - Persistent voice chat sessions with VAD-based turn management
+- **Capability Registry** — `/v1/capabilities` endpoint
+  - Reports available backends, features, and hardware at runtime
 - Qwen3-TTS backend with state-of-the-art speech synthesis
   - 0.6B and 1.7B CustomVoice model variants
-  - 20 voices across 10 languages (English, Chinese, Japanese, Korean, French, German, Spanish, Russian, Arabic, Portuguese)
-  - Apple Metal GPU acceleration for Apple Silicon
-  - NVIDIA CUDA GPU acceleration for Linux
+  - 20 voices across 10 languages
+  - Apple Metal / NVIDIA CUDA GPU acceleration
   - Streaming synthesis with chunked audio output (~800ms chunks)
-- Streaming TTS via `/v1/speak` WebSocket endpoint with gapless playback
-- Comprehensive Qwen3 examples: `test_streaming.rs`, `test_non_streaming.rs`
+- Streaming TTS via `/v1/speak` WebSocket with gapless playback
+- Web UI: 5-tab interface (Listen, Speak, Chat, Live Talk, Dashboard)
+- Kokoro TTS: 57 voices across 9 languages with voice selection dropdown
+
+### Fixed
+- ONNX Runtime SIGSEGV crash during speaker diarization (borrowed tensor + wrong input names)
+- Piper TTS "Invalid speaker id 0" error on single-speaker models
+- Speaker colors: replaced DJB2 hash (all greens) with Tableau 10 distinct palette
+- Forget button now always visible (0.4 opacity) instead of hidden until hover
+- Diarization mel-spectrogram DFT performance (pre-computed twiddle factors)
+- Speaker fragmentation (5+ IDs for 2 people): added CMVN normalization, lowered threshold to 0.35, EMA embedding adaptation
+- Live Talk echo/STT degradation: VAD gating during TTS playback, VAD reset after turns
+- Live Talk audio playback: dedicated AudioContext for TTS (separate from 16kHz mic context)
+- Whisper hallucination during silence: `no_speech_thold(0.6)` filtering
+- Stale speaker database: embedding version tracking auto-clears speakers on preprocessing changes
 
 ### Changed
-- **BREAKING**: Renamed TTS HTTP endpoint from `/v1/tts` to `/v1/synthesize` for clarity
-- Default TTS backend priority: Qwen3 → Kokoro → Piper (when `qwen3` feature enabled)
+- **BREAKING**: Renamed TTS HTTP endpoint from `/v1/tts` to `/v1/synthesize`
+- Default TTS priority: Qwen3 → Kokoro → Piper (when features enabled)
+- Voice chat uses Piper TTS by default for fast CPU-only synthesis
+- Speaker diarization uses `std::sync::Mutex` + `spawn_blocking` for thread-safe ONNX inference
 
 ### Performance
-- M4 Pro performance: Qwen3 0.6B RTF 0.96 (2.6GB RAM), Qwen3 1.7B RTF 1.14 (4.4GB RAM)
-- First chunk latency: ~831ms for streaming synthesis
-- Metal GPU acceleration provides near real-time synthesis on Apple Silicon
+- M4 Pro: Qwen3 0.6B RTF 0.96 (2.6GB RAM), Qwen3 1.7B RTF 1.14 (4.4GB RAM)
+- Diarization: pre-computed twiddle factors eliminate all trig calls from DFT hot loop
+- Metal GPU acceleration for near real-time synthesis on Apple Silicon
 
 ## [0.5.0] - 2026-04-10
 

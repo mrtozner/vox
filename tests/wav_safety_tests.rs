@@ -49,6 +49,11 @@ fn test_state_with_stt() -> Arc<ServerState> {
         tts_model_size: None,
         streaming_stt: None,
         model_cache: None,
+        capabilities: Arc::new(vox::CapabilityRegistry::default()),
+        #[cfg(feature = "diarization")]
+        diarization: None,
+        #[cfg(feature = "diarization")]
+        speaker_db: None,
     })
 }
 
@@ -177,6 +182,8 @@ impl vox::SttBackend for MockStt {
             language: Some("en".into()),
             duration_ms: audio.duration_ms,
             processing_time_ms: 0,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
         })
     }
 }

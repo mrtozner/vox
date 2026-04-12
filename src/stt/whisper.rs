@@ -114,6 +114,8 @@ impl SttBackend for WhisperBackend {
         let language = self.config.language.clone();
         let translate = self.config.translate;
         let n_threads = self.config.n_threads;
+        #[cfg(feature = "diarization")]
+        let speaker_id = audio.speaker_id.clone();
 
         // whisper-rs is synchronous -- run in a blocking task
         tokio::task::spawn_blocking(move || {
@@ -134,6 +136,11 @@ impl SttBackend for WhisperBackend {
             params.set_print_progress(false);
             params.set_print_realtime(false);
             params.set_print_timestamps(false);
+            // Filter non-speech audio: segments with a no_speech probability
+            // above this threshold are suppressed. This prevents Whisper from
+            // hallucinating text for echo, noise, or silence captured during
+            // Live Talk TTS playback.
+            params.set_no_speech_thold(0.6);
 
             if let Some(ref lang) = language {
                 params.set_language(Some(lang));
@@ -144,12 +151,21 @@ impl SttBackend for WhisperBackend {
                 .full(params, &samples)
                 .map_err(|e| VoxError::Stt(format!("whisper inference failed: {e}")))?;
 
-            // Collect segments
+            // Collect segments, skipping those with high no_speech probability
             let num_segments = state.full_n_segments();
 
             let mut text = String::new();
             for i in 0..num_segments {
                 if let Some(segment) = state.get_segment(i) {
+                    // Skip segments that are likely non-speech (echo, noise).
+                    if segment.no_speech_probability() > 0.6 {
+                        tracing::debug!(
+                            segment = i,
+                            no_speech_prob = segment.no_speech_probability(),
+                            "whisper: skipping high no_speech segment"
+                        );
+                        continue;
+                    }
                     if let Ok(segment_text) = segment.to_str_lossy() {
                         text.push_str(&segment_text);
                     }
@@ -163,6 +179,8 @@ impl SttBackend for WhisperBackend {
                 language: language.clone(),
                 duration_ms,
                 processing_time_ms,
+                #[cfg(feature = "diarization")]
+                speaker_id,
             })
         })
         .await

@@ -168,6 +168,8 @@ mod stt_real {
                 channels: 1,
             },
             duration_ms: 1000,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
         };
 
         let result = stt.transcribe(&utterance).await.unwrap();
@@ -194,6 +196,8 @@ mod stt_real {
                 channels: 1,
             },
             duration_ms: 3000,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
         };
 
         let result = stt.transcribe(&utterance).await.unwrap();

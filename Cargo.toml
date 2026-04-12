@@ -4,7 +4,7 @@ exclude = ["vendor/sherpa-sys"]
 
 [package]
 name = "vox"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 authors = ["Mert Ozoner"]
 description = "Local-first voice AI framework. Whisper STT, Kokoro/Pocket TTS, Silero VAD. Zero cloud dependencies."
@@ -42,6 +42,10 @@ tracing = "0.1"
 thiserror = "2"
 anyhow = "1"
 rubato = "0.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
+sha2 = { version = "0.10", optional = true }
 
 # CLI dependencies
 clap = { version = "4.5", features = ["derive"], optional = true }
@@ -56,8 +60,15 @@ toml = { version = "0.8", optional = true }
 axum = { version = "0.8", optional = true, features = ["ws"] }
 futures-util = { version = "0.3", optional = true }
 tower-http = { version = "0.6", optional = true, features = ["cors", "trace"] }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
+
+# Auto-GPU: when `qwen3` or `pocket` features are active on macOS, Metal is
+# enabled automatically via Cargo's additive feature merging. The explicit
+# `qwen3-metal` / `pocket-metal` features still work but are no longer needed
+# on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.9", optional = true, features = ["metal"] }
+qwen3-tts = { path = "vendor/qwen3-tts", optional = true, features = ["metal"] }
+pocket-tts = { version = "0.6", optional = true, features = ["metal"] }
 
 [features]
 default = ["whisper", "silero"]
@@ -76,15 +87,18 @@ chatterbox-coreml = ["chatterbox", "chatterbox-rs/coreml"]
 qwen3 = ["dep:qwen3-tts", "qwen3-tts/cpu", "dep:candle-core", "dep:rodio"]
 qwen3-cuda = ["qwen3", "qwen3-tts/cuda", "candle-core/cuda"]
 qwen3-metal = ["qwen3", "qwen3-tts/metal", "candle-core/metal"]
+diarization = ["dep:ort", "dep:ndarray", "dep:sqlx", "dep:sha2"]
+intelligence = [] # Semantic caching, user modeling, voice memory (opt-in)
 cli = [
     "dep:clap", "dep:dirs", "dep:indicatif", "dep:reqwest",
     "dep:tracing-subscriber", "dep:tokio-util", "dep:toml",
-    "dep:serde", "dep:serde_json",
     "whisper", "silero",
 ]
 server = [
-    "dep:axum", "dep:tower-http", "dep:serde", "dep:serde_json",
+    "dep:axum", "dep:tower-http",
     "dep:dirs", "dep:futures-util",
+    "dep:reqwest", "dep:tokio-util",
+    "diarization",
 ]
 
 [dev-dependencies]
@@ -108,6 +122,21 @@ required-features = ["server"]
 [[test]]
 name = "wav_safety_tests"
 path = "tests/wav_safety_tests.rs"
+required-features = ["server"]
+
+[[test]]
+name = "streaming_pipeline_tests"
+path = "tests/streaming_pipeline_tests.rs"
+required-features = ["whisper", "silero"]
+
+[[test]]
+name = "capabilities_tests"
+path = "tests/capabilities_tests.rs"
+required-features = ["server"]
+
+[[test]]
+name = "live_talk_integration"
+path = "tests/live_talk_integration.rs"
 required-features = ["server"]
 
 [[bin]]
@@ -148,8 +177,21 @@ required-features = ["chatterbox"]
 name = "tts_comparison_bench"
 harness = false
 
+[[bench]]
+name = "streaming_pipeline_bench"
+harness = false
+
+[[bench]]
+name = "intelligence_bench"
+harness = false
+required-features = ["intelligence"]
+
 [[example]]
 name = "simple_listen"
+required-features = ["whisper", "silero"]
+
+[[example]]
+name = "streaming_pipeline_demo"
 required-features = ["whisper", "silero"]
 
 [[example]]
@@ -185,6 +227,10 @@ name = "test_non_streaming"
 required-features = ["qwen3"]
 
 [[example]]
+name = "test_qwen3_play"
+required-features = ["qwen3"]
+
+[[example]]
 name = "demo_voice_mode"
 required-features = ["cli"]
 
@@ -199,3 +245,27 @@ required-features = ["qwen3"]
 [[example]]
 name = "benchmark_turbo"
 required-features = ["whisper", "silero"]
+
+[[example]]
+name = "voice_memory_demo"
+required-features = ["intelligence"]
+
+[[example]]
+name = "diarization_demo"
+required-features = ["whisper", "silero", "diarization"]
+
+[[example]]
+name = "live_speaker_test"
+required-features = ["whisper", "silero", "diarization"]
+
+[[example]]
+name = "live_diarization"
+required-features = ["whisper", "silero", "diarization"]
+
+[[example]]
+name = "speaker_id_ui_demo"
+required-features = ["diarization"]
+
+[[example]]
+name = "test_real_voices"
+required-features = ["diarization"]

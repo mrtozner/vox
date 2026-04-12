@@ -127,10 +127,20 @@ impl TtsBackend for PiperBackend {
         if let Some(ref voice) = request.voice {
             // Try parsing as a numeric speaker ID first
             if let Ok(sid) = voice.parse::<i64>() {
-                if let Some(err) = self.model.set_speaker(sid) {
-                    return Err(VoxError::Tts(format!(
-                        "failed to set speaker ID {sid}: {err}"
-                    )));
+                // Only set speaker on multi-speaker models; single-speaker
+                // models report id "0" in list_voices() but reject set_speaker().
+                let is_multi = self
+                    .model
+                    .get_speakers()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| !s.is_empty());
+                if is_multi {
+                    if let Some(err) = self.model.set_speaker(sid) {
+                        return Err(VoxError::Tts(format!(
+                            "failed to set speaker ID {sid}: {err}"
+                        )));
+                    }
                 }
             } else {
                 // Try looking up by speaker name
@@ -212,9 +222,9 @@ impl TtsBackend for PiperBackend {
             _ => {
                 // Single-speaker model
                 vec![VoiceInfo {
-                    id: "0".to_string(),
+                    id: "default".to_string(),
                     name: "Default".to_string(),
-                    gender: "unknown".to_string(),
+                    gender: "neutral".to_string(),
                     language: self.language.clone(),
                     accent: "Piper".to_string(),
                 }]

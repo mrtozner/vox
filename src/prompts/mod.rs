@@ -28,6 +28,20 @@ pub fn build_system_prompt(mode: VoicePromptMode) -> String {
     }
 }
 
+/// Build a system prompt with environment facts injected.
+///
+/// Used when the server/CLI has an environment-aware `CapabilityRegistry`
+/// available. Falls back to identical output as `build_system_prompt` if
+/// the registry is None-ish.
+#[cfg(any(feature = "cli", feature = "server"))]
+pub fn build_system_prompt_with_registry(
+    mode: VoicePromptMode,
+    registry: &crate::capabilities::CapabilityRegistry,
+) -> String {
+    let base = build_system_prompt(mode);
+    registry.inject_into_prompt(&base)
+}
+
 /// Standard system prompt for text-based chat.
 ///
 /// Allows markdown, code blocks, and technical formatting.

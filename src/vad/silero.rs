@@ -144,6 +144,14 @@ impl SileroVad {
 impl VadBackend for SileroVad {
     async fn process_frame(&mut self, frame: &AudioChunk) -> Result<Vec<VadEvent>, VoxError> {
         let probability = self.infer(&frame.samples)?;
+        // Per-frame trace (only visible at RUST_LOG=trace) so we can see
+        // what Silero actually emits when debugging pipeline issues.
+        tracing::trace!(
+            prob = probability,
+            is_speaking = self.is_speaking,
+            threshold = self.config.speech_threshold,
+            "silero frame"
+        );
         let mut events = Vec::new();
 
         if probability >= self.config.speech_threshold {
@@ -180,6 +188,8 @@ impl VadBackend for SileroVad {
                             channels: 1,
                         },
                         duration_ms,
+                        #[cfg(feature = "diarization")]
+                        speaker_id: None,
                     };
                     events.push(VadEvent::SpeechEnd(utterance));
                 }

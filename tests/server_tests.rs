@@ -44,6 +44,11 @@ fn build_test_app() -> Router {
         stt_model_size: None,
         tts_model_name: None,
         tts_model_size: None,
+        capabilities: Arc::new(vox::CapabilityRegistry::default()),
+        #[cfg(feature = "diarization")]
+        diarization: None,
+        #[cfg(feature = "diarization")]
+        speaker_db: None,
     });
 
     Router::new()
@@ -365,6 +370,11 @@ async fn stats_counter_increments_across_requests() {
         stt_model_size: None,
         tts_model_name: None,
         tts_model_size: None,
+        capabilities: Arc::new(vox::CapabilityRegistry::default()),
+        #[cfg(feature = "diarization")]
+        diarization: None,
+        #[cfg(feature = "diarization")]
+        speaker_db: None,
     });
 
     let app = Router::new()
@@ -439,6 +449,11 @@ async fn cors_headers_are_present_on_response() {
         stt_model_size: None,
         tts_model_name: None,
         tts_model_size: None,
+        capabilities: Arc::new(vox::CapabilityRegistry::default()),
+        #[cfg(feature = "diarization")]
+        diarization: None,
+        #[cfg(feature = "diarization")]
+        speaker_db: None,
     });
 
     let app = Router::new()

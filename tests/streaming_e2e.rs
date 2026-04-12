@@ -184,6 +184,8 @@ mod tests {
                 channels: 1,
             },
             duration_ms: 3000,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
         };
 
         let rt = tokio::runtime::Runtime::new().unwrap();

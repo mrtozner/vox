@@ -39,6 +39,8 @@ impl VadBackend for MockVad {
             let utterance = Utterance {
                 audio: frame.clone(),
                 duration_ms: 500,
+                #[cfg(feature = "diarization")]
+                speaker_id: None,
             };
             Ok(vec![VadEvent::SpeechStart, VadEvent::SpeechEnd(utterance)])
         } else {
@@ -127,6 +129,8 @@ impl SttBackend for MockStt {
             language: self.language.clone(),
             duration_ms: audio.duration_ms,
             processing_time_ms: 5,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
         })
     }
 }
@@ -142,6 +146,8 @@ impl SttBackend for EmptyStt {
             language: None,
             duration_ms: audio.duration_ms,
             processing_time_ms: 0,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
         })
     }
 }
@@ -233,6 +239,8 @@ fn test_utterance(duration_ms: u64) -> Utterance {
     Utterance {
         audio: test_chunk(16000, 16000, 1),
         duration_ms,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     }
 }
 
@@ -929,6 +937,8 @@ fn utterance_stores_audio_and_duration() {
             channels: 1,
         },
         duration_ms: 750,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     assert_eq!(utterance.duration_ms, 750);
@@ -1155,6 +1165,8 @@ fn stt_result_with_all_fields() {
         language: Some("en".into()),
         duration_ms: 1500,
         processing_time_ms: 200,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     assert_eq!(result.text, "hello world");
@@ -1170,6 +1182,8 @@ fn stt_result_without_language() {
         language: None,
         duration_ms: 500,
         processing_time_ms: 50,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     assert!(result.language.is_none());
@@ -1182,6 +1196,8 @@ fn stt_result_clone_is_independent() {
         language: Some("en".into()),
         duration_ms: 500,
         processing_time_ms: 10,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     let mut cloned = result.clone();
@@ -1201,6 +1217,8 @@ fn stt_result_empty_text() {
         language: None,
         duration_ms: 100,
         processing_time_ms: 1,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     assert!(result.text.is_empty());
@@ -1400,6 +1418,8 @@ impl SttSession for MockSttSession {
             language: Some("en".into()),
             duration_ms: 1000,
             processing_time_ms: 50,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
         })
     }
 }

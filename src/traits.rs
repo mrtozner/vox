@@ -95,6 +95,12 @@ pub trait SttSession: Send {
 
     /// Signal that no more audio will arrive and get the final result.
     fn finish(&mut self) -> Result<SttResult, VoxError>;
+
+    /// Set the speaker identifier for this session (if diarization is enabled).
+    #[cfg(feature = "diarization")]
+    fn set_speaker_id(&mut self, speaker_id: Option<String>) {
+        let _ = speaker_id; // default no-op
+    }
 }
 
 /// Streaming Speech-to-Text backend.

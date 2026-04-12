@@ -210,6 +210,8 @@ impl SttBackend for SherpaBackend {
     async fn transcribe(&self, audio: &Utterance) -> Result<SttResult, VoxError> {
         let samples = audio.audio.samples.clone();
         let duration_ms = audio.duration_ms;
+        #[cfg(feature = "diarization")]
+        let speaker_id = audio.speaker_id.clone();
         // Cast to usize to cross the Send boundary — raw pointers aren't Send.
         let rec_addr = self.recognizer.0 as usize;
 
@@ -277,6 +279,8 @@ impl SttBackend for SherpaBackend {
                 language,
                 duration_ms,
                 processing_time_ms,
+                #[cfg(feature = "diarization")]
+                speaker_id,
             })
         })
         .await

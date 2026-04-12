@@ -21,6 +21,14 @@ pub enum VoxError {
     #[error("TTS error: {0}")]
     Tts(String),
 
+    /// Speaker diarization error.
+    #[error("diarization error: {0}")]
+    Diarization(String),
+
+    /// Model integrity check failed.
+    #[error("model integrity check failed: {0}")]
+    IntegrityCheckFailed(String),
+
     /// No STT backend was configured.
     #[error("no STT backend configured")]
     NoStt,

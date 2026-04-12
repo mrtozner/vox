@@ -36,6 +36,8 @@ impl VadBackend for MockVad {
             let utterance = Utterance {
                 audio: frame.clone(),
                 duration_ms: 500,
+                #[cfg(feature = "diarization")]
+                speaker_id: None,
             };
             Ok(vec![VadEvent::SpeechStart, VadEvent::SpeechEnd(utterance)])
         } else {
@@ -80,6 +82,8 @@ impl SttBackend for MockStt {
             language: Some("en".into()),
             duration_ms: audio.duration_ms,
             processing_time_ms: 1,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
         })
     }
 }
@@ -186,6 +190,8 @@ async fn mock_stt_transcribes() {
             channels: 1,
         },
         duration_ms: 1000,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     let result = stt.transcribe(&utterance).await.unwrap();
@@ -261,6 +267,8 @@ fn stt_result_clone_is_independent() {
         language: Some("en".into()),
         duration_ms: 500,
         processing_time_ms: 10,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     let mut cloned = result.clone();

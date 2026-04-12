@@ -2,6 +2,7 @@
 
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -74,6 +75,8 @@ pub async fn transcribe(
             channels,
         },
         duration_ms,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     let result = stt.transcribe(&utterance).await?;
@@ -173,8 +176,8 @@ pub async fn models(State(state): State<AppState>) -> impl IntoResponse {
             model: state.stt_model_name.clone(),
             size_mb: state.stt_model_size,
         }),
-        tts: state.tts.as_ref().map(|_| BackendInfo {
-            name: "kokoro".to_string(),
+        tts: state.tts.as_ref().map(|tts| BackendInfo {
+            name: tts.backend_name().to_string(),
             loaded: true,
             model: state.tts_model_name.clone(),
             size_mb: state.tts_model_size,
@@ -241,6 +244,8 @@ pub async fn voices(State(state): State<AppState>) -> impl IntoResponse {
 struct OllamaRequest {
     model: String,
     prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
     stream: bool,
 }
 
@@ -263,16 +268,32 @@ pub async fn chat(
     let host = req.host.unwrap_or_else(|| state.ollama_host.clone());
     let model = req.model.unwrap_or_else(|| "llama3.2".to_string());
 
+    // Build environment-aware system prompt
+    let system_prompt = vox::prompts::build_system_prompt_with_registry(
+        vox::prompts::VoicePromptMode::Standard,
+        &state.capabilities,
+    );
+
     let url = format!("http://{host}/api/generate");
     let body = OllamaRequest {
         model: model.clone(),
         prompt: req.text,
+        system: Some(system_prompt),
         stream: false,
     };
 
-    let resp = state
-        .http_client
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|e| {
+            ServerError::service_unavailable(format!("failed to initialize Ollama client: {e}"))
+        })?;
+
+    let resp = client
         .post(&url)
+        .header(reqwest::header::CONNECTION, "close")
         .json(&body)
         .send()
         .await
@@ -290,9 +311,12 @@ pub async fn chat(
         )));
     }
 
-    let ollama_resp: OllamaResponse = resp
-        .json()
+    let body = resp
+        .text()
         .await
+        .map_err(|e| ServerError::bad_request(format!("failed to read Ollama response: {e}")))?;
+
+    let ollama_resp: OllamaResponse = serde_json::from_str(&body)
         .map_err(|e| ServerError::bad_request(format!("invalid Ollama response: {e}")))?;
 
     Ok(Json(ChatResponse {
@@ -323,46 +347,110 @@ pub async fn ollama_models(
         .await
         .map_err(|e| ServerError::bad_request(format!("invalid Ollama response: {e}")))?;
 
-    // Filter to only generative (chat) models by checking if the model has a
-    // prompt template via /api/show.  Embedding models never have one.
-    let show_url = format!("http://{}/api/show", state.ollama_host);
-    let mut models = Vec::new();
+    // Filter to only generative (chat) models. `/api/tags` already returns a
+    // `details.family` field for every installed model — we can use that to
+    // skip obvious embedding families without a second round-trip. For anything
+    // not conclusively classified, we probe `/api/show` in parallel with a
+    // total budget so a slow Ollama can never hang the UI.
+    let embedding_families = [
+        "bert",
+        "nomic-bert",
+        "nomic-embed-text",
+        "mxbai-embed-large",
+        "jina-bert",
+        "snowflake-arctic-embed",
+        "stella",
+    ];
+
+    let mut candidates: Vec<(String, Option<u64>, bool)> = Vec::new();
     if let Some(arr) = body["models"].as_array() {
         for m in arr {
-            let name = m["name"].as_str().unwrap_or("unknown");
+            let name = m["name"].as_str().unwrap_or("unknown").to_string();
             let size = m["size"].as_u64();
+            let family = m["details"]["family"].as_str().unwrap_or("").to_lowercase();
 
-            let has_template = match state
-                .http_client
-                .post(&show_url)
-                .json(&serde_json::json!({ "name": name }))
-                .send()
-                .await
-            {
-                Ok(r) => r
-                    .json::<serde_json::Value>()
-                    .await
-                    .ok()
-                    .map(|info| {
-                        // Chat models have rich templates with role markers.
-                        // Embedding models have only "{{ .Prompt }}" or empty.
-                        let tmpl = info["template"].as_str().unwrap_or("");
-                        tmpl.len() > 50
-                    })
-                    .unwrap_or(true),
-                Err(_) => true, // include if we can't determine
-            };
-
-            if has_template {
-                models.push(OllamaModelInfo {
-                    name: name.to_string(),
-                    size,
-                });
+            // Definitely an embedding model: drop it without a probe.
+            if embedding_families.iter().any(|e| family == *e) {
+                continue;
             }
+
+            // Known chat families: trust the tag and skip the probe.
+            let chat_families = ["llama", "gemma", "mistral", "qwen", "phi", "gpt"];
+            let trusted = chat_families.iter().any(|c| family.contains(c));
+            candidates.push((name, size, trusted));
         }
     }
 
+    let show_url = format!("http://{}/api/show", state.ollama_host);
+    let client = state.http_client.clone();
+
+    // Probe untrusted candidates in parallel, with a global 3s budget.
+    let probes = candidates.into_iter().map(|(name, size, trusted)| {
+        let client = client.clone();
+        let show_url = show_url.clone();
+        async move {
+            if trusted {
+                return Some(OllamaModelInfo { name, size });
+            }
+            let req = client
+                .post(&show_url)
+                .json(&serde_json::json!({ "name": name.clone() }))
+                .send();
+            // Per-probe cap (2s) on top of client timeout — keeps the overall
+            // budget tight even if reqwest is blocked on DNS or TCP.
+            let result = tokio::time::timeout(Duration::from_secs(2), req).await;
+            let has_template = match result {
+                Ok(Ok(r)) => {
+                    let info_fut = r.json::<serde_json::Value>();
+                    tokio::time::timeout(Duration::from_secs(1), info_fut)
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .map(|info| info["template"].as_str().unwrap_or("").len() > 50)
+                        .unwrap_or(true)
+                }
+                _ => true, // include on timeout or error — better to show than hide
+            };
+            if has_template {
+                Some(OllamaModelInfo { name, size })
+            } else {
+                None
+            }
+        }
+    });
+
+    // Global cap on the whole fan-out. If Ollama is really stuck, we return
+    // whatever we have (possibly empty) rather than blocking the client.
+    let all = futures_util::future::join_all(probes);
+    let models: Vec<OllamaModelInfo> =
+        match tokio::time::timeout(Duration::from_secs(3), all).await {
+            Ok(results) => results.into_iter().flatten().collect(),
+            Err(_) => {
+                // Budget exceeded — fall back to a best-effort list from /api/tags
+                // without template filtering. User still sees their chat models.
+                if let Some(arr) = body["models"].as_array() {
+                    arr.iter()
+                        .map(|m| OllamaModelInfo {
+                            name: m["name"].as_str().unwrap_or("unknown").to_string(),
+                            size: m["size"].as_u64(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+
     Ok(Json(OllamaModelsResponse { models }))
+}
+
+/// GET /v1/capabilities — return the full environment capability registry.
+pub async fn capabilities(State(state): State<AppState>) -> impl IntoResponse {
+    {
+        let mut stats = state.stats.lock().unwrap_or_else(|e| e.into_inner());
+        stats.requests += 1;
+    }
+    Json((*state.capabilities).clone())
 }
 
 /// GET /v1/cache/stats — model cache statistics.

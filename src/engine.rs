@@ -385,6 +385,8 @@ impl Vox {
 
                         let t_stt = std::time::Instant::now();
                         let stt_result = if let Some(mut session) = self.active_session.take() {
+                            #[cfg(feature = "diarization")]
+                            session.set_speaker_id(utterance.speaker_id.clone());
                             match session.finish() {
                                 Ok(result) => result,
                                 Err(e) => {

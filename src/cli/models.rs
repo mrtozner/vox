@@ -238,31 +238,67 @@ pub const MODELS: &[ModelInfo] = &[
         size_bytes: 5_000,
         kind: "TTS",
     },
+    ModelInfo {
+        name: "speaker-encoder",
+        filename: "speaker_encoder.onnx",
+        url: "https://huggingface.co/onnx-community/wespeaker-voxceleb-resnet34-LM/resolve/main/model.onnx",
+        size_bytes: 43_000_000,
+        kind: "Diarization",
+    },
 ];
 
-/// Return the models directory path (`~/.vox/models/`), creating it if needed.
+/// Return the models directory path, creating it if needed.
 ///
-/// Uses `dirs::data_dir()` on each platform:
-/// - macOS: `~/Library/Application Support/vox/models`
-/// - Linux: `~/.local/share/vox/models`
-/// - Windows: `{FOLDERPATH}/vox/models`
+/// Resolution order (first match wins):
+/// 1. `VOX_MODELS_DIR` environment variable (explicit override).
+/// 2. Repo-relative path: `CARGO_MANIFEST_DIR/models`. This value is baked in
+///    at compile time and points to the `models/` directory inside the vox
+///    repository checkout. It is the canonical location for all models so
+///    that `cargo run`, `cargo build`, and repo-shipped binaries all use the
+///    same set of files that are tracked by the repo's install scripts.
+/// 3. Walk upward from the running executable looking for a sibling `models/`
+///    directory (for installed binaries that ship alongside their models).
 ///
-/// Falls back to `~/.vox/models` if the platform data dir is unavailable.
+/// The PC-local OS data dir (`~/Library/Application Support/vox/models`,
+/// `~/.local/share/vox/models`, etc.) is intentionally NOT used, to avoid
+/// install-drift where a corrupt cached copy masks the known-good repo copy.
 pub fn models_dir() -> PathBuf {
-    let dir = dirs::data_dir()
-        .map(|d| d.join("vox").join("models"))
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".vox")
-                .join("models")
-        });
-
-    if !dir.exists() {
-        let _ = std::fs::create_dir_all(&dir);
+    // 1. Explicit env override.
+    if let Ok(explicit) = std::env::var("VOX_MODELS_DIR") {
+        let p = PathBuf::from(explicit);
+        if !p.exists() {
+            let _ = std::fs::create_dir_all(&p);
+        }
+        return p;
     }
 
-    dir
+    // 2. Repo-relative path, baked in at build time.
+    //    This is the primary location and matches what the repo ships under
+    //    version control (or by install scripts that populate `models/`).
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_models = manifest_dir.join("models");
+    if repo_models.exists() {
+        return repo_models;
+    }
+
+    // 3. Walk upward from the running binary for a sibling `models/` dir.
+    //    Useful when the binary is shipped next to a `models/` folder.
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cursor = exe.parent().map(|p| p.to_path_buf());
+        while let Some(dir) = cursor {
+            let candidate = dir.join("models");
+            if candidate.exists() {
+                return candidate;
+            }
+            cursor = dir.parent().map(|p| p.to_path_buf());
+        }
+    }
+
+    // 4. Last resort: create the repo-relative path even if empty. This only
+    //    triggers on a misconfigured build where CARGO_MANIFEST_DIR is wrong
+    //    AND no sibling models/ directory exists next to the binary.
+    let _ = std::fs::create_dir_all(&repo_models);
+    repo_models
 }
 
 /// Clean up any orphaned .part files from previous incomplete downloads.
@@ -531,7 +567,8 @@ pub fn path() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve a model file: check ~/.vox/models/ first, then cwd.
+/// Resolve a model file: check the resolved `models_dir()` (repo-relative by
+/// default) first, then fall back to the current working directory.
 pub fn resolve_model(filename: &str) -> Option<PathBuf> {
     let models = models_dir();
     let candidate = models.join(filename);

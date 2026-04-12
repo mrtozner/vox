@@ -269,6 +269,8 @@ mod tests {
                 language: None,
                 duration_ms: 0,
                 processing_time_ms: 0,
+                #[cfg(feature = "diarization")]
+                speaker_id: None,
             })
         }
     }

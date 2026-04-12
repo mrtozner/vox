@@ -18,6 +18,9 @@ pub struct Utterance {
     pub audio: AudioChunk,
     /// Duration of the utterance in milliseconds.
     pub duration_ms: u64,
+    /// Speaker identifier (if diarization is enabled).
+    #[cfg(feature = "diarization")]
+    pub speaker_id: Option<String>,
 }
 
 /// Result from speech-to-text transcription.
@@ -31,6 +34,9 @@ pub struct SttResult {
     pub duration_ms: u64,
     /// Time taken to process/transcribe in milliseconds.
     pub processing_time_ms: u64,
+    /// Speaker identifier (if diarization is enabled).
+    #[cfg(feature = "diarization")]
+    pub speaker_id: Option<String>,
 }
 
 /// Request to synthesize speech from text.

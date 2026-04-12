@@ -116,17 +116,30 @@ impl SentenceBuffer {
             self.buffer = self.buffer.trim_start().to_string();
         }
 
+        // Word-count fallback: flush after 12+ words even without sentence punctuation.
+        // This prevents long run-on sentences from delaying TTS start.
+        let current_words = self.buffer.split_whitespace().count();
+        if current_words >= 12 {
+            let flushed = self.buffer.trim().to_string();
+            if !flushed.is_empty() {
+                completed.push(flushed.clone());
+                self.sentences.push(flushed);
+                self.buffer.clear();
+            }
+        }
+
         completed
     }
 
-    /// Flush any remaining text as a final sentence.
-    /// Returns ALL sentences (completed via push() + remaining buffer).
-    pub fn flush(mut self) -> Vec<String> {
-        let trimmed = self.buffer.trim().to_string();
-        if !trimmed.is_empty() {
-            self.sentences.push(trimmed);
+    /// Flush any remaining incomplete sentence in the buffer.
+    /// Returns ONLY the leftover text, NOT sentences already emitted via push().
+    pub fn flush(self) -> Option<String> {
+        let trimmed = self.buffer.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
-        self.sentences
     }
 
     /// Get all sentences (both completed sentences and remaining buffer).
@@ -140,28 +153,15 @@ impl SentenceBuffer {
     }
 }
 
-/// Stream text from Ollama and synthesize sentences as they complete.
-///
-/// This is the core streaming LLM→TTS integration. It:
-/// 1. Makes a streaming request to Ollama
-/// 2. Buffers tokens into complete sentences
-/// 3. Synthesizes each sentence immediately (returns audio chunks)
-/// 4. Plays audio while later sentences are still being generated
-///
-/// # Example latency comparison
-///
-/// **Non-streaming (old)**:
-/// ```text
-/// LLM generates full response (2-4s) → TTS starts → User hears output
-/// Perceived wait: 2-4s + TTS latency
-/// ```
-///
-/// **Streaming (new)**:
-/// ```text
-/// LLM generates sentence 1 (500ms) → TTS starts → User hears sentence 1
-/// LLM generates sentence 2 → TTS queues → User hears sentence 2
-/// Perceived wait: Only first sentence latency (~500-800ms)
-/// ```
+/// Why streaming stopped (normal completion or cancellation).
+#[cfg(any(feature = "cli", feature = "server"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    Finished,
+    Cancelled,
+}
+
+/// Stream LLM tokens and synthesize complete sentences immediately.
 #[cfg(any(feature = "cli", feature = "server"))]
 #[allow(clippy::too_many_arguments)]
 pub async fn stream_chat_with_tts<F, Fut>(
@@ -169,14 +169,48 @@ pub async fn stream_chat_with_tts<F, Fut>(
     host: &str,
     model: &str,
     prompt: &str,
+    tts: Arc<dyn TtsBackend>,
+    system_prompt: Option<String>,
+    voice: Option<String>,
+    on_sentence: F,
+) -> Result<(), VoxError>
+where
+    F: FnMut(&str) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<(), VoxError>> + Send,
+{
+    let cancel = tokio_util::sync::CancellationToken::new();
+    stream_chat_with_tts_cancellable(
+        client,
+        host,
+        model,
+        prompt,
+        tts,
+        system_prompt,
+        voice,
+        cancel,
+        on_sentence,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Like `stream_chat_with_tts` but returns early if `cancel` fires.
+#[cfg(any(feature = "cli", feature = "server"))]
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_chat_with_tts_cancellable<F, Fut>(
+    client: &reqwest::Client,
+    host: &str,
+    model: &str,
+    prompt: &str,
     _tts: Arc<dyn TtsBackend>,
     system_prompt: Option<String>,
     _voice: Option<String>,
+    cancel: tokio_util::sync::CancellationToken,
     mut on_sentence: F,
-) -> Result<(), VoxError>
+) -> Result<StopReason, VoxError>
 where
-    F: FnMut(&str) -> Fut,
-    Fut: std::future::Future<Output = Result<(), VoxError>>,
+    F: FnMut(&str) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<(), VoxError>> + Send,
 {
     let url = format!("http://{}/api/generate", host);
 
@@ -190,12 +224,12 @@ where
         body["system"] = serde_json::json!(sys);
     }
 
-    let response = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| VoxError::Pipeline(format!("Ollama request failed: {}", e)))?;
+    let response = tokio::select! {
+        _ = cancel.cancelled() => return Ok(StopReason::Cancelled),
+        r = client.post(&url).json(&body).send() => {
+            r.map_err(|e| VoxError::Pipeline(format!("Ollama request failed: {}", e)))?
+        }
+    };
 
     if !response.status().is_success() {
         return Err(VoxError::Pipeline(format!(
@@ -206,59 +240,94 @@ where
 
     let mut stream = response.bytes_stream();
     let mut buffer = SentenceBuffer::new();
-    let mut line_buffer: Vec<u8> = Vec::new(); // Persistent buffer for incomplete JSON lines
+    let mut line_buffer: Vec<u8> = Vec::new();
+    let mut done = false;
 
-    // Process streaming response
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| VoxError::Pipeline(format!("Stream error: {}", e)))?;
+    'outer: loop {
+        if cancel.is_cancelled() {
+            return Ok(StopReason::Cancelled);
+        }
 
-        // Append chunk to line buffer
+        let chunk = tokio::select! {
+            _ = cancel.cancelled() => return Ok(StopReason::Cancelled),
+            maybe = stream.next() => match maybe {
+                Some(r) => r.map_err(|e| VoxError::Pipeline(format!("Stream error: {}", e)))?,
+                None => break 'outer,
+            },
+        };
+
         line_buffer.extend_from_slice(&chunk);
 
-        // Process complete lines (ending with \n)
         let mut start = 0;
         for (i, &byte) in line_buffer.iter().enumerate() {
             if byte == b'\n' {
                 let line = &line_buffer[start..i];
-                if !line.is_empty() {
-                    let ollama_chunk: OllamaChunk = serde_json::from_slice(line)
-                        .map_err(|e| VoxError::Pipeline(format!("JSON parse error: {}", e)))?;
+                start = i + 1;
+                if line.is_empty() || line.iter().all(|b| b.is_ascii_whitespace()) {
+                    continue;
+                }
+                let ollama_chunk: OllamaChunk = match serde_json::from_slice(line) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(line) {
+                            if raw["done"].as_bool().unwrap_or(false) {
+                                done = true;
+                                break 'outer;
+                            }
+                        }
+                        tracing::debug!(
+                            line = ?String::from_utf8_lossy(line),
+                            "streaming_chat: skipping malformed NDJSON line"
+                        );
+                        continue;
+                    }
+                };
 
-                    if !ollama_chunk.response.is_empty() {
-                        print!("{}", ollama_chunk.response); // Show tokens as they arrive
-                        use std::io::Write;
-                        std::io::stdout().flush().ok();
+                if !ollama_chunk.response.is_empty() {
+                    print!("{}", ollama_chunk.response);
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
 
-                        // Check for complete sentences
-                        let sentences = buffer.push(&ollama_chunk.response);
+                    let sentences = buffer.push(&ollama_chunk.response);
 
-                        // Call handler for each complete sentence
-                        for sentence in sentences {
-                            on_sentence(&sentence).await?;
+                    for sentence in sentences {
+                        if cancel.is_cancelled() {
+                            return Ok(StopReason::Cancelled);
+                        }
+                        let fut = on_sentence(&sentence);
+                        tokio::select! {
+                            _ = cancel.cancelled() => return Ok(StopReason::Cancelled),
+                            r = fut => r?,
                         }
                     }
-
-                    if ollama_chunk.done {
-                        break;
-                    }
                 }
-                start = i + 1;
+
+                if ollama_chunk.done {
+                    done = true;
+                    break 'outer;
+                }
             }
         }
 
-        // Keep incomplete line in buffer for next chunk
         line_buffer.drain(..start);
     }
 
-    // Handle any remaining text (incomplete sentence at the end)
-    let remaining = buffer.flush();
-    for sentence in remaining {
-        on_sentence(&sentence).await?;
+    let _ = done;
+
+    if let Some(remaining) = buffer.flush() {
+        if cancel.is_cancelled() {
+            return Ok(StopReason::Cancelled);
+        }
+        let fut = on_sentence(&remaining);
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(StopReason::Cancelled),
+            r = fut => r?,
+        }
     }
 
     println!(); // Newline after streaming text
 
-    Ok(())
+    Ok(StopReason::Finished)
 }
 
 #[cfg(all(test, any(feature = "cli", feature = "server")))]
@@ -299,6 +368,21 @@ mod tests {
         let mut buf = SentenceBuffer::new();
         buf.push("The price is 3.50 dollars.");
         assert_eq!(buf.finish(), vec!["The price is 3.50 dollars."]);
+    }
+
+    #[test]
+    fn sentence_buffer_word_count_fallback() {
+        let mut buf = SentenceBuffer::new();
+        // Push 15 words without any sentence-ending punctuation
+        let words = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen";
+        let sentences = buf.push(words);
+        // Should have flushed after 12+ words even without punctuation
+        assert!(!sentences.is_empty(), "should flush after 12+ words");
+        assert_eq!(sentences.len(), 1);
+        // The remaining buffer should have the leftover words (if any)
+        let remaining = buf.flush();
+        // All 15 words were in one token so they all flush at once
+        assert!(remaining.is_none() || remaining.unwrap().split_whitespace().count() < 12);
     }
 
     #[test]

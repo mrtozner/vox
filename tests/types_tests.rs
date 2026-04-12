@@ -25,6 +25,8 @@ fn utterance_duration_consistency() {
     let utt = Utterance {
         audio: chunk,
         duration_ms: 3000, // 48000 samples / 16000 Hz = 3s
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
     let computed_ms = (utt.audio.samples.len() as u64 * 1000) / utt.audio.sample_rate as u64;
     assert_eq!(computed_ms, utt.duration_ms);
@@ -37,6 +39,8 @@ fn stt_result_empty_text() {
         language: None,
         duration_ms: 0,
         processing_time_ms: 0,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
     assert!(result.text.is_empty());
     assert!(result.language.is_none());

@@ -108,6 +108,8 @@ async fn benchmark_stt_whisper(yes: bool) -> anyhow::Result<()> {
             channels: 1,
         },
         duration_ms: TEST_AUDIO_DURATION_MS,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     // Warmup

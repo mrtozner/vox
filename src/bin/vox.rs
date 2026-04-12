@@ -73,6 +73,9 @@ enum Commands {
         /// Use voice-optimized prompts for better TTS output
         #[arg(long)]
         voice_mode: bool,
+        /// Enable speaker identification (show who's talking)
+        #[arg(long)]
+        diarize: bool,
     },
     /// Test audio I/O (record and playback)
     Test,
@@ -122,8 +125,23 @@ enum ModelAction {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Tracing level: RUST_LOG=debug → DEBUG, RUST_LOG=info → INFO, else WARN.
+    // Operators can opt in to WS + VAD + STT traces without touching the binary.
+    // Complex EnvFilter syntax (`vox=debug,hyper=info`) requires the
+    // `env-filter` feature on tracing-subscriber; keep the simple path for now.
+    let tracing_level = match std::env::var("RUST_LOG")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "trace" => tracing::Level::TRACE,
+        "debug" => tracing::Level::DEBUG,
+        "info" => tracing::Level::INFO,
+        "error" => tracing::Level::ERROR,
+        _ => tracing::Level::WARN,
+    };
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
+        .with_max_level(tracing_level)
         .without_time()
         .init();
 
@@ -152,8 +170,9 @@ async fn main() -> anyhow::Result<()> {
             ollama_host,
             yes,
             voice_mode,
+            diarize,
         } => {
-            cli::chat::run(&model, &llm, &ollama_host, yes, voice_mode).await?;
+            cli::chat::run(&model, &llm, &ollama_host, yes, voice_mode, diarize).await?;
         }
         Commands::Test => {
             cli::test::run().await?;

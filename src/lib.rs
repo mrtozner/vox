@@ -30,17 +30,30 @@ pub mod audio;
 pub mod engine;
 pub mod error;
 pub mod model_cache;
+pub mod streaming_pipeline;
 pub mod stt;
 pub mod traits;
 pub mod tts;
 pub mod types;
 pub mod vad;
 
+#[cfg(feature = "diarization")]
+pub mod diarization;
+
+#[cfg(feature = "intelligence")]
+pub mod intelligence;
+
 // Tier 1 quality optimizations
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod prompts;
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod streaming_chat;
+
+// Environment-aware capability registry (Phase 1: read-only facts).
+#[cfg(any(feature = "cli", feature = "server"))]
+pub mod capabilities;
+#[cfg(any(feature = "cli", feature = "server"))]
+pub mod system_profile;
 
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
@@ -57,6 +70,13 @@ pub use types::{
 // Tier 1: Voice-optimized prompts
 #[cfg(any(feature = "cli", feature = "server"))]
 pub use prompts::{VoicePromptMode, build_system_prompt};
+
+// Capability registry re-exports
+#[cfg(any(feature = "cli", feature = "server"))]
+pub use capabilities::{
+    Capability, CapabilityRegistry, FeatureFlags, GpuFacts, HardwareFacts, LoadedModel,
+    ModelInventory, OllamaModelSummary,
+};
 
 // Conditional backend re-exports for convenience
 #[cfg(feature = "silero")]
@@ -90,6 +110,20 @@ pub use tts::{PiperBackend, PiperConfig};
 pub use tts::{Qwen3Backend, Qwen3Config};
 
 pub use tts::SentenceStreamingAdapter;
+
+#[cfg(feature = "diarization")]
+pub use diarization::{
+    ConversationEntry, DiarizationConfig, DiarizationPipeline, DiarizationPipelineBuilder,
+    EmbeddingConfig, Recognition, RecognitionConfig, Speaker, SpeakerDatabase, SpeakerEmbedding,
+    SpeakerRegistry, cosine_similarity,
+};
+
+// Intelligence layer exports (opt-in feature)
+#[cfg(feature = "intelligence")]
+pub use intelligence::{
+    CacheMetrics, ConversationMetadata, PreferenceType, PrivacyDashboard, SemanticCache,
+    SemanticCacheConfig, SpeakerInfo, UserModel, UserProfile, VoiceMemory, VoiceMemoryBuilder,
+};
 
 #[cfg(any(
     feature = "kokoro",

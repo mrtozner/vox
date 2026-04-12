@@ -243,6 +243,8 @@ impl StreamingSttBackend for SherpaStreamingBackend {
             total_samples: 0,
             last_text: String::new(),
             finished: false,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
         }))
     }
 }
@@ -252,6 +254,8 @@ impl SttBackend for SherpaStreamingBackend {
     async fn transcribe(&self, audio: &Utterance) -> Result<SttResult, VoxError> {
         // Batch mode: create a session, push all audio, finish.
         let mut session = self.create_session()?;
+        #[cfg(feature = "diarization")]
+        session.set_speaker_id(audio.speaker_id.clone());
         session.push_audio(&audio.audio.samples, audio.audio.sample_rate)?;
         session.finish()
     }
@@ -269,6 +273,8 @@ pub struct SherpaStreamingSession {
     total_samples: usize,
     last_text: String,
     finished: bool,
+    #[cfg(feature = "diarization")]
+    speaker_id: Option<String>,
 }
 
 // Safety: The stream pointer is only accessed through &mut self methods
@@ -287,6 +293,11 @@ impl Drop for SherpaStreamingSession {
 }
 
 impl SttSession for SherpaStreamingSession {
+    #[cfg(feature = "diarization")]
+    fn set_speaker_id(&mut self, speaker_id: Option<String>) {
+        self.speaker_id = speaker_id;
+    }
+
     fn push_audio(
         &mut self,
         samples: &[f32],
@@ -399,6 +410,8 @@ impl SttSession for SherpaStreamingSession {
                 language: None,
                 duration_ms,
                 processing_time_ms,
+                #[cfg(feature = "diarization")]
+                speaker_id: self.speaker_id.clone(),
             })
         }
     }

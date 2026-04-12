@@ -179,6 +179,117 @@ body {
     margin-bottom: 8px;
 }
 
+/* ── Diarization (Listen Tab) ─────────────────────────────── */
+.diarize-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    padding: 4px 10px;
+    border: 1px solid var(--bg-tertiary);
+    border-radius: 999px;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.diarize-toggle:hover { color: var(--text); border-color: var(--accent-dim); }
+.diarize-toggle.on { color: var(--accent); border-color: var(--accent); }
+.diarize-toggle.disabled { opacity: 0.35; cursor: not-allowed; }
+.diarize-toggle input { display: none; }
+.diarize-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    transition: background 0.15s;
+}
+.diarize-toggle.on .diarize-dot { background: var(--accent); }
+
+.listen-body {
+    display: grid;
+    grid-template-columns: 1fr;
+    flex: 1;
+    min-height: 0;
+    gap: 0;
+}
+.listen-body.with-sidebar { grid-template-columns: 1fr 220px; }
+.speakers-sidebar {
+    border-left: 1px solid var(--bg-tertiary);
+    padding: 12px 14px;
+    overflow-y: auto;
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+}
+.listen-body.with-sidebar .speakers-sidebar { display: flex; }
+.speakers-sidebar h3 {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0 0 6px 0;
+    font-weight: 600;
+}
+.speakers-sidebar-empty {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 8px 0;
+}
+.speaker-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.speaker-row:hover { background: var(--bg-secondary); border-color: var(--bg-tertiary); }
+.speaker-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.speaker-name {
+    flex: 1;
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.speaker-forget {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    padding: 2px 4px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s;
+}
+.speaker-row:hover .speaker-forget { opacity: 1; }
+.speaker-forget:hover { color: var(--error, #ff6b6b); }
+.speaker-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text);
+    margin-right: 6px;
+    vertical-align: middle;
+}
+.speaker-badge .speaker-swatch { width: 6px; height: 6px; }
+.transcript-entry[data-speaker] { border-left: 2px solid var(--speaker-color, var(--bg-tertiary)); }
+
 /* ── Speak Tab ────────────────────────────────────────────── */
 .speak-container {
     display: flex;
@@ -322,6 +433,128 @@ body {
 .chat-mic-btn.recording { border-color: var(--accent); color: var(--accent); animation: mic-pulse 1.5s ease-in-out infinite; }
 .chat-mic-btn svg { width: 18px; height: 18px; fill: currentColor; }
 
+/* ── Live Talk Tab ────────────────────────────────────────── */
+.livetalk-container { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.livetalk-settings {
+    display: flex;
+    gap: 12px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--bg-tertiary);
+    flex-wrap: wrap;
+    flex-shrink: 0;
+}
+.livetalk-settings label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.livetalk-settings select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--bg-tertiary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    outline: none;
+    cursor: pointer;
+}
+.livetalk-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.livetalk-messages:empty::before {
+    content: 'Press the mic button to start a live conversation.';
+    color: var(--text-muted);
+    text-align: center;
+    font-size: 13px;
+    padding: 20px;
+    margin: auto;
+}
+.live-msg {
+    max-width: 80%;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    line-height: 1.5;
+    word-wrap: break-word;
+}
+.live-msg.user {
+    align-self: flex-end;
+    background: var(--accent-dim);
+    color: var(--accent);
+}
+.live-msg.assistant {
+    align-self: flex-start;
+    background: var(--bg-secondary);
+    border: 1px solid var(--bg-tertiary);
+    color: var(--text-primary);
+}
+.live-msg.assistant.cancelled::after {
+    content: ' (interrupted)';
+    color: var(--warning);
+    font-size: 11px;
+    font-style: italic;
+}
+.live-msg-sender { font-size: 10px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 1px; }
+.live-control-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    border-top: 1px solid var(--bg-tertiary);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+.live-mic-btn {
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+}
+.live-mic-btn svg { width: 22px; height: 22px; }
+.live-state-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 120px;
+}
+.live-state-badge {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 2px 0;
+    transition: color 0.2s;
+}
+.live-state-badge.listening { color: var(--accent); }
+.live-state-badge.transcribing { color: var(--warning); }
+.live-state-badge.thinking { color: var(--warning); animation: transcribe-pulse 1s ease-in-out infinite; }
+.live-state-badge.speaking { color: var(--accent); }
+.live-state-badge.cancelled { color: var(--error); }
+.live-meter {
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.live-meter-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.1s linear;
+}
+.live-ptt-btn.active {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+
 /* ── Dashboard Tab ────────────────────────────────────────── */
 .dashboard {
     display: grid;
@@ -462,7 +695,7 @@ body {
 
 <!-- Header -->
 <div class="header">
-    <div class="header-brand">vox<span>v0.3.0</span></div>
+    <div class="header-brand">vox<span>v0.6.0</span></div>
     <div class="header-health">
         <div class="health-dot" id="healthDot"></div>
         <span id="healthText">--</span>
@@ -474,6 +707,7 @@ body {
     <button class="tab-btn active" data-tab="listen">Listen</button>
     <button class="tab-btn" data-tab="speak">Speak</button>
     <button class="tab-btn" data-tab="chat">Chat</button>
+    <button class="tab-btn" data-tab="livetalk">Live Talk</button>
     <button class="tab-btn" data-tab="dashboard">Dashboard</button>
 </div>
 
@@ -485,9 +719,20 @@ body {
         </button>
         <div class="listen-status" id="listenStatus">Press to start listening</div>
         <div class="audio-meter" id="audioMeter"><div class="audio-meter-fill" id="audioMeterFill"></div></div>
+        <label class="diarize-toggle disabled" id="diarizeToggle" title="Speaker diarization not available">
+            <span class="diarize-dot"></span>
+            <input type="checkbox" id="diarizeCheckbox">
+            <span>Identify speakers</span>
+        </label>
     </div>
     <button class="btn btn-sm btn-ghost transcript-clear" id="clearTranscript">Clear</button>
-    <div class="transcript-area" id="transcriptArea"></div>
+    <div class="listen-body" id="listenBody">
+        <div class="transcript-area" id="transcriptArea"></div>
+        <aside class="speakers-sidebar" id="speakersSidebar">
+            <h3>Speakers</h3>
+            <div id="speakersList"><div class="speakers-sidebar-empty">No speakers yet</div></div>
+        </aside>
+    </div>
 </div>
 
 <!-- Speak Tab -->
@@ -519,6 +764,35 @@ body {
             <button class="chat-mic-btn" id="chatMicBtn" aria-label="Voice input">
                 <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
             </button>
+        </div>
+    </div>
+</div>
+
+<!-- Live Talk Tab -->
+<div class="tab-content" id="tab-livetalk">
+    <div class="livetalk-container">
+        <div class="livetalk-settings">
+            <label>model <select id="liveTalkModel"><option value="">loading...</option></select></label>
+            <label>voice <select id="liveTalkVoice"><option value="">--</option></select></label>
+            <label>mode
+                <select id="liveMode">
+                    <option value="vad">VAD</option>
+                    <option value="push_to_talk">Push to Talk</option>
+                </select>
+            </label>
+        </div>
+        <div class="livetalk-messages" id="liveTalkMessages"></div>
+        <div class="live-control-bar">
+            <button class="mic-btn live-mic-btn" id="liveTalkMicBtn" aria-label="Start live talk">
+                <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+            </button>
+            <button class="btn live-ptt-btn" id="livePttBtn" style="display:none" aria-label="Push to talk (hold)">Hold to talk</button>
+            <div class="live-state-area">
+                <div class="live-state-badge" id="liveStateBadge">idle</div>
+                <div class="live-meter"><div class="live-meter-fill" id="liveMeterFill"></div></div>
+            </div>
+            <button class="btn btn-ghost" id="liveCancelBtn" disabled>Cancel</button>
+            <button class="btn btn-ghost btn-sm" id="liveClearBtn">Clear</button>
         </div>
     </div>
 </div>
@@ -580,7 +854,19 @@ const S = {
     uptimeReceivedAt: 0,
     statusPollId: null,
     uptimeTickId: null,
+    // Diarization session state
+    diarizationAvailable: false,
+    diarizationOn: false,
+    diarizationConsented: false,
+    speakers: {}, // id -> {id,name,color}
 };
+
+const DIARIZATION_CONSENT_KEY = 'vox.diarization.consented';
+try {
+    S.diarizationConsented = localStorage.getItem(DIARIZATION_CONSENT_KEY) === '1';
+} catch (_e) {
+    // localStorage may be unavailable in private browsing; treat as un-consented.
+}
 
 const MAX_TOASTS = 3;
 const TOAST_DURATION = 5000;
@@ -615,6 +901,12 @@ function switchTab(name) {
     if (name === 'chat') {
         if (!S.voicesLoaded) loadVoices();
         loadOllamaModels();
+    }
+    if (name === 'livetalk') {
+        // Fire-and-forget: never await inside switchTab or we'll block
+        // the .active class flip and the user sees a blank tab for a
+        // beat while voices/models load.
+        loadLiveTalkSelectors().catch(() => { /* ignore; toasts handle UX */ });
     }
     if (name === 'dashboard') startDashPolling();
     else stopDashPolling();
@@ -691,7 +983,13 @@ async function startMic(onChunk) {
         if (S.audioCtx.state === 'suspended') await S.audioCtx.resume();
 
         S.mediaStream = await navigator.mediaDevices.getUserMedia({
-            audio: { channelCount: 1, sampleRate: 16000 }
+            audio: {
+                channelCount: 1,
+                sampleRate: 16000,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            }
         });
     } catch (e) {
         if (e.name === 'NotAllowedError') showToast('Microphone access denied', 'error');
@@ -843,6 +1141,14 @@ function updateAudioMeter(samples) {
 function handleListenEvent(data) {
     const status = $('listenStatus');
     switch (data.type) {
+        case 'listen_ready':
+            setDiarizationAvailable(!!data.diarization_available);
+            // If the user had diarization enabled in a previous session and
+            // still has consent, re-send the config to resume.
+            if (S.diarizationOn && S.diarizationAvailable) {
+                sendDiarizationConfig(true);
+            }
+            break;
         case 'speech_start':
             S.speechActive = true;
             status.textContent = 'Speaking...';
@@ -861,7 +1167,14 @@ function handleListenEvent(data) {
             break;
         case 'transcript':
             removeTranscriptPlaceholder();
-            appendTranscript(data.text, data.duration_ms, data.processing_time_ms);
+            appendTranscript(
+                data.text,
+                data.duration_ms,
+                data.processing_time_ms,
+                data.speaker_id,
+                data.speaker_name,
+                data.speaker_color
+            );
             if (S.listening) {
                 status.textContent = 'Listening...';
                 status.className = 'listen-status active';
@@ -874,21 +1187,56 @@ function handleListenEvent(data) {
                 status.className = 'listen-status active';
             }
             break;
+        case 'speaker_list':
+            S.speakers = {};
+            (data.speakers || []).forEach(sp => { S.speakers[sp.id] = sp; });
+            renderSpeakersSidebar();
+            break;
+        case 'speaker_update':
+            if (data.speaker) {
+                S.speakers[data.speaker.id] = data.speaker;
+                renderSpeakersSidebar();
+            }
+            break;
         case 'error':
             showToast(data.message, 'error');
             break;
     }
 }
 
-function appendTranscript(text, durationMs, processingMs) {
+function appendTranscript(text, durationMs, processingMs, speakerId, speakerName, speakerColor) {
     removeTranscriptPlaceholder();
     const area = $('transcriptArea');
     const entry = document.createElement('div');
     entry.className = 'transcript-entry';
     entry.style.position = 'relative';
+
+    let badgeHtml = '';
+    if (speakerId && speakerName) {
+        // Keep the local speaker cache in sync in case this is the first
+        // time we've seen this id (the server sends updates for new ones).
+        if (!S.speakers[speakerId]) {
+            S.speakers[speakerId] = {
+                id: speakerId,
+                name: speakerName,
+                color: speakerColor || '#888'
+            };
+            renderSpeakersSidebar();
+        }
+        entry.dataset.speaker = speakerId;
+        if (speakerColor) {
+            entry.style.setProperty('--speaker-color', speakerColor);
+        }
+        badgeHtml =
+            '<span class="speaker-badge">' +
+                '<span class="speaker-swatch" style="background:' + escapeHtml(speakerColor || '#888') + '"></span>' +
+                escapeHtml(speakerName) +
+            '</span>';
+    }
+
     entry.innerHTML =
         '<button class="transcript-copy-btn" aria-label="Copy" title="Copy text">&#x2398;</button>' +
-        '<div class="transcript-text">' + escapeHtml(text) + '</div>' +
+        '<div class="transcript-text">' + badgeHtml + escapeHtml(text) + '</div>' +
         '<div class="transcript-meta">' + formatTimestamp() + ' \u00b7 ' + durationMs + 'ms audio, ' + processingMs + 'ms processing</div>';
     const copyBtn = entry.querySelector('.transcript-copy-btn');
     copyBtn.addEventListener('click', () => {
@@ -899,6 +1247,101 @@ function appendTranscript(text, durationMs, processingMs) {
     });
     area.appendChild(entry);
     area.scrollTop = area.scrollHeight;
+}
+
+// ─── Diarization helpers ────────────────────────────────────
+function setDiarizationAvailable(available) {
+    S.diarizationAvailable = available;
+    const toggle = $('diarizeToggle');
+    const cbx = $('diarizeCheckbox');
+    if (!toggle || !cbx) return;
+    if (available) {
+        toggle.classList.remove('disabled');
+        toggle.title = 'Toggle speaker diarization';
+        cbx.disabled = false;
+    } else {
+        toggle.classList.add('disabled');
+        toggle.classList.remove('on');
+        toggle.title = 'Speaker diarization not available on this server';
+        cbx.disabled = true;
+        cbx.checked = false;
+        S.diarizationOn = false;
+    }
+}
+
+function sendDiarizationConfig(enabled) {
+    if (!S.listenWs || S.listenWs.readyState !== WebSocket.OPEN) return;
+    try {
+        S.listenWs.send(JSON.stringify({ type: 'config', diarization: !!enabled }));
+    } catch (_e) {
+        // best-effort; nothing we can do if the socket is already closing
+    }
+}
+
+function requestDiarizationConsent(onConfirm) {
+    if (S.diarizationConsented) { onConfirm(); return; }
+    const ok = window.confirm(
+        'Enable speaker identification?\n\n' +
+        'Vox will store a voiceprint locally (never uploaded) to label each speaker. ' +
+        'You can rename or forget speakers at any time. This is an opt-in biometric feature.'
+    );
+    if (ok) {
+        S.diarizationConsented = true;
+        try { localStorage.setItem(DIARIZATION_CONSENT_KEY, '1'); } catch (_e) {}
+        onConfirm();
+    } else {
+        // User declined → leave the checkbox off.
+        const cbx = $('diarizeCheckbox');
+        const toggle = $('diarizeToggle');
+        if (cbx) cbx.checked = false;
+        if (toggle) toggle.classList.remove('on');
+        S.diarizationOn = false;
+    }
+}
+
+function renderSpeakersSidebar() {
+    const list = $('speakersList');
+    const body = $('listenBody');
+    if (!list || !body) return;
+    if (S.diarizationOn) body.classList.add('with-sidebar');
+    else body.classList.remove('with-sidebar');
+    const speakers = Object.values(S.speakers);
+    if (speakers.length === 0) {
+        list.innerHTML = '<div class="speakers-sidebar-empty">No speakers yet</div>';
+        return;
+    }
+    list.innerHTML = '';
+    speakers.forEach(sp => {
+        const row = document.createElement('div');
+        row.className = 'speaker-row';
+        row.innerHTML =
+            '<span class="speaker-swatch" style="background:' + escapeHtml(sp.color || '#888') + '"></span>' +
+            '<span class="speaker-name">' + escapeHtml(sp.name) + '</span>' +
+            '<button class="speaker-forget" title="Forget speaker" aria-label="Forget speaker">\u00d7</button>';
+        row.querySelector('.speaker-name').addEventListener('click', () => {
+            const newName = window.prompt('Rename speaker:', sp.name);
+            if (newName && newName.trim() && newName.trim() !== sp.name) {
+                if (S.listenWs && S.listenWs.readyState === WebSocket.OPEN) {
+                    S.listenWs.send(JSON.stringify({
+                        type: 'rename_speaker',
+                        id: sp.id,
+                        name: newName.trim()
+                    }));
+                }
+            }
+        });
+        row.querySelector('.speaker-forget').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (window.confirm('Forget "' + sp.name + '"? Their voiceprint will be deleted.')) {
+                if (S.listenWs && S.listenWs.readyState === WebSocket.OPEN) {
+                    S.listenWs.send(JSON.stringify({ type: 'forget_speaker', id: sp.id }));
+                } else {
+                    showToast('Cannot forget speaker: not connected', 'error');
+                }
+            }
+        });
+        list.appendChild(row);
+    });
 }
 
 // ─── 7. SPEAK TAB ───────────────────────────────────────────
@@ -1174,21 +1617,97 @@ function toggleChatMic() {
 async function startChatMic() {
     const btn = $('chatMicBtn');
     const input = $('chatInput');
+    const model = $('chatModel').value || 'llama3.2';
+    const voice = $('chatVoice').value || null;
 
-    S.chatWs = connectWs('/v1/listen', (data) => {
-        if (data.type === 'partial' && data.text) {
-            input.value = data.text;
-        } else if (data.type === 'transcript' && data.text) {
-            stopChatMic();
-            input.value = data.text;
-            sendChat(data.text);
-        } else if (data.type === 'error') {
-            showToast(data.message, 'error');
-            stopChatMic();
+    // Per-turn streaming state
+    let currentAssistantMsg = null;
+    const audioQueue = [];
+    let isPlaying = false;
+
+    function b64ToBlob(b64, mime) {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes], { type: mime });
+    }
+
+    async function playNext() {
+        if (isPlaying || audioQueue.length === 0) return;
+        isPlaying = true;
+        const blob = audioQueue.shift();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        const cleanup = () => {
+            URL.revokeObjectURL(url);
+            isPlaying = false;
+            playNext();
+        };
+        audio.onended = cleanup;
+        audio.onerror = cleanup;
+        try { await audio.play(); } catch (_) { cleanup(); }
+    }
+
+    S.chatWs = connectWs('/v1/converse', (data) => {
+        switch (data.type) {
+            case 'ready':
+                input.placeholder = 'Listening... speak naturally';
+                break;
+            case 'speech_start':
+                btn.classList.add('speaking');
+                input.placeholder = 'Recording...';
+                break;
+            case 'speech_end':
+                btn.classList.remove('speaking');
+                input.placeholder = 'Transcribing...';
+                $('chatThinking').textContent = 'Transcribing...';
+                break;
+            case 'transcript':
+                if (data.text && data.text.trim()) {
+                    appendChatMessage('user', data.text);
+                }
+                $('chatThinking').textContent = 'Thinking...';
+                currentAssistantMsg = null;
+                break;
+            case 'thinking':
+                $('chatThinking').textContent = 'Generating...';
+                break;
+            case 'sentence': {
+                if (!currentAssistantMsg) {
+                    currentAssistantMsg = appendChatMessage('assistant', '');
+                    $('chatThinking').textContent = 'Speaking...';
+                }
+                const textDiv = currentAssistantMsg.querySelector('.chat-msg-text');
+                if (textDiv) {
+                    const prev = textDiv.textContent || '';
+                    textDiv.textContent = prev + (prev ? ' ' : '') + data.text;
+                    const msgs = $('chatMessages');
+                    msgs.scrollTop = msgs.scrollHeight;
+                }
+                if (data.audio_b64) {
+                    audioQueue.push(b64ToBlob(data.audio_b64, 'audio/wav'));
+                    playNext();
+                }
+                break;
+            }
+            case 'done':
+                $('chatThinking').textContent = '';
+                currentAssistantMsg = null;
+                input.placeholder = 'Listening... (speak again, or click mic to stop)';
+                break;
+            case 'error':
+                showToast(data.message || 'Server error', 'error');
+                $('chatThinking').textContent = '';
+                break;
         }
     });
 
     S.chatWs.onopen = async () => {
+        // Send config as first text message (within 250ms).
+        try {
+            S.chatWs.send(JSON.stringify({ model, voice }));
+        } catch (_) { /* ignore */ }
+
         const ok = await startMic((chunk) => {
             if (S.chatWs && S.chatWs.readyState === WebSocket.OPEN) {
                 S.chatWs.send(chunk.buffer);
@@ -1201,7 +1720,9 @@ async function startChatMic() {
         }
         S.chatMicActive = true;
         btn.classList.add('recording');
-        input.placeholder = 'Listening...';
+        // Placeholder is managed by the 'ready' message handler — don't overwrite here.
+        // The server's `ready` event arrives during `await startMic()` and sets
+        // "Listening... speak naturally". Any write here races against that.
     };
 
     S.chatWs.onerror = () => {
@@ -1222,8 +1743,410 @@ function stopChatMic() {
         S.chatWs.close();
         S.chatWs = null;
     }
-    $('chatMicBtn').classList.remove('recording');
+    const btn = $('chatMicBtn');
+    btn.classList.remove('recording');
+    btn.classList.remove('speaking');
     $('chatInput').placeholder = 'Type a message...';
+    $('chatThinking').textContent = '';
+}
+
+// ─── 8b. LIVE TALK TAB ──────────────────────────────────────
+// State machine: idle → listening → transcribing → thinking → speaking → listening
+// Barge-in paths: (a) server VAD (speech_start during active turn),
+//                 (b) client RMS gate while speaking, (c) Cancel button.
+const LT = {
+    ws: null,              // WebSocket
+    active: false,         // mic enabled
+    state: 'idle',         // idle|listening|transcribing|thinking|speaking|cancelled
+    mode: 'vad',           // 'vad' | 'push_to_talk'
+    pttHeld: false,        // PTT button currently pressed
+    audioCtx: null,        // dedicated playback AudioContext (default sample rate, NOT the 16kHz mic ctx)
+    currentSource: null,   // currently-playing AudioBufferSourceNode
+    queue: [],             // [{ sentence_index, text, buffer }]
+    pendingHeader: null,   // last 'audio_chunk' header awaiting binary frame
+    sentencesInTurn: 0,    // count of sentences since the last turn_done
+    currentAssistantEl: null,
+    turnActive: false,     // have we started a turn that hasn't ended yet
+    turnCancelled: false,  // set true when we sent cancel or got cancelled event
+    bargeInEnabled: true,
+    // Client-side RMS barge-in during 'speaking': trailing window RMS
+    micRmsHistory: [],
+    RMS_WINDOW: 6,         // 6 * 300ms chunks ≈ 1.8s
+    RMS_THRESHOLD: 0.03,   // empirical: above this during 'speaking' => barge-in
+};
+
+function setLiveState(state) {
+    LT.state = state;
+    const badge = $('liveStateBadge');
+    if (!badge) return;
+    badge.textContent = state;
+    badge.className = 'live-state-badge ' + state;
+    const cancelBtn = $('liveCancelBtn');
+    if (cancelBtn) {
+        cancelBtn.disabled = !(state === 'thinking' || state === 'speaking');
+    }
+}
+
+function appendLiveMsg(role, text) {
+    const area = $('liveTalkMessages');
+    if (!area) return null;
+    const msg = document.createElement('div');
+    msg.className = 'live-msg ' + role;
+    const sender = role === 'user' ? '[You]' : '[Vox]';
+    msg.innerHTML =
+        '<div class="live-msg-sender">' + sender + '</div>' +
+        '<div class="live-msg-text">' + escapeHtml(text) + '</div>';
+    area.appendChild(msg);
+    area.scrollTop = area.scrollHeight;
+    return msg;
+}
+
+function appendLiveSentence(text) {
+    if (!LT.currentAssistantEl) {
+        LT.currentAssistantEl = appendLiveMsg('assistant', '');
+    }
+    if (!LT.currentAssistantEl) return;
+    const t = LT.currentAssistantEl.querySelector('.live-msg-text');
+    if (t) {
+        const prev = t.textContent || '';
+        t.textContent = prev + (prev ? ' ' : '') + text;
+        const area = $('liveTalkMessages');
+        if (area) area.scrollTop = area.scrollHeight;
+    }
+}
+
+function markLastAssistantCancelled() {
+    if (LT.currentAssistantEl) {
+        LT.currentAssistantEl.classList.add('cancelled');
+    }
+}
+
+function updateLiveMeter(chunk) {
+    // Visual meter only; RMS-for-barge-in is handled separately via fastRms()
+    let sum = 0;
+    for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
+    const rms = Math.sqrt(sum / chunk.length);
+    const level = Math.min(100, rms * 500);
+    const el = $('liveMeterFill');
+    if (el) el.style.width = level + '%';
+}
+
+function fastRms(chunk) {
+    // Subsampled RMS: every 8th sample ≈ 600 samples / 4800 chunk → ~10x faster
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i < chunk.length; i += 8) {
+        const s = chunk[i];
+        sum += s * s;
+        n++;
+    }
+    return n > 0 ? Math.sqrt(sum / n) : 0;
+}
+
+function clientBargeInCheck(chunk) {
+    // Only meaningful while we're actively speaking response audio.
+    if (!LT.bargeInEnabled) return;
+    if (LT.state !== 'speaking') {
+        LT.micRmsHistory.length = 0;
+        return;
+    }
+    const rms = fastRms(chunk);
+    LT.micRmsHistory.push(rms);
+    if (LT.micRmsHistory.length > LT.RMS_WINDOW) {
+        LT.micRmsHistory.shift();
+    }
+    if (LT.micRmsHistory.length < 2) return;
+    // Require at least two consecutive chunks above threshold to avoid
+    // single-frame glitches (AGC pop, typing, keyboard click).
+    const tail = LT.micRmsHistory.slice(-2);
+    if (tail.every((v) => v > LT.RMS_THRESHOLD)) {
+        LT.micRmsHistory.length = 0;
+        sendLiveCancel('user_barge_in_client');
+    }
+}
+
+function sendLiveCancel(_reason) {
+    if (!LT.ws || LT.ws.readyState !== WebSocket.OPEN) return;
+    if (LT.turnCancelled || !LT.turnActive) return;
+    LT.turnCancelled = true;
+    try {
+        LT.ws.send(JSON.stringify({ type: 'cancel' }));
+    } catch (_) { /* ignore */ }
+    cancelLivePlayback();
+    markLastAssistantCancelled();
+    setLiveState('cancelled');
+}
+
+function cancelLivePlayback() {
+    if (LT.currentSource) {
+        try { LT.currentSource.onended = null; LT.currentSource.stop(0); } catch (_) {}
+        LT.currentSource = null;
+    }
+    LT.queue.length = 0;
+}
+
+function playNextLive() {
+    if (LT.currentSource) return; // already playing
+    const next = LT.queue.shift();
+    if (!next) {
+        // Queue drained. If the server has already said turn_done and we
+        // weren't cancelled, return to listening.
+        if (!LT.turnActive && !LT.turnCancelled && LT.active) {
+            setLiveState('listening');
+        }
+        return;
+    }
+    try {
+        const src = LT.audioCtx.createBufferSource();
+        src.buffer = next.buffer;
+        src.connect(LT.audioCtx.destination);
+        src.onended = () => {
+            LT.currentSource = null;
+            playNextLive();
+        };
+        LT.currentSource = src;
+        setLiveState('speaking');
+        src.start();
+    } catch (e) {
+        LT.currentSource = null;
+        playNextLive();
+    }
+}
+
+async function decodeAndEnqueue(arrayBuffer, headerInfo) {
+    try {
+        if (!LT.audioCtx) {
+            // Use a dedicated playback AudioContext at the browser's default
+            // sample rate (typically 44.1/48 kHz). The mic AudioContext
+            // (S.audioCtx) is locked to 16 kHz for VAD/STT; reusing it for
+            // playback forced decodeAudioData to resample TTS audio (22050 Hz
+            // Piper WAV) to 16 kHz, causing decode failures and quality loss
+            // — especially on the first chunk where the context might still
+            // be suspended.
+            LT.audioCtx = new AudioContext();
+        }
+        if (LT.audioCtx.state === 'suspended') {
+            try { await LT.audioCtx.resume(); } catch (_) {}
+        }
+        // decodeAudioData requires a non-detached ArrayBuffer. We get ours
+        // directly from WebSocket.onmessage, so copy defensively.
+        const copy = arrayBuffer.slice(0);
+        const buffer = await new Promise((resolve, reject) => {
+            LT.audioCtx.decodeAudioData(copy, resolve, reject);
+        });
+        LT.queue.push({
+            sentence_index: headerInfo ? headerInfo.sentence_index : -1,
+            buffer,
+        });
+        playNextLive();
+    } catch (e) {
+        console.error('Live Talk: decodeAndEnqueue failed:', e,
+            'header:', headerInfo, 'byteLength:', arrayBuffer && arrayBuffer.byteLength);
+    }
+}
+
+function handleLiveEvent(data) {
+    switch (data.type) {
+        case 'ready':
+            setLiveState('listening');
+            break;
+        case 'speech_start':
+            // Server VAD detected speech. If we were speaking, this is
+            // a barge-in: cancel the active turn immediately.
+            if (LT.state === 'speaking' || LT.state === 'thinking') {
+                sendLiveCancel('user_barge_in_server');
+            } else {
+                setLiveState('listening');
+            }
+            break;
+        case 'transcript':
+            if (data.text && data.text.trim()) {
+                appendLiveMsg('user', data.text);
+            }
+            setLiveState('thinking');
+            LT.currentAssistantEl = null;
+            LT.turnActive = true;
+            LT.turnCancelled = false;
+            LT.sentencesInTurn = 0;
+            break;
+        case 'thinking':
+            setLiveState('thinking');
+            break;
+        case 'sentence':
+            // Text-only — audio arrives via a subsequent audio_chunk header
+            // + binary frame pair.
+            appendLiveSentence(data.text);
+            LT.sentencesInTurn = data.index + 1;
+            break;
+        case 'audio_chunk':
+            // Header — the NEXT binary frame is the WAV payload for this
+            // sentence. We stash it so ws.onmessage can pair them.
+            LT.pendingHeader = data;
+            break;
+        case 'turn_done':
+            LT.turnActive = false;
+            // If we're still playing queued audio, stay in speaking until
+            // the queue drains; playNextLive() will transition back to
+            // listening. If nothing queued and we weren't cancelled, go
+            // straight to listening.
+            if (!LT.currentSource && LT.queue.length === 0 && !LT.turnCancelled && LT.active) {
+                setLiveState('listening');
+            }
+            break;
+        case 'cancelled':
+            LT.turnActive = false;
+            LT.turnCancelled = true;
+            cancelLivePlayback();
+            markLastAssistantCancelled();
+            setLiveState('cancelled');
+            // Return to listening after a beat so the user can speak again.
+            setTimeout(() => {
+                if (LT.active && LT.state === 'cancelled') setLiveState('listening');
+            }, 400);
+            break;
+        case 'error':
+            if (data.fatal) {
+                showToast(data.message || 'Live Talk error', 'error');
+                stopLiveTalk();
+            } else {
+                showToast(data.message || 'Live Talk warning', 'warning');
+            }
+            break;
+        case 'partial':
+        case 'token':
+            // P1 wire events — not yet emitted by server, ignore.
+            break;
+    }
+}
+
+async function startLiveTalk() {
+    if (LT.active) return;
+    const btn = $('liveTalkMicBtn');
+    if (btn) btn.classList.add('recording');
+
+    const model = ($('liveTalkModel') && $('liveTalkModel').value) || null;
+    const voice = ($('liveTalkVoice') && $('liveTalkVoice').value) || null;
+    const modeSel = $('liveMode');
+    LT.mode = modeSel && modeSel.value === 'push_to_talk' ? 'push_to_talk' : 'vad';
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(proto + '//' + location.host + '/v1/live-talk');
+    ws.binaryType = 'arraybuffer';
+    LT.ws = ws;
+
+    ws.onmessage = (e) => {
+        if (typeof e.data === 'string') {
+            let data;
+            try { data = JSON.parse(e.data); } catch (_) { return; }
+            handleLiveEvent(data);
+        } else {
+            // Binary: must be paired with the most recent audio_chunk header.
+            const header = LT.pendingHeader;
+            LT.pendingHeader = null;
+            decodeAndEnqueue(e.data, header);
+        }
+    };
+
+    ws.onopen = async () => {
+        try {
+            const cfg = { type: 'config' };
+            if (model) cfg.model = model;
+            if (voice) cfg.voice = voice;
+            cfg.mode = LT.mode;
+            ws.send(JSON.stringify(cfg));
+        } catch (_) { /* ignore */ }
+
+        const ok = await startMic((chunk) => {
+            // Always send audio: the server only runs VAD / PTT segmentation
+            // on its end. This includes during 'speaking' so server-side
+            // VAD can detect user barge-in.
+            if (LT.ws && LT.ws.readyState === WebSocket.OPEN) {
+                try { LT.ws.send(chunk.buffer); } catch (_) {}
+            }
+            updateLiveMeter(chunk);
+            clientBargeInCheck(chunk);
+        });
+        if (!ok) {
+            try { ws.close(); } catch (_) {}
+            LT.ws = null;
+            if (btn) btn.classList.remove('recording');
+            return;
+        }
+        LT.active = true;
+        // Pre-initialize a dedicated playback AudioContext so the first
+        // TTS chunk doesn't pay resume() latency. Using the browser's
+        // default sample rate (44.1/48 kHz) avoids the 22050->16000
+        // resampling that caused first-chunk decode failures.
+        if (!LT.audioCtx) {
+            LT.audioCtx = new AudioContext();
+        }
+        // Reveal / hide the PTT button based on mode.
+        const pttBtn = $('livePttBtn');
+        if (pttBtn) pttBtn.style.display = LT.mode === 'push_to_talk' ? '' : 'none';
+    };
+
+    ws.onerror = () => {
+        showToast('Live Talk connection failed', 'error');
+    };
+
+    ws.onclose = () => {
+        if (LT.active) {
+            stopLiveTalk();
+        }
+    };
+}
+
+function stopLiveTalk() {
+    LT.active = false;
+    LT.turnActive = false;
+    LT.turnCancelled = false;
+    LT.pendingHeader = null;
+    LT.sentencesInTurn = 0;
+    cancelLivePlayback();
+    stopMic();
+    if (LT.audioCtx) {
+        try { LT.audioCtx.close(); } catch (_) {}
+        LT.audioCtx = null;
+    }
+    if (LT.ws) {
+        try { LT.ws.onclose = null; LT.ws.close(); } catch (_) {}
+        LT.ws = null;
+    }
+    const btn = $('liveTalkMicBtn');
+    if (btn) btn.classList.remove('recording');
+    setLiveState('idle');
+    const meter = $('liveMeterFill');
+    if (meter) meter.style.width = '0%';
+}
+
+function toggleLiveTalk() {
+    if (LT.active) stopLiveTalk();
+    else startLiveTalk();
+}
+
+function sendLivePtt(kind) {
+    if (!LT.ws || LT.ws.readyState !== WebSocket.OPEN) return;
+    try {
+        LT.ws.send(JSON.stringify({ type: kind === 'start' ? 'ptt_start' : 'ptt_end' }));
+    } catch (_) {}
+}
+
+async function loadLiveTalkSelectors() {
+    // Live Talk shares the same ollama + voice catalogues as the Chat tab.
+    // The /v1/ollama/models and /v1/voices endpoints are already used by
+    // loadOllamaModels() / loadVoices(); we just mirror their results.
+    if (!S.voicesLoaded) await loadVoices();
+    if (!S.ollamaModelsLoaded) await loadOllamaModels();
+    // After the chat selectors have populated, copy their current option
+    // sets over so Live Talk offers the same choices. Using innerHTML of
+    // the source selects is safe here — they were built from server data
+    // that's already been escaped.
+    const chatModel = $('chatModel');
+    const liveModel = $('liveTalkModel');
+    if (chatModel && liveModel) liveModel.innerHTML = chatModel.innerHTML;
+    const chatVoice = $('chatVoice');
+    const liveVoice = $('liveTalkVoice');
+    if (chatVoice && liveVoice) liveVoice.innerHTML = chatVoice.innerHTML;
 }
 
 // ─── 9. DASHBOARD ───────────────────────────────────────────
@@ -1367,6 +2290,28 @@ document.addEventListener('DOMContentLoaded', () => {
     $('clearTranscript').addEventListener('click', () => {
         $('transcriptArea').innerHTML = '';
     });
+    $('diarizeCheckbox').addEventListener('change', (e) => {
+        const cbx = e.target;
+        const toggle = $('diarizeToggle');
+        if (!S.diarizationAvailable) {
+            cbx.checked = false;
+            showToast('Speaker diarization is not available on this server', 'warning');
+            return;
+        }
+        if (cbx.checked) {
+            requestDiarizationConsent(() => {
+                S.diarizationOn = true;
+                toggle.classList.add('on');
+                sendDiarizationConfig(true);
+                renderSpeakersSidebar();
+            });
+        } else {
+            S.diarizationOn = false;
+            toggle.classList.remove('on');
+            sendDiarizationConfig(false);
+            renderSpeakersSidebar();
+        }
+    });
 
     // Speak tab
     $('synthesizeBtn').addEventListener('click', synthesize);
@@ -1381,6 +2326,50 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     $('chatMicBtn').addEventListener('click', toggleChatMic);
+
+    // Live Talk tab
+    const liveMicBtn = $('liveTalkMicBtn');
+    if (liveMicBtn) liveMicBtn.addEventListener('click', toggleLiveTalk);
+    const liveCancelBtn = $('liveCancelBtn');
+    if (liveCancelBtn) liveCancelBtn.addEventListener('click', () => sendLiveCancel('client_request'));
+    const liveClearBtn = $('liveClearBtn');
+    if (liveClearBtn) liveClearBtn.addEventListener('click', () => {
+        const area = $('liveTalkMessages');
+        if (area) area.innerHTML = '';
+    });
+    const liveModeSel = $('liveMode');
+    if (liveModeSel) liveModeSel.addEventListener('change', (e) => {
+        LT.mode = e.target.value === 'push_to_talk' ? 'push_to_talk' : 'vad';
+        const pttBtn = $('livePttBtn');
+        if (pttBtn) pttBtn.style.display = LT.mode === 'push_to_talk' ? '' : 'none';
+        // If already connected, send a config update (server may choose to
+        // honor or ignore mid-session mode swap).
+        if (LT.ws && LT.ws.readyState === WebSocket.OPEN) {
+            try { LT.ws.send(JSON.stringify({ type: 'config', mode: LT.mode })); } catch (_) {}
+        }
+    });
+    const livePttBtn = $('livePttBtn');
+    if (livePttBtn) {
+        const pttStart = (ev) => {
+            if (ev) ev.preventDefault();
+            if (!LT.active || LT.pttHeld) return;
+            LT.pttHeld = true;
+            livePttBtn.classList.add('active');
+            sendLivePtt('start');
+        };
+        const pttEnd = (ev) => {
+            if (ev) ev.preventDefault();
+            if (!LT.pttHeld) return;
+            LT.pttHeld = false;
+            livePttBtn.classList.remove('active');
+            sendLivePtt('end');
+        };
+        livePttBtn.addEventListener('mousedown', pttStart);
+        livePttBtn.addEventListener('mouseup', pttEnd);
+        livePttBtn.addEventListener('mouseleave', pttEnd);
+        livePttBtn.addEventListener('touchstart', pttStart, { passive: false });
+        livePttBtn.addEventListener('touchend', pttEnd, { passive: false });
+    }
 
     // Keyboard shortcut: Space toggles mic in Listen tab
     document.addEventListener('keydown', (e) => {
