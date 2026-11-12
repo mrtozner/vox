@@ -49,6 +49,7 @@ fn bench_vad_frame(c: &mut Criterion) {
             silence_duration_ms: 300,
             min_speech_ms: 100,
             pre_speech_pad_ms: 300,
+            ..VadConfig::default()
         },
     )
     .unwrap();

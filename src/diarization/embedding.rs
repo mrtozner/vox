@@ -18,7 +18,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use crate::audio::AudioResampler;
+use crate::audio::resample_once;
 use crate::error::VoxError;
 use crate::types::AudioChunk;
 
@@ -208,11 +208,9 @@ impl SpeakerEmbedding {
             return Ok(audio.clone());
         }
 
-        let mut resampler = AudioResampler::new(audio.sample_rate, EMBEDDING_SAMPLE_RATE)
-            .map_err(|e| VoxError::Diarization(format!("failed to create resampler: {e}")))?;
-
-        resampler
-            .process(audio)
+        // One-shot conversion: the streaming `AudioResampler::process` alone
+        // would hold back the tail of the buffer.
+        resample_once(audio, EMBEDDING_SAMPLE_RATE)
             .map_err(|e| VoxError::Diarization(format!("resampling failed: {e}")))
     }
 

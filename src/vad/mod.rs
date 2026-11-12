@@ -7,4 +7,4 @@
 mod silero;
 
 #[cfg(feature = "silero")]
-pub use silero::{SileroVad, VadConfig};
+pub use silero::{SILERO_MODEL_REVISION, SileroVad, VadConfig};
