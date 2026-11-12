@@ -40,9 +40,6 @@ pub mod vad;
 #[cfg(feature = "diarization")]
 pub mod diarization;
 
-#[cfg(feature = "intelligence")]
-pub mod intelligence;
-
 // Tier 1 quality optimizations
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod conversation;
@@ -118,13 +115,6 @@ pub use diarization::{
     ConversationEntry, DiarizationConfig, DiarizationPipeline, DiarizationPipelineBuilder,
     EmbeddingConfig, Recognition, RecognitionConfig, Speaker, SpeakerDatabase, SpeakerEmbedding,
     SpeakerRegistry, cosine_similarity,
-};
-
-// Intelligence layer exports (opt-in feature)
-#[cfg(feature = "intelligence")]
-pub use intelligence::{
-    CacheMetrics, ConversationMetadata, PreferenceType, PrivacyDashboard, SemanticCache,
-    SemanticCacheConfig, SpeakerInfo, UserModel, UserProfile, VoiceMemory, VoiceMemoryBuilder,
 };
 
 #[cfg(any(
