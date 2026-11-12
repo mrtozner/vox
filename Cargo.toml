@@ -37,8 +37,12 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait = "0.1"
-cpal = "0.15"
-tokio = { version = "1", features = ["full"] }
+# Microphone capture; only with the `mic` feature (on by default).
+cpal = { version = "0.15", optional = true }
+# The library core needs a runtime handle, channels, `select!` and timers.
+# Everything else is switched on by the feature that uses it (see [features]):
+# the binary's multi-threaded runtime, signals, fs, net, process.
+tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
 tokio-stream = "0.1"
 whisper-rs = { version = "0.15", optional = true }
 kokoro-tts = { version = "0.3.2", optional = true }
@@ -85,11 +89,17 @@ qwen3-tts = { path = "vendor/qwen3-tts", optional = true, features = ["metal"] }
 pocket-tts = { version = "0.6", optional = true, features = ["metal"] }
 
 [features]
-default = ["whisper", "silero"]
+default = ["whisper", "silero", "mic", "signal"]
+# Microphone capture through cpal: `AudioCapture` and `VoxBuilder::build()`.
+# Without it the engine is fed with `VoxBuilder::build_with_source()`.
+mic = ["dep:cpal"]
+# `Vox::listen()` stops on Ctrl-C. Without it only the end of the audio
+# source (or `Vox::listen_until()`) stops the pipeline.
+signal = ["tokio/signal"]
 whisper = ["dep:whisper-rs"]
 distil-whisper = ["whisper"]
 silero = ["dep:ort", "dep:ndarray"]
-kokoro = ["dep:kokoro-tts", "dep:ort", "dep:rodio"]
+kokoro = ["dep:kokoro-tts", "dep:ort", "dep:rodio", "tokio/fs"]
 sherpa = ["dep:sherpa-sys"]
 piper = ["dep:piper-rs", "dep:ort", "dep:rodio"]
 tts = ["dep:rodio"]
@@ -106,13 +116,15 @@ cli = [
     "dep:clap", "dep:dirs", "dep:indicatif", "dep:reqwest",
     "dep:tracing-subscriber", "dep:tokio-util", "dep:toml",
     "dep:sha2",
-    "whisper", "silero",
+    "whisper", "silero", "mic", "signal",
+    "tokio/rt-multi-thread", "tokio/fs", "tokio/io-util", "tokio/process",
 ]
 server = [
     "dep:axum", "dep:tower-http",
     "dep:dirs", "dep:futures-util",
     "dep:reqwest", "dep:tokio-util",
-    "diarization",
+    "diarization", "silero", "signal",
+    "tokio/net", "tokio/process",
 ]
 # The feature set of the release binaries (.github/workflows/release.yml).
 # It includes `piper`, which links espeak-ng (GPL-3.0-or-later), so a binary
@@ -169,6 +181,11 @@ name = "offline_server_tests"
 path = "tests/offline_server_tests.rs"
 required-features = ["server"]
 
+# Engine on a caller-owned audio source; the `server` part is cfg-gated.
+[[test]]
+name = "embedding_tests"
+path = "tests/embedding_tests.rs"
+
 [[test]]
 name = "offline_cli_tests"
 path = "tests/offline_cli_tests.rs"
@@ -214,15 +231,15 @@ harness = false
 
 [[example]]
 name = "simple_listen"
-required-features = ["whisper", "silero"]
+required-features = ["whisper", "silero", "mic"]
 
 [[example]]
 name = "vad_only"
-required-features = ["silero"]
+required-features = ["silero", "mic"]
 
 [[example]]
 name = "voice_assistant"
-required-features = ["whisper", "silero", "kokoro"]
+required-features = ["whisper", "silero", "kokoro", "mic"]
 
 [[example]]
 name = "tts_speak"
@@ -262,11 +279,11 @@ required-features = ["whisper", "silero", "diarization"]
 
 [[example]]
 name = "live_speaker_test"
-required-features = ["whisper", "silero", "diarization"]
+required-features = ["whisper", "silero", "diarization", "mic"]
 
 [[example]]
 name = "live_diarization"
-required-features = ["whisper", "silero", "diarization"]
+required-features = ["whisper", "silero", "diarization", "mic"]
 
 [[example]]
 name = "speaker_id_ui_demo"
@@ -274,4 +291,4 @@ required-features = ["diarization"]
 
 [[example]]
 name = "test_real_voices"
-required-features = ["diarization"]
+required-features = ["diarization", "mic"]

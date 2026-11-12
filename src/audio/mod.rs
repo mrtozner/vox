@@ -1,11 +1,12 @@
 //! Audio capture, buffering, resampling, and playback.
 //!
 //! This module provides the audio I/O layer for the Vox pipeline,
-//! including microphone capture via `cpal`, ring buffering for
-//! frame-based processing, sample rate conversion via `rubato`,
+//! including microphone capture via `cpal` (feature `mic`), ring buffering
+//! for frame-based processing, sample rate conversion via `rubato`,
 //! and audio playback via `rodio`.
 
 mod buffer;
+#[cfg(feature = "mic")]
 mod capture;
 mod frame;
 mod resampler;
@@ -21,6 +22,7 @@ mod resampler;
 mod playback;
 
 pub use buffer::AudioBuffer;
+#[cfg(feature = "mic")]
 pub use capture::AudioCapture;
 pub use frame::FrameAssembler;
 pub use resampler::{AudioResampler, resample_once};

@@ -3,12 +3,34 @@
 //! The [`Vox`] struct is the primary entry point. Use [`VoxBuilder`]
 //! to configure backends and options, then call `build()` to create
 //! a running pipeline.
+//!
+//! # Audio sources
+//!
+//! [`VoxBuilder::build`] captures from the default microphone and needs the
+//! `mic` feature (on by default). [`VoxBuilder::build_with_source`] and
+//! [`VoxBuilder::build_with_channel`] run the same pipeline on audio you
+//! supply -- a file, a socket, a telephony stream -- and work without `mic`,
+//! so an embedding application does not have to link an audio driver.
+//!
+//! With `mic` enabled [`Vox`] holds a `cpal` stream handle, which is not
+//! `Send` on every platform: drive the pipeline on the task that built it
+//! (or a `LocalSet`). Without `mic` it is `Send` and can be `tokio::spawn`ed.
+//!
+//! # Stopping
+//!
+//! [`Vox::listen`] runs until the source ends or, with the `signal` feature
+//! (on by default), until Ctrl-C. [`Vox::listen_until`] takes the stop
+//! condition from the caller and never installs a signal handler.
+
+use std::future::Future;
 
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::audio::{AudioCapture, AudioResampler, FrameAssembler};
+#[cfg(feature = "mic")]
+use crate::audio::AudioCapture;
+use crate::audio::{AudioResampler, FrameAssembler};
 use crate::error::VoxError;
 use crate::traits::{
     StreamingSttBackend, SttBackend, SttSession, TtsBackend, VadBackend, VadEvent,
@@ -174,10 +196,15 @@ impl VoxBuilder {
         self
     }
 
-    /// Build the Vox pipeline.
+    /// Build the Vox pipeline on the default microphone.
     ///
     /// Initializes audio capture and resampler. Requires at minimum a VAD
     /// and STT backend to be configured.
+    ///
+    /// Without the `mic` feature there is no capture code in the crate and
+    /// this returns [`VoxError::Audio`]; use
+    /// [`build_with_source`](Self::build_with_source) or
+    /// [`build_with_channel`](Self::build_with_channel) instead.
     pub fn build(self) -> Result<Vox, VoxError> {
         if self.vad.is_none() {
             return Err(VoxError::NoVad);
@@ -186,12 +213,41 @@ impl VoxBuilder {
             return Err(VoxError::NoStt);
         }
 
-        let (capture, audio_rx) = AudioCapture::new(self.config.sample_rate, self.config.channels)?;
-        // The device may have fallen back to its own format (commonly 44.1 or
-        // 48 kHz); the resampler must be built from what is actually captured.
-        let source_rate = capture.sample_rate();
+        #[cfg(feature = "mic")]
+        {
+            let (capture, audio_rx) =
+                AudioCapture::new(self.config.sample_rate, self.config.channels)?;
+            // The device may have fallen back to its own format (commonly 44.1
+            // or 48 kHz); the resampler must be built from what is actually
+            // captured.
+            let source_rate = capture.sample_rate();
 
-        self.assemble(Some(capture), audio_rx, source_rate)
+            let mut vox = self.assemble(audio_rx, source_rate)?;
+            vox.capture = Some(capture);
+            Ok(vox)
+        }
+        #[cfg(not(feature = "mic"))]
+        Err(VoxError::Audio(
+            "microphone capture is not compiled in (the `mic` feature is off); \
+             build the pipeline with `build_with_source` or `build_with_channel`"
+                .into(),
+        ))
+    }
+
+    /// Build the Vox pipeline and return the sender that feeds it.
+    ///
+    /// Shorthand for creating a bounded channel of `capacity` chunks and
+    /// calling [`build_with_source`](Self::build_with_source). Send
+    /// [`AudioChunk`]s of any length and channel count; drop the sender to
+    /// end the stream. A full channel applies backpressure to the sender, so
+    /// no audio is dropped.
+    pub fn build_with_channel(
+        self,
+        source_rate: u32,
+        capacity: usize,
+    ) -> Result<(Vox, mpsc::Sender<AudioChunk>), VoxError> {
+        let (tx, rx) = mpsc::channel(capacity.max(1));
+        Ok((self.build_with_source(rx, source_rate)?, tx))
     }
 
     /// Build the Vox pipeline on top of an external audio source instead of
@@ -213,12 +269,11 @@ impl VoxBuilder {
             return Err(VoxError::NoStt);
         }
 
-        self.assemble(None, audio_rx, source_rate)
+        self.assemble(audio_rx, source_rate)
     }
 
     fn assemble(
         mut self,
-        capture: Option<AudioCapture>,
         audio_rx: mpsc::Receiver<AudioChunk>,
         source_rate: u32,
     ) -> Result<Vox, VoxError> {
@@ -259,7 +314,8 @@ impl VoxBuilder {
             audio_rx,
             resampler,
             framer,
-            capture,
+            #[cfg(feature = "mic")]
+            capture: None,
             callback,
             stats: Arc::new(Mutex::new(PipelineStats::default())),
             #[cfg(any(
@@ -298,6 +354,7 @@ pub struct Vox {
     /// complete frames and no sample is dropped at a chunk boundary.
     framer: FrameAssembler,
     /// Microphone capture; `None` when built with an external audio source.
+    #[cfg(feature = "mic")]
     capture: Option<AudioCapture>,
     callback: Box<dyn Fn(SttResult, VoxContext) + Send + Sync>,
     stats: Arc<Mutex<PipelineStats>>,
@@ -319,17 +376,48 @@ impl Vox {
 
     /// Run the voice pipeline until shutdown.
     ///
-    /// Captures audio from the microphone, runs VAD to detect speech,
-    /// transcribes speech segments via STT, and calls the registered
-    /// callback with each result.
+    /// Takes audio from the microphone or the external source, runs VAD to
+    /// detect speech, transcribes speech segments via STT, and calls the
+    /// registered callback with each result.
     ///
     /// The loop terminates when:
-    /// - The audio capture channel closes (e.g. device disconnected)
-    /// - Ctrl+C is received
-    pub async fn listen(mut self) -> Result<(), VoxError> {
+    /// - The audio channel closes (device disconnected, sender dropped)
+    /// - Ctrl+C is received (only with the `signal` feature)
+    ///
+    /// An application that handles signals itself should call
+    /// [`listen_until`](Self::listen_until), which installs no handler.
+    pub async fn listen(self) -> Result<(), VoxError> {
+        #[cfg(feature = "signal")]
+        let shutdown = async {
+            // A failed handler registration also ends the loop, as before.
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("ctrl+c received, shutting down");
+        };
+        #[cfg(not(feature = "signal"))]
+        let shutdown = std::future::pending::<()>();
+
+        self.listen_until(shutdown).await
+    }
+
+    /// Run the voice pipeline until the audio source ends or `shutdown`
+    /// resolves, whichever comes first.
+    ///
+    /// Unlike [`listen`](Self::listen) this never touches process signals,
+    /// which makes it the entry point for a pipeline embedded in a larger
+    /// application: pass a cancellation token, a channel receive or a timer.
+    ///
+    /// When the source ends, buffered audio is flushed through VAD and STT
+    /// before returning. When `shutdown` resolves first the loop stops at
+    /// once and audio still in flight is discarded.
+    pub async fn listen_until(
+        mut self,
+        shutdown: impl Future<Output = ()>,
+    ) -> Result<(), VoxError> {
+        #[cfg(feature = "mic")]
         if let Some(capture) = &self.capture {
             capture.start()?;
         }
+        tokio::pin!(shutdown);
 
         let start_time = std::time::Instant::now();
 
@@ -356,13 +444,14 @@ impl Vox {
 
                     self.process_chunk(chunk, start_time).await?;
                 }
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("ctrl+c received, shutting down");
+                () = &mut shutdown => {
+                    tracing::info!("shutdown requested, stopping pipeline");
                     break;
                 }
             }
         }
 
+        #[cfg(feature = "mic")]
         if let Some(capture) = &self.capture {
             capture.stop()?;
         }
