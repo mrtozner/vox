@@ -2,866 +2,580 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>vox</title>
 <style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+/* Layout: app shell (rail nav + one working surface). The one bold element is the "tape":
+   a rolling voice strip coloured by who has the floor. Everything around it stays quiet.
+   No web fonts: this page is served by an offline binary, so only system stacks are used. */
 :root {
-    --bg-primary: #0a0a0a;
-    --bg-secondary: #141414;
-    --bg-tertiary: #1e1e1e;
-    --accent: #4ade80;
-    --accent-dim: #166534;
-    --error: #ef4444;
-    --warning: #f59e0b;
-    --text-primary: #e0e0e0;
-    --text-muted: #555;
-    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace;
-    --radius: 8px;
+    --paper: #F2F4F7;  --surface: #FFFFFF;  --sunken: #E8ECF1;
+    --line: #D3DAE3;   --line-strong: #AEB9C8;
+    --ink: #141A24;    --ink-2: #414C5F;    --ink-3: #5B6678;
+    --accent: #3B4CCA; --accent-ink: #FFFFFF; --accent-soft: #E4E8FB;
+    /* state hues: semantic, separate from the accent */
+    --listen: #0A7566; --listen-soft: #DCF1EC;
+    --think: #8A5000;  --think-soft: #FAEACD;
+    --speak: #3B4CCA;  --speak-soft: #E4E8FB;
+    --cut: #B92D45;    --cut-soft: #FBE1E5;
+    --font-display: 'Avenir Next', 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+    --font-body: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --r-s: 6px; --r-m: 10px; --r-l: 16px;
+    --shadow: 0 1px 2px rgba(20,26,36,.06), 0 10px 28px -14px rgba(20,26,36,.22);
+    --gutter: 20px;
+    color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --paper: #0F131A;  --surface: #171C26;  --sunken: #0A0D13;
+        --line: #283040;   --line-strong: #3C475B;
+        --ink: #E9EDF4;    --ink-2: #B4BECE;    --ink-3: #8E99AC;
+        --accent: #9BA6FF; --accent-ink: #0F131A; --accent-soft: #222949;
+        --listen: #56D3BF; --listen-soft: #11302C;
+        --think: #F0B759;  --think-soft: #33270F;
+        --speak: #9BA6FF;  --speak-soft: #222949;
+        --cut: #FF8A9B;    --cut-soft: #3A161D;
+        --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 30px -14px rgba(0,0,0,.7);
+        color-scheme: dark;
+    }
+}
+:root[data-theme="dark"] {
+    --paper: #0F131A;  --surface: #171C26;  --sunken: #0A0D13;
+    --line: #283040;   --line-strong: #3C475B;
+    --ink: #E9EDF4;    --ink-2: #B4BECE;    --ink-3: #8E99AC;
+    --accent: #9BA6FF; --accent-ink: #0F131A; --accent-soft: #222949;
+    --listen: #56D3BF; --listen-soft: #11302C;
+    --think: #F0B759;  --think-soft: #33270F;
+    --speak: #9BA6FF;  --speak-soft: #222949;
+    --cut: #FF8A9B;    --cut-soft: #3A161D;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 30px -14px rgba(0,0,0,.7);
+    color-scheme: dark;
 }
 
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
 body {
-    font-family: var(--font-mono);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    font-size: 14px;
-    line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
+    font-family: var(--font-body); font-size: 14px; line-height: 1.5;
+    background: var(--paper); color: var(--ink);
+    display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto;
+    -webkit-font-smoothing: antialiased; overflow: hidden;
 }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.skip { position: absolute; left: -999px; top: 8px; background: var(--surface); color: var(--ink); padding: 8px 12px; border-radius: var(--r-s); z-index: 2000; }
+.skip:focus { left: 8px; }
 
-/* ── Header ───────────────────────────────────────────────── */
+/* ── Header ── */
 .header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 20px;
-    border-bottom: 1px solid var(--bg-tertiary);
-    flex-shrink: 0;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px max(var(--gutter), env(safe-area-inset-right, 0px)) 10px max(var(--gutter), env(safe-area-inset-left, 0px));
+    border-bottom: 1px solid var(--line); background: var(--surface);
 }
-.header-brand { font-size: 18px; font-weight: 700; letter-spacing: 2px; }
-.header-brand span { color: var(--text-muted); font-weight: 400; font-size: 12px; margin-left: 8px; }
-.header-health { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
-.health-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--text-muted);
-    transition: background 0.3s;
-}
-.health-dot.ok { background: var(--accent); }
-.health-dot.err { background: var(--error); }
+.header-brand { display: flex; align-items: baseline; gap: 8px; font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: -0.02em; }
+.header-brand svg { width: 22px; height: 22px; align-self: center; color: var(--accent); }
+.header-brand span { font-family: var(--font-mono); font-weight: 400; font-size: 11px; color: var(--ink-3); letter-spacing: 0; }
+.local-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; min-width: 0; }
+.local-pill svg { width: 12px; height: 12px; flex-shrink: 0; }
+.local-pill .lp-long { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-pill .lp-short { display: none; }
+.header-spacer { flex: 1; }
+.header-health { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
+.health-dot.ok { background: var(--listen); }
+.health-dot.err { background: var(--cut); }
 
-/* ── Tab Bar ──────────────────────────────────────────────── */
-.tab-bar {
-    display: flex;
-    gap: 0;
-    border-bottom: 1px solid var(--bg-tertiary);
-    flex-shrink: 0;
-    overflow-x: auto;
-}
+/* ── Tabs ── */
+.tab-bar { display: flex; gap: 2px; overflow-x: auto; background: var(--surface); border-bottom: 1px solid var(--line); padding: 0 max(12px, env(safe-area-inset-left, 0px)); scrollbar-width: none; }
 .tab-btn {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    font-size: 13px;
-    padding: 10px 20px;
-    cursor: pointer;
+    background: none; border: 0; cursor: pointer; white-space: nowrap;
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; color: var(--ink-2); font-weight: 500;
     border-bottom: 2px solid transparent;
-    transition: color 0.2s, border-color 0.2s;
-    white-space: nowrap;
 }
-.tab-btn:hover { color: var(--text-primary); }
+.tab-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+.tab-btn:hover { color: var(--ink); }
 .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-btn:focus-visible { outline-offset: -2px; }
+.tab-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--listen); }
 
-/* ── Tab Content ──────────────────────────────────────────── */
-.tab-content { flex: 1; overflow: hidden; display: none; flex-direction: column; }
+main { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.tab-content { flex: 1; min-height: 0; display: none; flex-direction: column; }
 .tab-content.active { display: flex; }
 
-/* ── Listen Tab ───────────────────────────────────────────── */
-.listen-controls {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 32px 20px 16px;
-    gap: 12px;
-    flex-shrink: 0;
-}
-.mic-btn {
-    width: 64px; height: 64px;
-    border-radius: 50%;
-    border: 2px solid var(--accent-dim);
-    background: var(--bg-secondary);
-    color: var(--accent-dim);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
-    position: relative;
-}
-.mic-btn:hover { border-color: var(--accent); color: var(--accent); }
-.mic-btn.recording {
-    border-color: var(--accent);
-    color: var(--accent);
-    animation: mic-pulse 1.5s ease-in-out infinite;
-}
-@keyframes mic-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.3); }
-    50% { box-shadow: 0 0 0 12px rgba(74, 222, 128, 0); }
-}
-.mic-btn svg { width: 28px; height: 28px; fill: currentColor; }
-.listen-status { font-size: 12px; color: var(--text-muted); min-height: 18px; }
-.listen-status.active { color: var(--accent); }
-.listen-status.transcribing { color: var(--warning); animation: transcribe-pulse 1s ease-in-out infinite; }
-@keyframes transcribe-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-
-.audio-meter {
-    width: 120px;
-    height: 4px;
-    background: var(--bg-tertiary);
-    border-radius: 2px;
-    overflow: hidden;
-    opacity: 0;
-    transition: opacity 0.3s;
-}
-.audio-meter.visible { opacity: 1; }
-.audio-meter-fill {
-    height: 100%;
-    width: 0%;
-    background: var(--accent);
-    border-radius: 2px;
-    transition: width 0.1s;
+@media (min-width: 960px) {
+    body { grid-template-columns: 196px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
+    .header { grid-column: 1 / -1; }
+    .tab-bar { flex-direction: column; border-bottom: 0; border-right: 1px solid var(--line); padding: 12px 10px; gap: 2px; overflow: visible; }
+    .tab-btn { border-bottom: 0; border-radius: var(--r-s); padding: 9px 10px; }
+    .tab-btn.active { background: var(--accent-soft); }
+    .status-bar { grid-column: 1 / -1; }
 }
 
-.transcript-area {
-    flex: 1;
-    overflow-y: auto;
-    padding: 0 20px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.transcript-entry {
-    background: var(--bg-secondary);
-    border: 1px solid var(--bg-tertiary);
-    border-radius: var(--radius);
-    padding: 10px 14px;
-}
-.transcript-text { font-size: 14px; word-break: break-word; }
-.transcript-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
-.transcript-partial .transcript-text { color: var(--text-muted); font-style: italic; }
-.transcript-placeholder .transcript-text { animation: dot-pulse 1.5s ease-in-out infinite; }
-@keyframes dot-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-.transcript-copy-btn {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    background: none;
-    border: 1px solid var(--bg-tertiary);
-    border-radius: 4px;
-    color: var(--text-muted);
-    font-size: 12px;
-    padding: 2px 6px;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.2s, color 0.2s, border-color 0.2s;
-    font-family: var(--font-mono);
-    line-height: 1;
-}
-.transcript-entry:hover .transcript-copy-btn { opacity: 1; }
-.transcript-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
-.transcript-clear {
-    align-self: flex-end;
-    margin-right: 20px;
-    margin-bottom: 8px;
-}
-
-/* ── Diarization (Listen Tab) ─────────────────────────────── */
-.diarize-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--text-muted);
-    cursor: pointer;
-    user-select: none;
-    padding: 4px 10px;
-    border: 1px solid var(--bg-tertiary);
-    border-radius: 999px;
-    transition: color 0.15s, border-color 0.15s, background 0.15s;
-}
-.diarize-toggle:hover { color: var(--text); border-color: var(--accent-dim); }
-.diarize-toggle.on { color: var(--accent); border-color: var(--accent); }
-.diarize-toggle.disabled { opacity: 0.35; cursor: not-allowed; }
-.diarize-toggle input { display: none; }
-.diarize-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--bg-tertiary);
-    transition: background 0.15s;
-}
-.diarize-toggle.on .diarize-dot { background: var(--accent); }
-
-.listen-body {
-    display: grid;
-    grid-template-columns: 1fr;
-    flex: 1;
-    min-height: 0;
-    gap: 0;
-}
-.listen-body.with-sidebar { grid-template-columns: 1fr 220px; }
-.speakers-sidebar {
-    border-left: 1px solid var(--bg-tertiary);
-    padding: 12px 14px;
-    overflow-y: auto;
-    display: none;
-    flex-direction: column;
-    gap: 6px;
-}
-.listen-body.with-sidebar .speakers-sidebar { display: flex; }
-.speakers-sidebar h3 {
-    font-size: 11px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin: 0 0 6px 0;
-    font-weight: 600;
-}
-.speakers-sidebar-empty {
-    font-size: 11px;
-    color: var(--text-muted);
-    font-style: italic;
-    padding: 8px 0;
-}
-.speaker-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border-radius: 6px;
-    border: 1px solid transparent;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-}
-.speaker-row:hover { background: var(--bg-secondary); border-color: var(--bg-tertiary); }
-.speaker-swatch {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
-.speaker-name {
-    flex: 1;
-    font-size: 12px;
-    color: var(--text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.speaker-forget {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: 14px;
-    padding: 2px 4px;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.15s, color 0.15s;
-}
-.speaker-row:hover .speaker-forget { opacity: 1; }
-.speaker-forget:hover { color: var(--error, #ff6b6b); }
-.speaker-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 10px;
-    font-weight: 600;
-    padding: 2px 7px;
-    border-radius: 999px;
-    background: var(--bg-tertiary);
-    color: var(--text);
-    margin-right: 6px;
-    vertical-align: middle;
-}
-.speaker-badge .speaker-swatch { width: 6px; height: 6px; }
-.transcript-entry[data-speaker] { border-left: 2px solid var(--speaker-color, var(--bg-tertiary)); }
-
-/* ── Speak Tab ────────────────────────────────────────────── */
-.speak-container {
-    display: flex;
-    flex-direction: column;
-    padding: 20px;
-    gap: 16px;
-    flex: 1;
-}
-.speak-container textarea {
-    flex: 1;
-    min-height: 120px;
-    resize: vertical;
-    background: var(--bg-secondary);
-    border: 1px solid var(--bg-tertiary);
-    border-radius: var(--radius);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 14px;
-    padding: 12px;
-    outline: none;
-    transition: border-color 0.2s;
-}
-.speak-container textarea:focus { border-color: var(--accent-dim); }
-.speak-container textarea::placeholder { color: var(--text-muted); }
-.speak-row {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    flex-wrap: wrap;
-}
-.speak-row select {
-    flex: 1;
-    min-width: 140px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--bg-tertiary);
-    border-radius: var(--radius);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 13px;
-    padding: 8px 12px;
-    outline: none;
-    cursor: pointer;
-}
-.speak-row select:focus { border-color: var(--accent-dim); }
-.audio-player { margin-top: 8px; }
-.audio-player audio { width: 100%; outline: none; }
-
-/* ── Chat Tab ─────────────────────────────────────────────── */
-.chat-container { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
-.chat-settings {
-    display: flex;
-    gap: 12px;
-    padding: 12px 20px;
-    border-bottom: 1px solid var(--bg-tertiary);
-    flex-wrap: wrap;
-    flex-shrink: 0;
-}
-.chat-settings label { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
-.chat-settings input, .chat-settings select {
-    background: var(--bg-secondary);
-    border: 1px solid var(--bg-tertiary);
-    border-radius: var(--radius);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    padding: 6px 10px;
-    outline: none;
-}
-.chat-settings input:focus, .chat-settings select:focus { border-color: var(--accent-dim); }
-.chat-messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-.chat-msg { max-width: 80%; display: flex; flex-direction: column; gap: 2px; }
-.chat-msg.user { align-self: flex-end; }
-.chat-msg.assistant { align-self: flex-start; }
-.chat-msg-sender { font-size: 11px; color: var(--text-muted); }
-.chat-msg-text {
-    background: var(--bg-secondary);
-    border: 1px solid var(--bg-tertiary);
-    border-radius: var(--radius);
-    padding: 10px 14px;
-    font-size: 14px;
-    word-break: break-word;
-    white-space: pre-wrap;
-}
-.chat-msg.user .chat-msg-text { background: var(--accent-dim); border-color: var(--accent-dim); }
-.chat-retry-btn {
-    background: none;
-    border: 1px solid var(--error);
-    border-radius: var(--radius);
-    color: var(--error);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    padding: 3px 10px;
-    cursor: pointer;
-    margin-top: 4px;
-    transition: background 0.2s, color 0.2s;
-    align-self: flex-end;
-}
-.chat-retry-btn:hover { background: var(--error); color: #fff; }
-.chat-thinking { font-size: 12px; color: var(--text-muted); padding: 0 20px; flex-shrink: 0; min-height: 20px; }
-.chat-input-bar {
-    display: flex;
-    gap: 8px;
-    padding: 12px 20px;
-    border-top: 1px solid var(--bg-tertiary);
-    flex-shrink: 0;
-}
-.chat-input-bar input {
-    flex: 1;
-    background: var(--bg-secondary);
-    border: 1px solid var(--bg-tertiary);
-    border-radius: var(--radius);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 14px;
-    padding: 10px 14px;
-    outline: none;
-}
-.chat-input-bar input:focus { border-color: var(--accent-dim); }
-.chat-input-bar input::placeholder { color: var(--text-muted); }
-.chat-mic-btn {
-    width: 40px; height: 40px;
-    border-radius: 50%;
-    border: 1px solid var(--bg-tertiary);
-    background: var(--bg-secondary);
-    color: var(--text-muted);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: border-color 0.2s, color 0.2s;
-    flex-shrink: 0;
-}
-.chat-mic-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
-.chat-mic-btn.recording { border-color: var(--accent); color: var(--accent); animation: mic-pulse 1.5s ease-in-out infinite; }
-.chat-mic-btn svg { width: 18px; height: 18px; fill: currentColor; }
-
-/* ── Live Talk Tab ────────────────────────────────────────── */
-.livetalk-container { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
-.livetalk-settings {
-    display: flex;
-    gap: 12px;
-    padding: 12px 20px;
-    border-bottom: 1px solid var(--bg-tertiary);
-    flex-wrap: wrap;
-    flex-shrink: 0;
-}
-.livetalk-settings label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--text-muted);
-}
-.livetalk-settings select {
-    background: var(--bg-secondary);
-    border: 1px solid var(--bg-tertiary);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    padding: 4px 8px;
-    border-radius: 4px;
-    outline: none;
-    cursor: pointer;
-}
-.livetalk-messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-.livetalk-messages:empty::before {
-    content: 'Press the mic button to start a live conversation.';
-    color: var(--text-muted);
-    text-align: center;
-    font-size: 13px;
-    padding: 20px;
-    margin: auto;
-}
-.live-msg {
-    max-width: 80%;
-    padding: 10px 14px;
-    border-radius: var(--radius);
-    font-size: 13px;
-    line-height: 1.5;
-    word-wrap: break-word;
-}
-.live-msg.user {
-    align-self: flex-end;
-    background: var(--accent-dim);
-    color: var(--accent);
-}
-.live-msg.assistant {
-    align-self: flex-start;
-    background: var(--bg-secondary);
-    border: 1px solid var(--bg-tertiary);
-    color: var(--text-primary);
-}
-.live-msg.assistant.cancelled::after {
-    content: ' (interrupted)';
-    color: var(--warning);
-    font-size: 11px;
-    font-style: italic;
-}
-.live-msg-sender { font-size: 10px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 1px; }
-.live-control-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 20px;
-    border-top: 1px solid var(--bg-tertiary);
-    flex-shrink: 0;
-    flex-wrap: wrap;
-}
-.live-mic-btn {
-    width: 48px;
-    height: 48px;
-    flex-shrink: 0;
-}
-.live-mic-btn svg { width: 22px; height: 22px; }
-.live-state-area {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 120px;
-}
-.live-state-badge {
-    font-size: 11px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    padding: 2px 0;
-    transition: color 0.2s;
-}
-.live-state-badge.listening { color: var(--accent); }
-.live-state-badge.transcribing { color: var(--warning); }
-.live-state-badge.thinking { color: var(--warning); animation: transcribe-pulse 1s ease-in-out infinite; }
-.live-state-badge.speaking { color: var(--accent); }
-.live-state-badge.cancelled { color: var(--error); }
-.live-meter {
-    height: 4px;
-    background: var(--bg-tertiary);
-    border-radius: 2px;
-    overflow: hidden;
-}
-.live-meter-fill {
-    height: 100%;
-    width: 0%;
-    background: var(--accent);
-    transition: width 0.1s linear;
-}
-.live-ptt-btn.active {
-    background: var(--accent);
-    color: var(--bg-primary);
-}
-
-/* ── Dashboard Tab ────────────────────────────────────────── */
-.dashboard {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px;
-    padding: 20px;
-    align-content: start;
-    overflow-y: auto;
-    flex: 1;
-}
-.dash-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--bg-tertiary);
-    border-radius: var(--radius);
-    padding: 20px;
-}
-.dash-card-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
-.dash-card-value { font-size: 22px; font-weight: 700; }
-.dash-card-value.ok { color: var(--accent); }
-.dash-card-value.err { color: var(--error); }
-.dash-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 13px; }
-.dash-row .label { color: var(--text-muted); }
-.dash-indicator {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-    margin-right: 6px;
-}
-.dash-indicator.loaded { background: var(--accent); }
-.dash-indicator.not-loaded { background: var(--text-muted); }
-
-/* ── Status Bar ───────────────────────────────────────────── */
-.status-bar {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 24px;
-    padding: 8px 20px;
-    border-top: 1px solid var(--bg-tertiary);
-    font-size: 11px;
-    color: var(--text-muted);
-    flex-shrink: 0;
-    flex-wrap: wrap;
-}
-
-/* ── Buttons ──────────────────────────────────────────────── */
+/* ── Shared controls ── */
 .btn {
-    background: var(--accent-dim);
-    color: var(--accent);
-    border: 1px solid var(--accent-dim);
-    border-radius: var(--radius);
-    font-family: var(--font-mono);
-    font-size: 13px;
-    padding: 8px 20px;
-    cursor: pointer;
-    transition: background 0.2s, opacity 0.2s;
-    white-space: nowrap;
+    background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent);
+    border-radius: var(--r-s); padding: 7px 14px; font-weight: 600; font-size: 13px; cursor: pointer; white-space: nowrap;
 }
-.btn:hover { background: #1a7a3a; }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-sm { padding: 4px 12px; font-size: 12px; }
-.btn-ghost {
-    background: transparent;
-    border: 1px solid var(--bg-tertiary);
-    color: var(--text-muted);
+.btn:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-ghost { background: transparent; color: var(--ink-2); border-color: var(--line-strong); font-weight: 500; }
+.btn-ghost:hover { color: var(--ink); border-color: var(--ink-3); filter: none; }
+.btn-danger { background: var(--cut); border-color: var(--cut); color: var(--surface); }
+.field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.field select, .field input {
+    text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 13px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-s); padding: 6px 8px; min-width: 0; max-width: 100%;
 }
-.btn-ghost:hover { border-color: var(--text-muted); color: var(--text-primary); }
+.settings-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; padding: 12px var(--gutter); border-bottom: 1px solid var(--line); }
+.settings-row .grow { flex: 1; }
 
-/* ── Toasts ───────────────────────────────────────────────── */
-.toast-container {
-    position: fixed;
-    top: 12px;
-    right: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    z-index: 1000;
-    pointer-events: none;
+.mic-btn {
+    width: 56px; height: 56px; border-radius: 50%; flex-shrink: 0; cursor: pointer;
+    border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-2);
+    display: flex; align-items: center; justify-content: center; position: relative;
+    transition: background .15s, color .15s, border-color .15s;
 }
-.toast {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--text-muted);
-    border-radius: var(--radius);
-    padding: 10px 36px 10px 14px;
-    font-size: 13px;
-    color: var(--text-primary);
-    pointer-events: auto;
-    animation: toast-in 0.25s ease-out;
-    position: relative;
-    max-width: 360px;
-    word-break: break-word;
-}
-.toast.error { border-color: var(--error); }
-.toast.warning { border-color: var(--warning); }
-.toast-close {
-    position: absolute;
-    top: 8px;
-    right: 10px;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 16px;
-    line-height: 1;
-    font-family: var(--font-mono);
-}
-.toast-close:hover { color: var(--text-primary); }
-@keyframes toast-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
-.toast.dismissing { animation: toast-out 0.2s ease-in forwards; }
-@keyframes toast-out { to { opacity: 0; transform: translateX(20px); } }
+.mic-btn svg { width: 24px; height: 24px; fill: currentColor; }
+.mic-btn:hover { border-color: var(--listen); color: var(--listen); }
+.mic-btn.recording { background: var(--listen); border-color: var(--listen); color: var(--surface); }
+.mic-btn.recording::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid var(--listen); opacity: .35; animation: ring 1.8s ease-out infinite; }
+.mic-btn.speaking { box-shadow: 0 0 0 4px var(--listen-soft); }
+@keyframes ring { from { transform: scale(.92); opacity: .5; } to { transform: scale(1.18); opacity: 0; } }
 
-/* ── Scrollbar ────────────────────────────────────────────── */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+/* ── The tape ── */
+.tape-wrap { position: relative; background: var(--sunken); border-radius: var(--r-m); overflow: hidden; }
+.tape { display: block; width: 100%; height: 76px; }
+.tape-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--ink-3); }
+.tape-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: baseline; }
+.lg-listen { background: var(--listen); } .lg-think { background: var(--think); } .lg-speak { background: var(--speak); } .lg-cut { background: var(--cut); }
 
-/* ── Responsive ───────────────────────────────────────────── */
-@media (max-width: 600px) {
-    .header { padding: 10px 14px; }
-    .tab-btn { padding: 8px 14px; font-size: 12px; }
-    .speak-container, .chat-messages, .dashboard { padding: 14px; }
-    .chat-input-bar, .chat-settings { padding: 10px 14px; }
-    .chat-msg { max-width: 90%; }
-    .dashboard { grid-template-columns: 1fr; }
+/* ── Speaker badge ── */
+.speaker-swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; display: inline-block; background: #888; }
+.speaker-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 1px 8px 1px 6px; border-radius: 999px; background: var(--sunken); color: var(--ink); border: 1px solid var(--line); }
+.speaker-badge .speaker-swatch { width: 7px; height: 7px; }
+
+/* ── Listen ── */
+.listen-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px 16px; align-items: center; padding: 16px var(--gutter); border-bottom: 1px solid var(--line); }
+.listen-headline { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.listen-status { font-family: var(--font-display); font-size: 20px; font-weight: 500; letter-spacing: -0.01em; color: var(--ink-2); }
+.listen-status.active { color: var(--listen); }
+.listen-status.transcribing { color: var(--think); }
+.listen-sub { font-size: 12px; color: var(--ink-3); }
+.listen-controls .tape-wrap { grid-column: 1 / -1; }
+.listen-tools { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+.diarize-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); cursor: pointer; user-select: none; position: relative; }
+.diarize-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.diarize-dot { width: 30px; height: 18px; border-radius: 999px; background: var(--line-strong); position: relative; transition: background .15s; flex-shrink: 0; }
+.diarize-dot::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); transition: transform .15s; }
+.diarize-toggle.on .diarize-dot { background: var(--listen); }
+.diarize-toggle.on .diarize-dot::after { transform: translateX(12px); }
+.diarize-toggle.disabled { opacity: .45; cursor: not-allowed; }
+.diarize-toggle:focus-within .diarize-dot { outline: 2px solid var(--accent); outline-offset: 2px; }
+.listen-body { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; }
+.listen-body.with-sidebar { grid-template-columns: minmax(0, 1fr) 248px; }
+.transcript-area { overflow-y: auto; padding: 14px var(--gutter); display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+.transcript-entry { position: relative; padding: 8px 40px 8px 12px; border-left: 3px solid var(--line); border-radius: 0 var(--r-s) var(--r-s) 0; }
+.transcript-entry[data-speaker] { border-left-color: var(--speaker-color, var(--line)); }
+.transcript-entry:hover { background: var(--surface); }
+.transcript-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 2px; }
+.transcript-text { font-size: 15px; overflow-wrap: anywhere; max-width: 68ch; }
+.transcript-meta { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.transcript-partial .transcript-text { color: var(--ink-3); font-style: italic; }
+.transcript-placeholder .transcript-text { color: var(--ink-3); }
+.transcript-copy-btn { position: absolute; top: 6px; right: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-s); color: var(--ink-3); font-size: 11px; padding: 2px 6px; cursor: pointer; opacity: 0; }
+.transcript-entry:hover .transcript-copy-btn, .transcript-copy-btn:focus-visible { opacity: 1; }
+.speakers-sidebar { border-left: 1px solid var(--line); padding: 14px; overflow-y: auto; display: none; flex-direction: column; gap: 8px; background: var(--surface); min-height: 0; }
+.listen-body.with-sidebar .speakers-sidebar { display: flex; }
+.panel-title { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.speakers-sidebar-empty { font-size: 12px; color: var(--ink-3); }
+.speaker-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; min-height: 34px; flex-wrap: wrap; }
+.speaker-name { flex: 1; min-width: 0; text-align: left; background: none; border: 0; cursor: text; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 4px; border-radius: 4px; }
+.speaker-name:hover { background: var(--sunken); }
+.speaker-edit { flex: 1; min-width: 0; font-size: 13px; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 4px; background: var(--surface); }
+.speaker-count { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+.speaker-forget { background: none; border: 0; color: var(--ink-3); cursor: pointer; font-size: 12px; padding: 3px 6px; border-radius: 4px; }
+.speaker-forget:hover { color: var(--cut); background: var(--cut-soft); }
+.inline-confirm { flex-basis: 100%; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); background: var(--cut-soft); border-radius: var(--r-s); padding: 6px 8px; }
+.privacy-note { font-size: 11px; color: var(--ink-3); margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line); }
+@media (max-width: 760px) {
+    .listen-body.with-sidebar { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .speakers-sidebar { order: -1; border-left: 0; border-bottom: 1px solid var(--line); max-height: 132px; }
+    .privacy-note { display: none; }
 }
 
+/* ── Speak ── */
+.speak-container { display: flex; flex-direction: column; gap: 14px; padding: 18px var(--gutter); overflow-y: auto; flex: 1; min-height: 0; max-width: 820px; }
+.speak-container textarea { min-height: 150px; resize: vertical; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-m); padding: 12px 14px; font-size: 15px; line-height: 1.55; }
+.speak-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.speak-row .field { flex: 1; min-width: 180px; }
+.stream-progress { font-size: 12px; color: var(--ink-2); min-height: 18px; display: flex; align-items: center; gap: 10px; }
+.bar { flex: 1; max-width: 240px; height: 4px; border-radius: 2px; background: var(--sunken); overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0%; background: var(--speak); transition: width .2s; }
+.audio-player:empty { display: none; }
+.audio-player { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-m); padding: 10px 14px; }
+.audio-player audio { display: block; width: 100%; }
+
+/* ── Chat + Live messages ── */
+.chat-container, .livetalk-container { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.chat-messages, .livetalk-messages { flex: 1; min-height: 80px; overflow-y: auto; padding: 16px var(--gutter); display: flex; flex-direction: column; gap: 10px; }
+.empty-hint { margin: auto; color: var(--ink-3); font-size: 13px; text-align: center; max-width: 36ch; }
+.chat-msg, .live-msg { max-width: min(78%, 62ch); display: flex; flex-direction: column; gap: 3px; }
+.chat-msg.user, .live-msg.user { align-self: flex-end; align-items: flex-end; }
+.chat-msg.assistant, .live-msg.assistant { align-self: flex-start; align-items: flex-start; }
+.chat-msg-sender, .live-msg-sender { font-size: 11px; color: var(--ink-3); display: flex; gap: 6px; align-items: center; }
+.chat-msg-text, .live-msg-text { padding: 9px 13px; border-radius: var(--r-m); font-size: 15px; overflow-wrap: anywhere; white-space: pre-wrap; background: var(--surface); border: 1px solid var(--line); }
+.chat-msg.user .chat-msg-text, .live-msg.user .live-msg-text { background: var(--accent-soft); border-color: transparent; border-bottom-right-radius: 3px; }
+.chat-msg.assistant .chat-msg-text, .live-msg.assistant .live-msg-text { border-bottom-left-radius: 3px; }
+.live-msg-text .s { transition: color .2s, background .2s; }
+.live-msg-text .s.pending { color: var(--ink-3); }
+.live-msg-text .s.playing { background: var(--speak-soft); border-radius: 3px; box-shadow: 0 0 0 2px var(--speak-soft); }
+.live-msg-text .s.unheard { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--cut); }
+.chat-retry-btn { background: none; border: 1px solid var(--cut); color: var(--cut); border-radius: var(--r-s); font-size: 11px; padding: 2px 10px; cursor: pointer; }
+.chat-thinking { font-size: 12px; color: var(--think); padding: 0 var(--gutter); min-height: 20px; }
+.chat-input-bar { display: flex; gap: 8px; padding: 12px var(--gutter); border-top: 1px solid var(--line); background: var(--surface); align-items: center; }
+.chat-input-bar input { flex: 1; min-width: 0; background: var(--paper); border: 1px solid var(--line-strong); border-radius: var(--r-s); padding: 9px 12px; font-size: 15px; }
+.chat-mic-btn { width: 40px; height: 40px; }
+.chat-mic-btn svg { width: 18px; height: 18px; }
+
+.turn-meta { align-self: flex-start; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: -4px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; border: 1px solid var(--line); border-radius: var(--r-s); padding: 1px 7px; color: var(--ink-2); background: var(--surface); }
+.chip-k { color: var(--ink-3); }
+.chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.chip.ok::before { background: var(--listen); } .chip.warn::before { background: var(--think); } .chip.slow::before { background: var(--cut); }
+.tag-cut { font-size: 11px; font-weight: 600; color: var(--cut); background: var(--cut-soft); border-radius: var(--r-s); padding: 1px 7px; }
+
+/* ── Live Talk ── */
+.lt-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); position: relative; }
+.stage { padding: 14px var(--gutter); display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line); }
+.stage-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.live-state-badge { font-family: var(--font-display); font-size: 26px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; color: var(--ink-3); text-transform: capitalize; }
+.live-state-badge.listening { color: var(--listen); }
+.live-state-badge.transcribing, .live-state-badge.thinking { color: var(--think); }
+.live-state-badge.speaking { color: var(--speak); }
+.live-state-badge.cancelled { color: var(--cut); }
+.live-state-hint { font-size: 13px; color: var(--ink-2); }
+.state-track { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.state-track li { border-top: 3px solid var(--line); padding-top: 5px; display: flex; flex-direction: column; min-width: 0; }
+.state-track b { font-size: 12px; font-weight: 600; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+.state-track span { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.state-track li[aria-current] b { color: var(--ink); }
+.state-track li[data-state="listening"][aria-current] { border-top-color: var(--listen); }
+.state-track li[data-state="transcribing"][aria-current], .state-track li[data-state="thinking"][aria-current] { border-top-color: var(--think); }
+.state-track li[data-state="speaking"][aria-current] { border-top-color: var(--speak); }
+.state-track.cut li { border-top-color: var(--cut); }
+.live-meter { height: 3px; background: var(--sunken); border-radius: 2px; overflow: hidden; }
+.live-meter-fill { height: 100%; width: 0%; background: var(--listen); transition: width .1s linear; }
+.live-control-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px var(--gutter); border-top: 1px solid var(--line); background: var(--surface); }
+.live-control-bar .grow { flex: 1; }
+.live-mic-btn { width: 48px; height: 48px; }
+.live-ptt-btn { touch-action: none; user-select: none; -webkit-user-select: none; }
+.live-ptt-btn.active { background: var(--listen); border-color: var(--listen); }
+
+/* Memory panel: markup ships hidden until the server sends `memory` events. */
+.memory { background: var(--surface); border-left: 1px solid var(--line); display: none; flex-direction: column; gap: 12px; padding: 14px 16px; overflow-y: auto; min-height: 0; }
+.memory.open { display: flex; position: absolute; inset: 0; z-index: 5; border-left: 0; }
+.memory-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.memory-head h2 { font-family: var(--font-display); font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.memory-sub { font-size: 12px; color: var(--ink-2); }
+.budget { display: flex; flex-direction: column; gap: 5px; }
+.budget-nums { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-2); }
+.budget-bar { position: relative; height: 8px; border-radius: 4px; background: var(--sunken); }
+.budget-bar > i { display: block; height: 100%; border-radius: 4px; background: var(--accent); width: 0%; transition: width .3s; }
+.budget-bar > u { position: absolute; top: -3px; bottom: -3px; left: 60%; width: 2px; background: var(--ink-3); border-radius: 1px; }
+.budget-note { font-size: 11px; color: var(--ink-3); }
+.memory-list { list-style: none; display: flex; flex-direction: column; }
+.memory-list li { padding: 9px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.mem-u { font-weight: 500; }
+.mem-a { color: var(--ink-2); }
+.mem-foot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--ink-3); }
+.memory-empty { font-size: 13px; color: var(--ink-3); padding: 12px 0; border-top: 1px solid var(--line); }
+.memory-actions { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+.memory-actions .inline-confirm { flex-basis: auto; }
+@media (min-width: 1120px) {
+    .lt-grid.with-memory { grid-template-columns: minmax(0, 1fr) 320px; }
+    .memory, .memory.open { display: flex; position: static; border-left: 1px solid var(--line); }
+    #memoryToggle, #memoryClose { display: none; }
+}
+
+/* ── Dashboard ── */
+.dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0; align-content: start; overflow-y: auto; flex: 1; min-height: 0; padding: 6px var(--gutter) 20px; }
+.dash-card { padding: 16px 16px 16px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.dash-card-title { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-bottom: 8px; }
+.dash-card-value { font-family: var(--font-display); font-size: 28px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.dash-card-value.ok { color: var(--listen); } .dash-card-value.err { color: var(--cut); }
+.dash-row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 13px; }
+.label { color: var(--ink-3); }
+.dash-row > span:last-child { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+.dash-indicator { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.dash-indicator.loaded { background: var(--listen); } .dash-indicator.not-loaded { background: var(--line-strong); }
+
+/* ── Status bar ── */
+.status-bar { display: flex; gap: 6px 18px; flex-wrap: wrap; padding: 6px max(var(--gutter), env(safe-area-inset-left, 0px)); padding-bottom: max(6px, env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line); background: var(--surface); font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.status-bar .on { color: var(--listen); }
+
+/* ── Toasts + dialog ── */
+.toast-container { position: fixed; top: 60px; right: 12px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; pointer-events: none; max-width: calc(100% - 24px); }
+.toast { background: var(--surface); border: 1px solid var(--line-strong); border-left: 4px solid var(--accent); border-radius: var(--r-s); padding: 9px 34px 9px 12px; font-size: 13px; pointer-events: auto; position: relative; max-width: 360px; box-shadow: var(--shadow); overflow-wrap: anywhere; }
+.toast.error { border-left-color: var(--cut); } .toast.warning { border-left-color: var(--think); }
+.toast-close { position: absolute; top: 6px; right: 8px; background: none; border: 0; color: var(--ink-3); cursor: pointer; font-size: 16px; line-height: 1; }
+dialog { border: 1px solid var(--line); border-radius: var(--r-l); background: var(--surface); color: var(--ink); padding: 22px; max-width: min(440px, calc(100% - 32px)); margin: auto; box-shadow: var(--shadow); }
+dialog::backdrop { background: rgba(10, 13, 19, .5); }
+dialog h2 { font-family: var(--font-display); font-size: 20px; letter-spacing: -0.01em; margin-bottom: 8px; text-wrap: balance; }
+dialog p { color: var(--ink-2); margin-bottom: 8px; }
+dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+
+@media (max-width: 520px) {
+    :root { --gutter: 16px; }
+    .local-pill .lp-long { display: none; }
+    .local-pill .lp-short { display: inline; }
+    .settings-row { flex-wrap: nowrap; overflow-x: auto; }
+    .settings-row .field { flex: none; }
+    .settings-row .grow { display: none; }
+    .status-bar { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; }
+    #themeBtn { padding-inline: 8px; }
+    #healthText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .tape { height: 60px; }
+    .live-state-badge { font-size: 22px; }
+    .state-track span { display: none; }
+    .chat-msg, .live-msg { max-width: 92%; }
+    .stage { padding-block: 10px; gap: 8px; }
+    .tape-legend { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
-    .mic-btn.recording, .chat-mic-btn.recording { animation: none; }
-    .toast { animation: none; }
-    .toast.dismissing { animation: none; opacity: 0; }
-    .listen-status.transcribing { animation: none; }
-    .transcript-placeholder .transcript-text { animation: none; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 
-<!-- Header -->
-<div class="header">
-    <div class="header-brand">vox<span>v0.6.0</span></div>
-    <div class="header-health">
+<header class="header">
+    <div class="header-brand">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><rect x="2" y="9" width="3" height="6" rx="1.5"/><rect x="7" y="5" width="3" height="14" rx="1.5"/><rect x="12" y="2" width="3" height="20" rx="1.5"/><rect x="17" y="7" width="3" height="10" rx="1.5"/></g></svg>
+        vox<span>v0.6.0</span>
+    </div>
+    <div class="local-pill" id="localPill">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.600-1.600 8-6 8-11V5l-8-3z"/></svg>
+        <span class="lp-long" id="localPillLong">Self-hosted</span><span class="lp-short" id="localPillShort">Local</span>
+    </div>
+    <div class="header-spacer"></div>
+    <div class="header-health" role="status">
         <div class="health-dot" id="healthDot"></div>
         <span id="healthText">--</span>
     </div>
-</div>
+    <button class="btn btn-ghost btn-sm" id="themeBtn" aria-label="Colour theme: system">Theme: system</button>
+</header>
 
-<!-- Tab Bar -->
-<div class="tab-bar">
-    <button class="tab-btn active" data-tab="listen">Listen</button>
-    <button class="tab-btn" data-tab="speak">Speak</button>
-    <button class="tab-btn" data-tab="chat">Chat</button>
-    <button class="tab-btn" data-tab="livetalk">Live Talk</button>
-    <button class="tab-btn" data-tab="dashboard">Dashboard</button>
-</div>
+<nav class="tab-bar" role="tablist" aria-label="Sections">
+    <button class="tab-btn" role="tab" id="tabbtn-listen" aria-controls="tab-listen" aria-selected="false" tabindex="-1" data-tab="listen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 6v12M12 3v18M16 8v8M20 11v2"/></svg>Listen</button>
+    <button class="tab-btn" role="tab" id="tabbtn-speak" aria-controls="tab-speak" aria-selected="false" tabindex="-1" data-tab="speak">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4zM17 9a4 4 0 0 1 0 6"/></svg>Speak</button>
+    <button class="tab-btn" role="tab" id="tabbtn-chat" aria-controls="tab-chat" aria-selected="false" tabindex="-1" data-tab="chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4V5z"/></svg>Chat</button>
+    <button class="tab-btn active" role="tab" id="tabbtn-livetalk" aria-controls="tab-livetalk" aria-selected="true" tabindex="0" data-tab="livetalk">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M6 6a8.500 8.500 0 0 0 0 12M18 6a8.500 8.500 0 0 1 0 12"/></svg>Live Talk<span class="tab-live-dot" id="liveTabDot" hidden></span></button>
+    <button class="tab-btn" role="tab" id="tabbtn-dashboard" aria-controls="tab-dashboard" aria-selected="false" tabindex="-1" data-tab="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Dashboard</button>
+</nav>
 
-<!-- Listen Tab -->
-<div class="tab-content active" id="tab-listen">
+<main id="main" tabindex="-1">
+
+<!-- Listen -->
+<section class="tab-content" id="tab-listen" role="tabpanel" aria-labelledby="tabbtn-listen">
     <div class="listen-controls">
-        <button class="mic-btn" id="listenMicBtn" aria-label="Toggle microphone">
-            <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+        <button class="mic-btn" id="listenMicBtn" aria-label="Toggle microphone" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14c1.660 0 3-1.340 3-3V5c0-1.660-1.340-3-3-3S9 3.340 9 5v6c0 1.660 1.340 3 3 3zm5-3c0 2.760-2.240 5-5 5s-5-2.240-5-5H5c0 3.530 2.610 6.430 6 6.920V21h2v-3.080c3.390-.49 6-3.390 6-6.920h-2z"/></svg>
         </button>
-        <div class="listen-status" id="listenStatus">Press to start listening</div>
-        <div class="audio-meter" id="audioMeter"><div class="audio-meter-fill" id="audioMeterFill"></div></div>
-        <label class="diarize-toggle disabled" id="diarizeToggle" title="Speaker diarization not available">
-            <span class="diarize-dot"></span>
-            <input type="checkbox" id="diarizeCheckbox">
-            <span>Identify speakers</span>
-        </label>
+        <div class="listen-headline">
+            <div class="listen-status" id="listenStatus" role="status" aria-live="polite">Press to start listening</div>
+            <div class="listen-sub">Space toggles the mic. Leaving this tab stops it.</div>
+        </div>
+        <div class="tape-wrap"><canvas class="tape" id="listenTape" aria-hidden="true"></canvas></div>
+        <div class="listen-tools">
+            <label class="diarize-toggle disabled" id="diarizeToggle" title="Speaker diarization not available">
+                <input type="checkbox" id="diarizeCheckbox" disabled>
+                <span class="diarize-dot"></span>
+                <span>Identify speakers</span>
+            </label>
+            <button class="btn btn-sm btn-ghost transcript-clear" id="clearTranscript">Clear transcript</button>
+        </div>
     </div>
-    <button class="btn btn-sm btn-ghost transcript-clear" id="clearTranscript">Clear</button>
     <div class="listen-body" id="listenBody">
-        <div class="transcript-area" id="transcriptArea"></div>
-        <aside class="speakers-sidebar" id="speakersSidebar">
-            <h3>Speakers</h3>
+        <div class="transcript-area" id="transcriptArea" role="log" aria-label="Transcript"></div>
+        <aside class="speakers-sidebar" id="speakersSidebar" aria-label="Speakers">
+            <h3 class="panel-title">Speakers</h3>
             <div id="speakersList"><div class="speakers-sidebar-empty">No speakers yet</div></div>
+            <p class="privacy-note">Voiceprints are kept in a database on the vox server. Forgetting a speaker deletes theirs.</p>
         </aside>
     </div>
-</div>
+</section>
 
-<!-- Speak Tab -->
-<div class="tab-content" id="tab-speak">
+<!-- Speak -->
+<section class="tab-content" id="tab-speak" role="tabpanel" aria-labelledby="tabbtn-speak">
     <div class="speak-container">
+        <label class="field" for="speakText">Text to speak</label>
         <textarea id="speakText" placeholder="Enter text to synthesize..." rows="6"></textarea>
         <div class="speak-row">
-            <select id="voiceSelect"><option value="">Loading voices...</option></select>
+            <label class="field">Voice <select id="voiceSelect"><option value="">Loading voices...</option></select></label>
             <button class="btn" id="synthesizeBtn">Synthesize</button>
-            <button class="btn" id="streamSpeakBtn">Stream</button>
+            <button class="btn btn-ghost" id="streamSpeakBtn">Stream</button>
         </div>
-        <div id="streamProgress" style="font-size:12px;color:var(--text-muted);min-height:18px;"></div>
+        <div class="stream-progress" id="streamProgress" role="status" aria-live="polite"></div>
         <div class="audio-player" id="audioPlayer"></div>
     </div>
-</div>
+</section>
 
-<!-- Chat Tab -->
-<div class="tab-content" id="tab-chat">
+<!-- Chat -->
+<section class="tab-content" id="tab-chat" role="tabpanel" aria-labelledby="tabbtn-chat">
     <div class="chat-container">
-        <div class="chat-settings">
-            <label>model <select id="chatModel"><option value="">loading...</option></select></label>
-            <label>voice <select id="chatVoice"><option value="">--</option></select></label>
+        <div class="settings-row chat-settings">
+            <label class="field">Model <select id="chatModel"><option value="">loading...</option></select></label>
+            <label class="field">Voice <select id="chatVoice"><option value="">--</option></select></label>
         </div>
-        <div class="chat-messages" id="chatMessages"></div>
-        <div class="chat-thinking" id="chatThinking"></div>
+        <div class="chat-messages" id="chatMessages" role="log" aria-label="Chat messages"><div class="empty-hint">Type a message, or press the mic to talk.</div></div>
+        <div class="chat-thinking" id="chatThinking" role="status" aria-live="polite"></div>
         <div class="chat-input-bar">
-            <input type="text" id="chatInput" placeholder="Type a message..." autocomplete="off">
+            <input type="text" id="chatInput" placeholder="Type a message..." autocomplete="off" aria-label="Message">
             <button class="btn" id="chatSendBtn">Send</button>
-            <button class="chat-mic-btn" id="chatMicBtn" aria-label="Voice input">
-                <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+            <button class="mic-btn chat-mic-btn" id="chatMicBtn" aria-label="Voice input" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14c1.660 0 3-1.340 3-3V5c0-1.660-1.340-3-3-3S9 3.340 9 5v6c0 1.660 1.340 3 3 3zm5-3c0 2.760-2.240 5-5 5s-5-2.240-5-5H5c0 3.530 2.610 6.430 6 6.920V21h2v-3.080c3.390-.49 6-3.390 6-6.920h-2z"/></svg>
             </button>
         </div>
     </div>
-</div>
+</section>
 
-<!-- Live Talk Tab -->
-<div class="tab-content" id="tab-livetalk">
-    <div class="livetalk-container">
-        <div class="livetalk-settings">
-            <label>model <select id="liveTalkModel"><option value="">loading...</option></select></label>
-            <label>voice <select id="liveTalkVoice"><option value="">--</option></select></label>
-            <label>mode
-                <select id="liveMode">
-                    <option value="vad">VAD</option>
-                    <option value="push_to_talk">Push to Talk</option>
-                </select>
-            </label>
-        </div>
-        <div class="livetalk-messages" id="liveTalkMessages"></div>
-        <div class="live-control-bar">
-            <button class="mic-btn live-mic-btn" id="liveTalkMicBtn" aria-label="Start live talk">
-                <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
-            </button>
-            <button class="btn live-ptt-btn" id="livePttBtn" style="display:none" aria-label="Push to talk (hold)">Hold to talk</button>
-            <div class="live-state-area">
-                <div class="live-state-badge" id="liveStateBadge">idle</div>
-                <div class="live-meter"><div class="live-meter-fill" id="liveMeterFill"></div></div>
+<!-- Live Talk -->
+<section class="tab-content active" id="tab-livetalk" role="tabpanel" aria-labelledby="tabbtn-livetalk">
+    <div class="lt-grid" id="liveGrid">
+        <div class="livetalk-container">
+            <div class="settings-row livetalk-settings">
+                <label class="field">Model <select id="liveTalkModel"><option value="">loading...</option></select></label>
+                <label class="field">Voice <select id="liveTalkVoice"><option value="">--</option></select></label>
+                <label class="field">Turn taking
+                    <select id="liveMode">
+                        <option value="vad">Automatic (VAD)</option>
+                        <option value="push_to_talk">Push to talk</option>
+                    </select>
+                </label>
+                <span class="grow"></span>
+                <button class="btn btn-ghost btn-sm" id="memoryToggle" aria-expanded="false" aria-controls="memoryPanel" hidden>Memory</button>
             </div>
-            <button class="btn btn-ghost" id="liveCancelBtn" disabled>Cancel</button>
-            <button class="btn btn-ghost btn-sm" id="liveClearBtn">Clear</button>
+            <div class="stage">
+                <div class="stage-top">
+                    <div class="live-state-badge" id="liveStateBadge" role="status" aria-live="polite">idle</div>
+                    <div class="live-state-hint" id="liveStateHint">Mic is off. Press the mic to start.</div>
+                </div>
+                <ol class="state-track" id="liveStateTrack" aria-label="Turn progress">
+                    <li data-state="listening"><b>Listening</b><span>voice activity</span></li>
+                    <li data-state="transcribing"><b>Transcribing</b><span id="trackStt">speech to text</span></li>
+                    <li data-state="thinking"><b>Thinking</b><span id="trackModel">language model</span></li>
+                    <li data-state="speaking"><b>Speaking</b><span>text to speech</span></li>
+                </ol>
+                <div class="tape-wrap"><canvas class="tape" id="liveTape" aria-hidden="true"></canvas></div>
+                <div class="live-meter" aria-hidden="true"><div class="live-meter-fill" id="liveMeterFill"></div></div>
+                <div class="tape-legend" aria-hidden="true">
+                    <span><i class="lg-listen"></i>you</span><span><i class="lg-think"></i>transcribing / thinking</span><span><i class="lg-speak"></i>vox</span><span><i class="lg-cut"></i>interrupted</span>
+                </div>
+            </div>
+            <div class="livetalk-messages" id="liveTalkMessages" role="log" aria-label="Conversation"><div class="empty-hint">Press the mic and start talking. Talk over a reply to interrupt it.</div></div>
+            <div class="live-control-bar">
+                <button class="mic-btn live-mic-btn" id="liveTalkMicBtn" aria-label="Start live talk" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14c1.660 0 3-1.340 3-3V5c0-1.660-1.340-3-3-3S9 3.340 9 5v6c0 1.660 1.340 3 3 3zm5-3c0 2.760-2.240 5-5 5s-5-2.240-5-5H5c0 3.530 2.610 6.430 6 6.920V21h2v-3.080c3.390-.49 6-3.390 6-6.920h-2z"/></svg>
+                </button>
+                <button class="btn live-ptt-btn" id="livePttBtn" hidden aria-label="Push to talk (hold)">Hold to talk</button>
+                <button class="btn btn-ghost" id="liveCancelBtn" disabled>Stop reply</button>
+                <span class="grow"></span>
+                <button class="btn btn-ghost btn-sm" id="liveClearBtn" title="Clears the view only. The model keeps this session's history until you stop.">Clear view</button>
+            </div>
         </div>
-    </div>
-</div>
 
-<!-- Dashboard Tab -->
-<div class="tab-content" id="tab-dashboard">
+        <!-- Hidden until the server provides `memory` events and `forget_memory`. -->
+        <aside class="memory" id="memoryPanel" aria-label="Conversation memory" hidden>
+            <div class="memory-head">
+                <h2>Memory</h2>
+                <button class="btn btn-ghost btn-sm" id="memoryClose">Close</button>
+            </div>
+            <p class="memory-sub">What the model is given on the next turn.</p>
+            <div class="budget">
+                <div class="budget-nums"><span>History</span><span class="mono" id="memoryTokens">0 tokens</span></div>
+                <div class="budget-bar" role="progressbar" aria-label="History token budget" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" id="memoryBar"><i id="memoryBarFill"></i><u title="Trim target"></u></div>
+                <div class="budget-note" id="memoryNote"></div>
+            </div>
+            <ul class="memory-list" id="memoryList"></ul>
+            <div class="memory-actions">
+                <button class="btn btn-ghost" id="memoryForgetBtn" disabled>Forget this conversation</button>
+                <div class="inline-confirm" id="memoryForgetConfirm" hidden>
+                    <span>The model will start fresh. This cannot be undone.</span>
+                    <button class="btn btn-danger btn-sm" id="memoryForgetYes">Forget</button>
+                    <button class="btn btn-ghost btn-sm" id="memoryForgetNo">Keep</button>
+                </div>
+            </div>
+        </aside>
+    </div>
+</section>
+
+<!-- Dashboard -->
+<section class="tab-content" id="tab-dashboard" role="tabpanel" aria-labelledby="tabbtn-dashboard">
     <div class="dashboard">
-        <div class="dash-card">
-            <div class="dash-card-title">Health</div>
-            <div class="dash-card-value" id="dashHealth">--</div>
-        </div>
-        <div class="dash-card">
-            <div class="dash-card-title">Models</div>
-            <div id="dashModels"><span style="color:var(--text-muted)">loading...</span></div>
-        </div>
-        <div class="dash-card">
-            <div class="dash-card-title">Statistics</div>
-            <div id="dashStats"><span style="color:var(--text-muted)">loading...</span></div>
-        </div>
-        <div class="dash-card">
-            <div class="dash-card-title">Uptime</div>
-            <div class="dash-card-value" id="dashUptime">--</div>
-        </div>
+        <div class="dash-card"><div class="dash-card-title">Health</div><div class="dash-card-value" id="dashHealth">--</div></div>
+        <div class="dash-card"><div class="dash-card-title">Uptime</div><div class="dash-card-value" id="dashUptime">--</div></div>
+        <div class="dash-card"><div class="dash-card-title">Models</div><div id="dashModels"><span class="label">loading...</span></div></div>
+        <div class="dash-card"><div class="dash-card-title">Statistics</div><div id="dashStats"><span class="label">loading...</span></div></div>
+        <div class="dash-card"><div class="dash-card-title">Live Talk latency, this page (median)</div><div id="dashLatency"><span class="label">No turns yet</span></div></div>
     </div>
-</div>
+</section>
+</main>
 
-<!-- Status Bar -->
-<div class="status-bar">
+<footer class="status-bar" aria-label="Server status">
     <span id="statusStt">stt: --</span>
     <span id="statusStreaming">streaming: --</span>
     <span id="statusTts">tts: --</span>
     <span id="statusOllama">ollama: --</span>
     <span id="statusUptime">uptime: --</span>
-</div>
+</footer>
 
-<!-- Toasts -->
-<div class="toast-container" id="toastContainer"></div>
+<div class="toast-container" id="toastContainer" role="region" aria-live="polite" aria-label="Notifications"></div>
+
+<dialog id="consentDialog" aria-labelledby="consentTitle">
+    <h2 id="consentTitle">Identify speakers by voice?</h2>
+    <p>Vox will keep a voiceprint for each speaker in a database on the vox server so it can label who said what. Voiceprints are never uploaded anywhere else.</p>
+    <p>You can rename or forget any speaker at any time. This is an opt-in biometric feature.</p>
+    <div class="row">
+        <button class="btn btn-ghost" id="consentNo">Not now</button>
+        <button class="btn" id="consentYes">Turn on</button>
+    </div>
+</dialog>
 
 <script>
 // ─── 1. STATE & CONFIG ──────────────────────────────────────
 const S = {
-    activeTab: 'listen',
-    listening: false,
-    chatMicActive: false,
-    audioCtx: null,
-    workletNode: null,
-    mediaStream: null,
-    listenWs: null,
-    chatWs: null,
-    voicesLoaded: false,
-    ollamaModelsLoaded: false,
-    voices: [],
-    dashPollId: null,
-    speechActive: false,
-    reconnecting: false,
-    synthesizing: false,
-    chatBusy: false,
-    uptimeBase: 0,
-    uptimeReceivedAt: 0,
-    statusPollId: null,
-    uptimeTickId: null,
+    activeTab: 'livetalk',
+    // Listen session: phase is idle | connecting | active; gen invalidates callbacks of older sessions.
+    listening: false, listenPhase: 'idle', listenGen: 0, listenReconnectTimer: null,
+    // Chat voice (converse) session
+    chatMicActive: false, chatPhase: 'idle', chatGen: 0,
+    // Microphone
+    audioCtx: null, audioInit: null, workletNode: null, mediaStream: null, micSource: null, micAnalyser: null, micGen: 0,
+    listenWs: null, chatWs: null,
+    voicesLoaded: false, voicesWarned: false, ollamaModelsLoaded: false, voices: [],
+    dashPollId: null, speechActive: false, synthesizing: false, streaming: false, chatBusy: false,
+    synthUrl: null,
+    uptimeBase: 0, uptimeReceivedAt: 0, statusPollId: null, uptimeTickId: null,
+    modelsUrl: '/v1/models',
     // Diarization session state
-    diarizationAvailable: false,
-    diarizationOn: false,
-    diarizationConsented: false,
-    speakers: {}, // id -> {id,name,color}
+    diarizationAvailable: false, diarizationOn: false, diarizationConsented: false,
+    speakers: {},        // id -> {id,name,color}
+    speakerCounts: {},   // id -> transcript lines seen on this page
+    speakersDirty: false,
 };
 
 const DIARIZATION_CONSENT_KEY = 'vox.diarization.consented';
+const THEME_KEY = 'vox.theme';
 try {
     S.diarizationConsented = localStorage.getItem(DIARIZATION_CONSENT_KEY) === '1';
 } catch (_e) {
@@ -873,29 +587,151 @@ const TOAST_DURATION = 5000;
 const DASH_POLL_INTERVAL = 5000;
 const STATUS_POLL_INTERVAL = 30000;
 const WS_RECONNECT_DELAY = 2000;
-const CHUNK_SIZE = 4800;
-
-function escapeHtml(str) {
-    const d = document.createElement('div');
-    d.textContent = str;
-    return d.innerHTML;
-}
+// Mic frames sent to the server: 1280 samples = 80 ms at 16 kHz (ten 128-sample render quanta).
+// The server re-frames for its VAD, so the size only sets latency (barge-in, meters).
+const CHUNK_SIZE = 1280;
+const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function $(id) { return document.getElementById(id); }
+function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str == null ? '' : String(str);
+    return d.innerHTML;
+}
+function fmtInt(n) { return (Number(n) || 0).toLocaleString('en-US'); }
+function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+}
+// Colours come from the server; only plain hex is ever written into a style.
+function safeColor(c) { return typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : '#888888'; }
+function speakerSwatch(color) {
+    const sw = el('span', 'speaker-swatch');
+    sw.style.background = safeColor(color);
+    return sw;
+}
+function speakerBadge(name, color) {
+    const badge = el('span', 'speaker-badge');
+    badge.appendChild(speakerSwatch(color));
+    badge.appendChild(document.createTextNode(name));
+    return badge;
+}
+function wsUrl(path) {
+    return (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + path;
+}
 
-// ─── 2. TAB SYSTEM ──────────────────────────────────────────
+// ─── 2. THE TAPE (voice visualizer) ─────────────────────────
+// One bar per tick. Each bar remembers which state it was recorded in, so the
+// strip reads as a timeline of who had the floor.
+const COL = {};
+const TAPES = {};
+function refreshColors() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (n) => cs.getPropertyValue(n).trim();
+    Object.assign(COL, {
+        idle: v('--line-strong'), listening: v('--listen'), transcribing: v('--think'), thinking: v('--think'),
+        speaking: v('--speak'), cancelled: v('--cut'), line: v('--line'),
+    });
+    Object.values(TAPES).forEach((t) => t.draw());
+}
+function createTape(canvas) {
+    const hist = [];
+    let w = 0, h = 0, dpr = 1;
+    const tape = {
+        push(v, s) { hist.push({ v, s }); if (hist.length > 500) hist.shift(); },
+        resize() {
+            const r = canvas.getBoundingClientRect();
+            if (!r.width) return;
+            dpr = Math.min(2, window.devicePixelRatio || 1); w = r.width; h = r.height;
+            canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+            tape.draw();
+        },
+        draw() {
+            if (!w) return;
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, w, h);
+            const step = 5, bw = 3, mid = h / 2, n = Math.floor(w / step);
+            ctx.fillStyle = COL.line; ctx.fillRect(0, mid - 0.5, w, 1);
+            for (let i = Math.max(0, hist.length - n); i < hist.length; i++) {
+                const e = hist[i], x = w - (hist.length - i) * step, bh = Math.max(2, e.v * (h - 10));
+                ctx.fillStyle = COL[e.s] || COL.idle;
+                ctx.fillRect(x, mid - bh / 2, bw, bh);
+            }
+        },
+    };
+    return tape;
+}
+const levelBufs = new WeakMap();
+function analyserLevel(analyser) {
+    if (!analyser) return 0;
+    let buf = levelBufs.get(analyser);
+    if (!buf) { buf = new Float32Array(analyser.fftSize); levelBufs.set(analyser, buf); }
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    return Math.min(1, Math.sqrt(sum / buf.length) * 5);
+}
+function tickTapes() {
+    if (LT.active && S.activeTab === 'livetalk') {
+        let v, s;
+        switch (LT.state) {
+            case 'speaking': v = Math.max(0.04, Player.level()); s = 'speaking'; break;
+            case 'thinking': v = REDUCED ? 0.1 : 0.09 + 0.05 * Math.sin(Date.now() / 140); s = 'thinking'; break;
+            case 'transcribing': v = 0.07; s = 'transcribing'; break;
+            case 'cancelled':
+                if (LT.cutBars > 0) { LT.cutBars--; v = 0.95; s = 'cancelled'; } else { v = 0.03; s = 'idle'; }
+                break;
+            default: { const m = analyserLevel(S.micAnalyser); v = Math.max(0.03, m); s = m > 0.1 ? 'listening' : 'idle'; }
+        }
+        TAPES.live.push(v, s);
+        TAPES.live.draw();
+    }
+    if (S.listening && S.activeTab === 'listen') {
+        const m = analyserLevel(S.micAnalyser);
+        TAPES.listen.push(Math.max(0.03, m), (S.speechActive || m > 0.1) ? 'listening' : 'idle');
+        TAPES.listen.draw();
+    }
+}
+
+// ─── 3. TAB SYSTEM ──────────────────────────────────────────
 function initTabs() {
-    document.querySelectorAll('.tab-btn').forEach(btn => {
+    const btns = [...document.querySelectorAll('.tab-btn')];
+    btns.forEach((btn, i) => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+        btn.addEventListener('keydown', (e) => {
+            let next = null;
+            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = btns[(i + 1) % btns.length];
+            else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = btns[(i - 1 + btns.length) % btns.length];
+            else if (e.key === 'Home') next = btns[0];
+            else if (e.key === 'End') next = btns[btns.length - 1];
+            if (!next) return;
+            e.preventDefault();
+            next.focus();
+            switchTab(next.dataset.tab);
+        });
     });
 }
 
 function switchTab(name) {
     if (S.activeTab === name) return;
+    const prev = S.activeTab;
     S.activeTab = name;
 
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
+    // A hidden tab never keeps the microphone: leaving a tab ends its session.
+    if (prev === 'listen') stopListening();
+    else if (prev === 'chat') stopChatMic();
+    else if (prev === 'livetalk') stopLiveTalk();
+
+    document.querySelectorAll('.tab-btn').forEach((b) => {
+        const on = b.dataset.tab === name;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;
+    });
+    document.querySelectorAll('.tab-content').forEach((c) => c.classList.toggle('active', c.id === 'tab-' + name));
 
     if (name === 'speak' && !S.voicesLoaded) loadVoices();
     if (name === 'chat') {
@@ -903,38 +739,32 @@ function switchTab(name) {
         loadOllamaModels();
     }
     if (name === 'livetalk') {
-        // Fire-and-forget: never await inside switchTab or we'll block
-        // the .active class flip and the user sees a blank tab for a
-        // beat while voices/models load.
-        loadLiveTalkSelectors().catch(() => { /* ignore; toasts handle UX */ });
+        // Fire-and-forget: never await inside switchTab or the tab stays
+        // blank for a beat while voices/models load.
+        loadLiveTalkSelectors().catch(() => { /* toasts handle UX */ });
     }
     if (name === 'dashboard') startDashPolling();
     else stopDashPolling();
+    Object.values(TAPES).forEach((t) => t.resize());
 }
 
-// ─── 3. TOAST SYSTEM ────────────────────────────────────────
+// ─── 4. TOAST SYSTEM ────────────────────────────────────────
 function showToast(message, type) {
     const container = $('toastContainer');
     while (container.children.length >= MAX_TOASTS) {
         container.removeChild(container.firstChild);
     }
-
-    const toast = document.createElement('div');
-    toast.className = 'toast' + (type ? ' ' + type : '');
-    toast.innerHTML = escapeHtml(message) + '<button class="toast-close" aria-label="Dismiss">&times;</button>';
-
-    const closeBtn = toast.querySelector('.toast-close');
-    const dismiss = () => {
-        toast.classList.add('dismissing');
-        setTimeout(() => toast.remove(), 200);
-    };
+    const toast = el('div', 'toast' + (type ? ' ' + type : ''), message);
+    const closeBtn = el('button', 'toast-close', '×');
+    closeBtn.setAttribute('aria-label', 'Dismiss');
+    const dismiss = () => toast.remove();
     closeBtn.addEventListener('click', dismiss);
+    toast.appendChild(closeBtn);
     setTimeout(dismiss, TOAST_DURATION);
-
     container.appendChild(toast);
 }
 
-// ─── 4. AUDIO WORKLET ───────────────────────────────────────
+// ─── 5. MICROPHONE (worklet, capture, single owner) ─────────
 const processorCode = `
 class VoxProcessor extends AudioWorkletProcessor {
     constructor() {
@@ -958,31 +788,41 @@ class VoxProcessor extends AudioWorkletProcessor {
 registerProcessor('vox-processor', VoxProcessor);
 `;
 
-let workletUrl = null;
-function getWorkletUrl() {
-    if (!workletUrl) {
-        workletUrl = URL.createObjectURL(new Blob([processorCode], { type: 'application/javascript' }));
+function initAudio() {
+    if (!S.audioInit) {
+        S.audioInit = (async () => {
+            const ctx = new AudioContext({ sampleRate: 16000 });
+            const url = URL.createObjectURL(new Blob([processorCode], { type: 'application/javascript' }));
+            try {
+                await ctx.audioWorklet.addModule(url);
+            } catch (e) {
+                try { ctx.close(); } catch (_) {}
+                throw e;
+            } finally {
+                URL.revokeObjectURL(url);
+            }
+            S.audioCtx = ctx;
+        })();
+        S.audioInit.catch(() => { S.audioInit = null; });
     }
-    return workletUrl;
+    return S.audioInit;
 }
 
-async function initAudio() {
-    if (S.audioCtx) return;
-    S.audioCtx = new AudioContext({ sampleRate: 16000 });
-    await S.audioCtx.audioWorklet.addModule(getWorkletUrl());
-}
-
+// Opens the microphone and delivers CHUNK_SIZE Float32 frames to onChunk.
+// Returns false when it could not start or when it was superseded while the
+// permission prompt was open (in that case the stream is closed again).
 async function startMic(onChunk) {
-    if (!window.isSecureContext) {
+    if (!window.isSecureContext || !navigator.mediaDevices) {
         showToast('Microphone requires HTTPS or localhost', 'error');
         return false;
     }
-
+    stopMic();
+    const gen = S.micGen;
+    let stream;
     try {
         await initAudio();
         if (S.audioCtx.state === 'suspended') await S.audioCtx.resume();
-
-        S.mediaStream = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 channelCount: 1,
                 sampleRate: 16000,
@@ -992,111 +832,257 @@ async function startMic(onChunk) {
             }
         });
     } catch (e) {
-        if (e.name === 'NotAllowedError') showToast('Microphone access denied', 'error');
-        else if (e.name === 'NotFoundError') showToast('No microphone detected', 'error');
-        else showToast('Microphone error: ' + e.message, 'error');
+        if (gen === S.micGen) {
+            if (e.name === 'NotAllowedError') showToast('Microphone access denied', 'error');
+            else if (e.name === 'NotFoundError') showToast('No microphone detected', 'error');
+            else showToast('Microphone error: ' + e.message, 'error');
+        }
         return false;
     }
-
-    const source = S.audioCtx.createMediaStreamSource(S.mediaStream);
-    S.workletNode = new AudioWorkletNode(S.audioCtx, 'vox-processor');
-    S.workletNode.port.onmessage = (e) => onChunk(e.data);
-    source.connect(S.workletNode);
-    S.workletNode.connect(S.audioCtx.destination);
+    if (gen !== S.micGen) {
+        stream.getTracks().forEach((t) => t.stop());
+        return false;
+    }
+    try {
+        S.mediaStream = stream;
+        S.micSource = S.audioCtx.createMediaStreamSource(stream);
+        S.workletNode = new AudioWorkletNode(S.audioCtx, 'vox-processor');
+        S.workletNode.port.onmessage = (e) => onChunk(e.data);
+        // Level tap for the tape; the worklet frames are too coarse for a smooth strip.
+        S.micAnalyser = S.audioCtx.createAnalyser();
+        S.micAnalyser.fftSize = 1024;
+        S.micSource.connect(S.workletNode);
+        S.micSource.connect(S.micAnalyser);
+        S.workletNode.connect(S.audioCtx.destination);
+    } catch (e) {
+        stopMic();
+        showToast('Microphone error: ' + e.message, 'error');
+        return false;
+    }
     return true;
 }
 
 function stopMic() {
+    S.micGen++;
     if (S.workletNode) {
-        S.workletNode.disconnect();
+        S.workletNode.port.onmessage = null;
+        try { S.workletNode.disconnect(); } catch (_) {}
         S.workletNode = null;
     }
+    if (S.micSource) {
+        try { S.micSource.disconnect(); } catch (_) {}
+        S.micSource = null;
+    }
+    S.micAnalyser = null;
     if (S.mediaStream) {
-        S.mediaStream.getTracks().forEach(t => t.stop());
+        S.mediaStream.getTracks().forEach((t) => t.stop());
         S.mediaStream = null;
     }
 }
 
-// ─── 5. WEBSOCKET ───────────────────────────────────────────
+// The three capture flows (listen, chat voice, live talk) share one microphone.
+// Acquiring it for one flow stops whichever flow held it.
+const MicManager = {
+    owner: null,
+    stoppers: {},
+    async acquire(owner, onChunk) {
+        if (this.owner && this.owner !== owner) {
+            const stop = this.stoppers[this.owner];
+            if (stop) stop();
+            if (this.owner) { this.owner = null; stopMic(); }
+        }
+        this.owner = owner;
+        const ok = await startMic(onChunk);
+        if (this.owner !== owner) return false;
+        if (!ok) this.owner = null;
+        return ok;
+    },
+    release(owner) {
+        if (this.owner !== owner) return;
+        this.owner = null;
+        stopMic();
+    },
+};
+
+// ─── 6. PLAYER (one playback queue for the whole page) ──────
+// Uses its own AudioContext at the device rate: the mic context is locked to
+// 16 kHz and resampling 22.05 kHz TTS through it corrupted audio.
+// `gen` is bumped by flush(); anything decoded or scheduled for an older
+// generation is dropped, so audio from a cancelled turn can never play late.
+const Player = {
+    ctx: null, analyser: null, gen: 0, owner: null, onDrain: null,
+    queue: [], current: null, decoding: 0, chain: Promise.resolve(),
+    ensure() {
+        if (!this.ctx) {
+            try {
+                this.ctx = new AudioContext();
+                this.analyser = this.ctx.createAnalyser();
+                this.analyser.fftSize = 1024;
+                this.analyser.connect(this.ctx.destination);
+            } catch (e) {
+                this.ctx = null;
+                return null;
+            }
+        }
+        if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+        return this.ctx;
+    },
+    // Take the player for one flow ('live' | 'speak' | 'chat'); another flow's audio is dropped.
+    claim(owner, onDrain) {
+        if (this.owner !== owner) this.flush();
+        this.owner = owner;
+        this.onDrain = onDrain || null;
+        this.ensure();
+    },
+    busy() { return !!this.current || this.queue.length > 0 || this.decoding > 0; },
+    // Decodes are serialized so chunks always play in arrival order.
+    enqueue(arrayBuffer, hooks) {
+        const ctx = this.ensure();
+        if (!ctx || !arrayBuffer) return;
+        const gen = this.gen;
+        const data = arrayBuffer.slice(0); // decodeAudioData detaches its input
+        this.decoding++;
+        this.chain = this.chain.then(async () => {
+            if (gen !== this.gen) return;
+            let buffer = null;
+            try {
+                buffer = await new Promise((resolve, reject) => ctx.decodeAudioData(data, resolve, reject));
+            } catch (e) {
+                console.warn('vox: could not decode an audio chunk', e);
+            }
+            if (gen !== this.gen) return;
+            this.decoding--;
+            if (buffer) this.queue.push({ buffer, hooks: hooks || {} });
+            this._next();
+        });
+    },
+    _next() {
+        if (this.current) return;
+        const item = this.queue.shift();
+        if (!item) {
+            if (this.decoding === 0 && this.onDrain) this.onDrain();
+            return;
+        }
+        const gen = this.gen;
+        let src;
+        try {
+            src = this.ctx.createBufferSource();
+            src.buffer = item.buffer;
+            src.connect(this.analyser);
+            src.onended = () => {
+                if (gen !== this.gen || this.current !== src) return;
+                this.current = null;
+                if (item.hooks.onend) item.hooks.onend();
+                this._next();
+            };
+            this.current = src;
+            src.start();
+        } catch (e) {
+            this.current = null;
+            this._next();
+            return;
+        }
+        if (item.hooks.onstart) item.hooks.onstart();
+    },
+    flush() {
+        this.gen++;
+        this.decoding = 0;
+        this.queue.length = 0;
+        const src = this.current;
+        this.current = null;
+        if (src) {
+            try { src.onended = null; src.stop(0); } catch (_) {}
+        }
+    },
+    level() { return this.current ? analyserLevel(this.analyser) : 0; },
+};
+
+// ─── 7. WEBSOCKET ───────────────────────────────────────────
 function connectWs(path, onMessage) {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(proto + '//' + location.host + path);
+    const ws = new WebSocket(wsUrl(path));
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (e) => {
-        try {
-            const data = JSON.parse(e.data);
-            onMessage(data);
-        } catch (_) { /* ignore non-JSON */ }
+        let data;
+        try { data = JSON.parse(e.data); } catch (_) { return; /* ignore non-JSON */ }
+        onMessage(data);
     };
     return ws;
 }
 
-// ─── 6. LISTEN TAB ──────────────────────────────────────────
+// ─── 8. LISTEN TAB ──────────────────────────────────────────
 function toggleListening() {
-    if (S.listening) stopListening();
+    if (S.listenPhase !== 'idle' || S.listenReconnectTimer) stopListening();
     else startListening();
 }
 
-async function startListening() {
-    const btn = $('listenMicBtn');
+function setListenStatus(text, cls) {
     const status = $('listenStatus');
+    status.textContent = text;
+    status.className = 'listen-status' + (cls ? ' ' + cls : '');
+}
 
-    S.listenWs = connectWs('/v1/listen', handleListenEvent);
+function setListenButton(on) {
+    const btn = $('listenMicBtn');
+    btn.classList.toggle('recording', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
 
-    S.listenWs.onopen = async () => {
-        const ok = await startMic((chunk) => {
-            if (S.listenWs && S.listenWs.readyState === WebSocket.OPEN) {
-                S.listenWs.send(chunk.buffer);
-            }
-            updateAudioMeter(chunk);
+function startListening(isReconnect) {
+    if (S.listenPhase !== 'idle') return;
+    S.listenPhase = 'connecting';
+    const gen = ++S.listenGen;
+    setListenButton(true);
+    setListenStatus(isReconnect ? 'Reconnecting...' : 'Connecting...');
+
+    const ws = connectWs('/v1/listen', (data) => { if (gen === S.listenGen) handleListenEvent(data); });
+    S.listenWs = ws;
+
+    ws.onopen = async () => {
+        if (gen !== S.listenGen) return;
+        const ok = await MicManager.acquire('listen', (chunk) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(chunk.buffer);
         });
-        if (!ok) {
-            S.listenWs.close();
-            S.listenWs = null;
-            return;
-        }
+        if (gen !== S.listenGen) return; // stopped while the permission prompt was open
+        if (!ok) { stopListening(); return; }
+        S.listenPhase = 'active';
         S.listening = true;
-        btn.classList.add('recording');
-        status.textContent = 'Listening...';
-        status.classList.add('active');
-        $('audioMeter').classList.add('visible');
+        setListenStatus('Listening...', 'active');
     };
 
-    S.listenWs.onerror = () => {
-        showToast('WebSocket connection failed', 'error');
+    ws.onerror = () => {
+        if (gen === S.listenGen) showToast('WebSocket connection failed', 'error');
     };
 
-    S.listenWs.onclose = () => {
-        if (S.listening && !S.reconnecting) {
-            S.reconnecting = true;
-            status.textContent = 'Reconnecting...';
-            setTimeout(() => {
-                S.reconnecting = false;
-                if (S.listening) {
-                    stopMic();
-                    S.listening = false;
-                    btn.classList.remove('recording');
-                    startListening();
-                }
-            }, WS_RECONNECT_DELAY);
-        }
+    ws.onclose = () => {
+        if (gen !== S.listenGen) return;
+        const wasActive = S.listenPhase === 'active';
+        stopListening();
+        if (!wasActive) return; // never connected: the button is reset, no retry loop
+        // The connection dropped mid-session: try once more after a short wait.
+        setListenButton(true);
+        setListenStatus('Reconnecting...');
+        S.listenReconnectTimer = setTimeout(() => {
+            S.listenReconnectTimer = null;
+            setListenButton(false);
+            if (S.activeTab === 'listen') startListening(true);
+            else setListenStatus('Press to start listening');
+        }, WS_RECONNECT_DELAY);
     };
 }
 
 function stopListening() {
+    S.listenGen++;
+    S.listenPhase = 'idle';
     S.listening = false;
     S.speechActive = false;
-    stopMic();
+    if (S.listenReconnectTimer) { clearTimeout(S.listenReconnectTimer); S.listenReconnectTimer = null; }
+    MicManager.release('listen');
     if (S.listenWs) {
-        S.listenWs.onclose = null;
-        S.listenWs.close();
+        try { S.listenWs.close(); } catch (_) {}
         S.listenWs = null;
     }
-    $('listenMicBtn').classList.remove('recording');
-    $('listenStatus').textContent = 'Press to start listening';
-    $('listenStatus').className = 'listen-status';
-    $('audioMeter').classList.remove('visible');
-    $('audioMeterFill').style.width = '0%';
+    setListenButton(false);
+    setListenStatus('Press to start listening');
     removeTranscriptPlaceholder();
 }
 
@@ -1108,21 +1094,19 @@ function formatTimestamp() {
 function showTranscriptPlaceholder() {
     removeTranscriptPlaceholder();
     const area = $('transcriptArea');
-    const entry = document.createElement('div');
-    entry.className = 'transcript-entry transcript-placeholder';
-    entry.innerHTML = '<div class="transcript-text" style="color:var(--text-muted)">...</div>';
+    const entry = el('div', 'transcript-entry transcript-placeholder');
     entry.id = 'transcriptPlaceholder';
+    entry.appendChild(el('div', 'transcript-text', '...'));
     area.appendChild(entry);
     area.scrollTop = area.scrollHeight;
 }
 
 function updateTranscriptPlaceholder(text, isPartial) {
     const ph = $('transcriptPlaceholder');
-    if (ph) {
-        ph.querySelector('.transcript-text').textContent = text;
-        ph.classList.toggle('transcript-partial', !!isPartial);
-        ph.classList.toggle('transcript-placeholder', !isPartial);
-    }
+    if (!ph) return;
+    ph.querySelector('.transcript-text').textContent = text;
+    ph.classList.toggle('transcript-partial', !!isPartial);
+    ph.classList.toggle('transcript-placeholder', !isPartial);
 }
 
 function removeTranscriptPlaceholder() {
@@ -1130,20 +1114,11 @@ function removeTranscriptPlaceholder() {
     if (ph) ph.remove();
 }
 
-function updateAudioMeter(samples) {
-    let sum = 0;
-    for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
-    const rms = Math.sqrt(sum / samples.length);
-    const level = Math.min(100, rms * 500);
-    $('audioMeterFill').style.width = level + '%';
-}
-
 function handleListenEvent(data) {
-    const status = $('listenStatus');
     switch (data.type) {
         case 'listen_ready':
             setDiarizationAvailable(!!data.diarization_available);
-            // If the user had diarization enabled in a previous session and
+            // If the user had diarization enabled before a reconnect and
             // still has consent, re-send the config to resume.
             if (S.diarizationOn && S.diarizationAvailable) {
                 sendDiarizationConfig(true);
@@ -1151,18 +1126,15 @@ function handleListenEvent(data) {
             break;
         case 'speech_start':
             S.speechActive = true;
-            status.textContent = 'Speaking...';
-            status.className = 'listen-status active';
+            setListenStatus('Hearing speech...', 'active');
             showTranscriptPlaceholder();
             break;
         case 'partial':
-            status.textContent = 'Speaking...';
-            status.className = 'listen-status active';
+            setListenStatus('Hearing speech...', 'active');
             updateTranscriptPlaceholder(data.text || '...', true);
             break;
         case 'transcribing':
-            status.textContent = 'Transcribing...';
-            status.className = 'listen-status transcribing';
+            setListenStatus('Transcribing...', 'transcribing');
             updateTranscriptPlaceholder('Transcribing...', false);
             break;
         case 'transcript':
@@ -1175,21 +1147,15 @@ function handleListenEvent(data) {
                 data.speaker_name,
                 data.speaker_color
             );
-            if (S.listening) {
-                status.textContent = 'Listening...';
-                status.className = 'listen-status active';
-            }
+            if (S.listening) setListenStatus('Listening...', 'active');
             break;
         case 'speech_end':
             S.speechActive = false;
-            if (S.listening) {
-                status.textContent = 'Listening...';
-                status.className = 'listen-status active';
-            }
+            if (S.listening) setListenStatus('Listening...', 'active');
             break;
         case 'speaker_list':
             S.speakers = {};
-            (data.speakers || []).forEach(sp => { S.speakers[sp.id] = sp; });
+            (data.speakers || []).forEach((sp) => { S.speakers[sp.id] = sp; });
             renderSpeakersSidebar();
             break;
         case 'speaker_update':
@@ -1199,7 +1165,7 @@ function handleListenEvent(data) {
             }
             break;
         case 'error':
-            showToast(data.message, 'error');
+            showToast(data.message || 'Listen error', 'error');
             break;
     }
 }
@@ -1207,44 +1173,37 @@ function handleListenEvent(data) {
 function appendTranscript(text, durationMs, processingMs, speakerId, speakerName, speakerColor) {
     removeTranscriptPlaceholder();
     const area = $('transcriptArea');
-    const entry = document.createElement('div');
-    entry.className = 'transcript-entry';
-    entry.style.position = 'relative';
+    const entry = el('div', 'transcript-entry');
+    const head = el('div', 'transcript-head');
 
-    let badgeHtml = '';
     if (speakerId && speakerName) {
         // Keep the local speaker cache in sync in case this is the first
         // time we've seen this id (the server sends updates for new ones).
+        S.speakerCounts[speakerId] = (S.speakerCounts[speakerId] || 0) + 1;
         if (!S.speakers[speakerId]) {
-            S.speakers[speakerId] = {
-                id: speakerId,
-                name: speakerName,
-                color: speakerColor || '#888'
-            };
-            renderSpeakersSidebar();
+            S.speakers[speakerId] = { id: speakerId, name: speakerName, color: safeColor(speakerColor) };
         }
+        renderSpeakersSidebar();
         entry.dataset.speaker = speakerId;
-        if (speakerColor) {
-            entry.style.setProperty('--speaker-color', speakerColor);
-        }
-        badgeHtml =
-            '<span class="speaker-badge">' +
-                '<span class="speaker-swatch" style="background:' + escapeHtml(speakerColor || '#888') + '"></span>' +
-                escapeHtml(speakerName) +
-            '</span>';
+        entry.style.setProperty('--speaker-color', safeColor(speakerColor));
+        head.appendChild(speakerBadge(speakerName, speakerColor));
     }
 
-    entry.innerHTML =
-        '<button class="transcript-copy-btn" aria-label="Copy" title="Copy text">&#x2398;</button>' +
-        '<div class="transcript-text">' + badgeHtml + escapeHtml(text) + '</div>' +
-        '<div class="transcript-meta">' + formatTimestamp() + ' \u00b7 ' + durationMs + 'ms audio, ' + processingMs + 'ms processing</div>';
-    const copyBtn = entry.querySelector('.transcript-copy-btn');
+    const copyBtn = el('button', 'transcript-copy-btn', 'Copy');
+    copyBtn.setAttribute('aria-label', 'Copy text');
     copyBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(text).then(() => {
-            copyBtn.textContent = '\u2713';
-            setTimeout(() => { copyBtn.innerHTML = '&#x2398;'; }, 1500);
-        });
+        const done = (label) => { copyBtn.textContent = label; setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500); };
+        try {
+            navigator.clipboard.writeText(text).then(() => done('Copied'), () => done('Failed'));
+        } catch (_) { done('Failed'); }
     });
+
+    const audioSecs = ((Number(durationMs) || 0) / 1000).toFixed(1);
+    head.appendChild(el('span', 'transcript-meta',
+        formatTimestamp() + ' · ' + audioSecs + ' s audio · ' + (Number(processingMs) || 0) + ' ms'));
+    entry.appendChild(copyBtn);
+    entry.appendChild(head);
+    entry.appendChild(el('div', 'transcript-text', text));
     area.appendChild(entry);
     area.scrollTop = area.scrollHeight;
 }
@@ -1254,7 +1213,6 @@ function setDiarizationAvailable(available) {
     S.diarizationAvailable = available;
     const toggle = $('diarizeToggle');
     const cbx = $('diarizeCheckbox');
-    if (!toggle || !cbx) return;
     if (available) {
         toggle.classList.remove('disabled');
         toggle.title = 'Toggle speaker diarization';
@@ -1266,6 +1224,7 @@ function setDiarizationAvailable(available) {
         cbx.disabled = true;
         cbx.checked = false;
         S.diarizationOn = false;
+        renderSpeakersSidebar(true);
     }
 }
 
@@ -1278,73 +1237,112 @@ function sendDiarizationConfig(enabled) {
     }
 }
 
+// Biometric opt-in. Asked once per browser (localStorage key above).
 function requestDiarizationConsent(onConfirm) {
     if (S.diarizationConsented) { onConfirm(); return; }
-    const ok = window.confirm(
-        'Enable speaker identification?\n\n' +
-        'Vox will store a voiceprint locally (never uploaded) to label each speaker. ' +
-        'You can rename or forget speakers at any time. This is an opt-in biometric feature.'
-    );
-    if (ok) {
-        S.diarizationConsented = true;
-        try { localStorage.setItem(DIARIZATION_CONSENT_KEY, '1'); } catch (_e) {}
-        onConfirm();
-    } else {
-        // User declined → leave the checkbox off.
-        const cbx = $('diarizeCheckbox');
-        const toggle = $('diarizeToggle');
-        if (cbx) cbx.checked = false;
-        if (toggle) toggle.classList.remove('on');
-        S.diarizationOn = false;
-    }
+    const dlg = $('consentDialog');
+    const finish = (ok) => {
+        if (dlg.open) dlg.close();
+        if (ok) {
+            S.diarizationConsented = true;
+            try { localStorage.setItem(DIARIZATION_CONSENT_KEY, '1'); } catch (_e) {}
+            onConfirm();
+        } else {
+            // User declined: leave the checkbox off.
+            $('diarizeCheckbox').checked = false;
+            $('diarizeToggle').classList.remove('on');
+            S.diarizationOn = false;
+        }
+        $('diarizeCheckbox').focus();
+    };
+    $('consentYes').onclick = () => finish(true);
+    $('consentNo').onclick = () => finish(false);
+    dlg.oncancel = (e) => { e.preventDefault(); finish(false); };
+    dlg.showModal();
 }
 
-function renderSpeakersSidebar() {
+function sendSpeakerCmd(cmd) {
+    if (S.listenWs && S.listenWs.readyState === WebSocket.OPEN) {
+        try { S.listenWs.send(JSON.stringify(cmd)); return true; } catch (_e) {}
+    }
+    showToast('Start listening to change speakers (needs a connection)', 'warning');
+    return false;
+}
+
+// Re-renders the speaker list. While a rename field or a delete confirmation
+// is open the list is left alone (unless forced) so typing is not interrupted.
+function renderSpeakersSidebar(force) {
     const list = $('speakersList');
-    const body = $('listenBody');
-    if (!list || !body) return;
-    if (S.diarizationOn) body.classList.add('with-sidebar');
-    else body.classList.remove('with-sidebar');
-    const speakers = Object.values(S.speakers);
-    if (speakers.length === 0) {
-        list.innerHTML = '<div class="speakers-sidebar-empty">No speakers yet</div>';
+    $('listenBody').classList.toggle('with-sidebar', S.diarizationOn);
+    if (!force && list.querySelector('.speaker-edit, .inline-confirm')) {
+        S.speakersDirty = true;
         return;
     }
-    list.innerHTML = '';
-    speakers.forEach(sp => {
-        const row = document.createElement('div');
-        row.className = 'speaker-row';
-        row.innerHTML =
-            '<span class="speaker-swatch" style="background:' + escapeHtml(sp.color || '#888') + '"></span>' +
-            '<span class="speaker-name">' + escapeHtml(sp.name) + '</span>' +
-            '<button class="speaker-forget" title="Forget speaker" aria-label="Forget speaker">\u00d7</button>';
-        row.querySelector('.speaker-name').addEventListener('click', () => {
-            const newName = window.prompt('Rename speaker:', sp.name);
-            if (newName && newName.trim() && newName.trim() !== sp.name) {
-                if (S.listenWs && S.listenWs.readyState === WebSocket.OPEN) {
-                    S.listenWs.send(JSON.stringify({
-                        type: 'rename_speaker',
-                        id: sp.id,
-                        name: newName.trim()
-                    }));
-                }
-            }
+    S.speakersDirty = false;
+    const speakers = Object.values(S.speakers);
+    // A forced render discards an open rename field; mark it closed first so
+    // the blur fired by removing it cannot commit or re-enter this function.
+    list.querySelectorAll('.speaker-edit').forEach((i) => { i.dataset.closed = '1'; });
+    list.textContent = '';
+    if (speakers.length === 0) {
+        list.appendChild(el('div', 'speakers-sidebar-empty', 'No speakers yet. They appear as people talk.'));
+        return;
+    }
+    speakers.forEach((sp) => {
+        const row = el('div', 'speaker-row');
+        const nameBtn = el('button', 'speaker-name', sp.name);
+        nameBtn.title = 'Rename';
+        nameBtn.setAttribute('aria-label', 'Rename ' + sp.name);
+        const forgetBtn = el('button', 'speaker-forget', 'Forget');
+        forgetBtn.setAttribute('aria-label', 'Forget ' + sp.name);
+        row.appendChild(speakerSwatch(sp.color));
+        row.appendChild(nameBtn);
+        row.appendChild(el('span', 'speaker-count', String(S.speakerCounts[sp.id] || 0)));
+        row.appendChild(forgetBtn);
+
+        nameBtn.addEventListener('click', () => {
+            const input = el('input', 'speaker-edit');
+            input.value = sp.name;
+            input.maxLength = 64;
+            input.setAttribute('aria-label', 'Speaker name');
+            nameBtn.replaceWith(input);
+            input.focus();
+            input.select();
+            const commit = (save) => {
+                if (input.dataset.closed) return;
+                input.dataset.closed = '1';
+                const name = input.value.trim();
+                if (save && name && name !== sp.name) sendSpeakerCmd({ type: 'rename_speaker', id: sp.id, name });
+                renderSpeakersSidebar(true);
+            };
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); commit(true); }
+                else if (e.key === 'Escape') { e.preventDefault(); commit(false); }
+            });
+            input.addEventListener('blur', () => commit(true));
         });
-        row.querySelector('.speaker-forget').addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (window.confirm('Forget "' + sp.name + '"? Their voiceprint will be deleted.')) {
-                if (S.listenWs && S.listenWs.readyState === WebSocket.OPEN) {
-                    S.listenWs.send(JSON.stringify({ type: 'forget_speaker', id: sp.id }));
-                } else {
-                    showToast('Cannot forget speaker: not connected', 'error');
-                }
-            }
+
+        forgetBtn.addEventListener('click', () => {
+            if (row.querySelector('.inline-confirm')) return;
+            const confirmRow = el('div', 'inline-confirm');
+            const yes = el('button', 'btn btn-danger btn-sm', 'Delete');
+            const no = el('button', 'btn btn-ghost btn-sm', 'Keep');
+            confirmRow.appendChild(el('span', null, 'Delete this voiceprint?'));
+            confirmRow.appendChild(yes);
+            confirmRow.appendChild(no);
+            yes.addEventListener('click', () => {
+                sendSpeakerCmd({ type: 'forget_speaker', id: sp.id });
+                renderSpeakersSidebar(true);
+            });
+            no.addEventListener('click', () => { renderSpeakersSidebar(true); });
+            row.appendChild(confirmRow);
+            yes.focus();
         });
         list.appendChild(row);
     });
 }
 
-// ─── 7. SPEAK TAB ───────────────────────────────────────────
+// ─── 9. SPEAK TAB ───────────────────────────────────────────
 async function loadVoices() {
     if (S.voicesLoaded) return;
     try {
@@ -1356,27 +1354,35 @@ async function loadVoices() {
         populateVoiceSelect($('voiceSelect'));
         populateVoiceSelect($('chatVoice'));
     } catch (e) {
-        showToast('Failed to load voices', 'warning');
+        // Retried on the next tab visit; say so only once.
+        if (!S.voicesWarned) {
+            S.voicesWarned = true;
+            showToast('Failed to load voices', 'warning');
+        }
     }
 }
 
 function populateVoiceSelect(select) {
-    select.innerHTML = '';
+    const prev = select.value;
+    select.textContent = '';
     if (S.voices.length === 0) {
-        select.innerHTML = '<option value="">No voices available</option>';
+        const opt = el('option', null, 'No voices available');
+        opt.value = '';
+        select.appendChild(opt);
         return;
     }
-    S.voices.forEach(v => {
-        const opt = document.createElement('option');
+    S.voices.forEach((v) => {
+        const opt = el('option', null, v.name + ' (' + v.gender + ', ' + v.accent + ')');
         opt.value = v.id;
-        opt.textContent = v.name + ' (' + v.gender + ', ' + v.accent + ')';
         select.appendChild(opt);
     });
+    if (prev && S.voices.some((v) => v.id === prev)) select.value = prev;
 }
 
 async function synthesize() {
     const text = $('speakText').value.trim();
-    if (!text) return;
+    if (!text) { showToast('Enter some text first', 'warning'); return; }
+    if (S.synthesizing) return;
 
     const voice = $('voiceSelect').value;
     const btn = $('synthesizeBtn');
@@ -1399,9 +1405,16 @@ async function synthesize() {
         if (!res.ok) throw new Error('HTTP ' + res.status);
 
         const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
+        Player.flush(); // do not talk over a streamed clip that is still playing
         const player = $('audioPlayer');
-        player.innerHTML = '<audio controls autoplay src="' + url + '"></audio>';
+        player.textContent = '';
+        if (S.synthUrl) URL.revokeObjectURL(S.synthUrl);
+        S.synthUrl = URL.createObjectURL(blob);
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.autoplay = true;
+        audio.src = S.synthUrl;
+        player.appendChild(audio);
     } catch (e) {
         showToast('Synthesis failed: ' + e.message, 'error');
     } finally {
@@ -1411,121 +1424,122 @@ async function synthesize() {
     }
 }
 
-// ─── 7a. STREAMING TTS ──────────────────────────────────────
-async function streamSpeak() {
+// ─── 9a. STREAMING TTS ──────────────────────────────────────
+function setStreamProgress(label, frac) {
+    const progress = $('streamProgress');
+    progress.textContent = '';
+    if (!label) return;
+    progress.appendChild(el('span', null, label));
+    if (frac != null) {
+        const bar = el('span', 'bar');
+        const fill = document.createElement('i');
+        fill.style.width = Math.round(Math.max(0, Math.min(1, Number(frac) || 0)) * 100) + '%';
+        bar.appendChild(fill);
+        progress.appendChild(bar);
+    }
+}
+
+function streamSpeak() {
     const text = $('speakText').value.trim();
-    if (!text) return;
+    if (!text) { showToast('Enter some text first', 'warning'); return; }
+    if (S.streaming) return;
+    S.streaming = true;
 
     const voice = $('voiceSelect').value;
     const btn = $('streamSpeakBtn');
-    const progress = $('streamProgress');
 
     btn.disabled = true;
     btn.textContent = 'Streaming...';
-    progress.textContent = 'Connecting...';
-    $('audioPlayer').innerHTML = '';
+    setStreamProgress('Connecting...');
+    const player = $('audioPlayer');
+    player.textContent = '';
+    if (S.synthUrl) { URL.revokeObjectURL(S.synthUrl); S.synthUrl = null; }
+    Player.flush();
+    Player.claim('speak');
 
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(proto + '//' + location.host + '/v1/speak');
+    const ws = new WebSocket(wsUrl('/v1/speak'));
     ws.binaryType = 'arraybuffer';
-
-    const audioChunks = [];
-    let playbackCtx = null;
-    let nextStartTime = 0;
-    let chunksReceived = 0;
 
     ws.onopen = () => {
         const payload = { text };
         if (voice) payload.voice = voice;
         ws.send(JSON.stringify(payload));
-        progress.textContent = 'Waiting for audio...';
+        setStreamProgress('Waiting for audio...');
     };
 
-    ws.onmessage = async (e) => {
+    ws.onmessage = (e) => {
         if (e.data instanceof ArrayBuffer) {
-            chunksReceived++;
-            if (!playbackCtx) {
-                playbackCtx = new AudioContext();
-                nextStartTime = playbackCtx.currentTime;
-            }
-            try {
-                const audioBuffer = await playbackCtx.decodeAudioData(e.data.slice(0));
-                const source = playbackCtx.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(playbackCtx.destination);
-                const startAt = Math.max(nextStartTime, playbackCtx.currentTime);
-                source.start(startAt);
-                nextStartTime = startAt + audioBuffer.duration;
-            } catch (err) {
-                console.warn('Failed to decode audio chunk', err);
-            }
-        } else {
-            try {
-                const data = JSON.parse(e.data);
-                switch (data.type) {
-                    case 'tts_start':
-                        progress.textContent = 'Synthesizing...';
-                        break;
-                    case 'tts_progress':
-                        progress.textContent = 'Chunk ' + data.chunk + ' (' + Math.round(data.progress * 100) + '%)';
-                        break;
-                    case 'tts_done':
-                        progress.textContent = 'Done — ' + data.chunks + ' chunk(s) streamed';
-                        break;
-                    case 'error':
-                        showToast(data.message, 'error');
-                        progress.textContent = 'Error';
-                        break;
-                }
-            } catch (_) {}
+            if (Player.owner === 'speak') Player.enqueue(e.data);
+            return;
+        }
+        let data;
+        try { data = JSON.parse(e.data); } catch (_) { return; }
+        switch (data.type) {
+            case 'tts_start':
+                setStreamProgress('Synthesizing...', 0);
+                break;
+            case 'tts_progress':
+                setStreamProgress('Chunk ' + data.chunk + ' (' + Math.round(data.progress * 100) + '%)', data.progress);
+                break;
+            case 'tts_done':
+                setStreamProgress('Done. ' + data.chunks + ' chunk(s) streamed', 1);
+                break;
+            case 'error':
+                showToast(data.message || 'Streaming TTS error', 'error');
+                setStreamProgress('Error');
+                break;
         }
     };
 
     ws.onerror = () => {
         showToast('Streaming TTS connection failed', 'error');
-        progress.textContent = '';
+        setStreamProgress('');
     };
 
     ws.onclose = () => {
+        S.streaming = false;
         btn.disabled = false;
         btn.textContent = 'Stream';
     };
 }
 
-// ─── 7b. OLLAMA MODELS ──────────────────────────────────────
+// ─── 9b. OLLAMA MODELS ──────────────────────────────────────
 async function loadOllamaModels() {
     if (S.ollamaModelsLoaded) return;
+    const select = $('chatModel');
+    const fallback = () => {
+        select.textContent = '';
+        const opt = el('option', null, 'llama3.2 (default)');
+        opt.value = 'llama3.2';
+        select.appendChild(opt);
+    };
     try {
         const res = await fetch('/v1/ollama-models');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        const select = $('chatModel');
-        select.innerHTML = '';
-        if (!data.models || data.models.length === 0) {
-            select.innerHTML = '<option value="llama3.2">llama3.2 (default)</option>';
-            return;
-        }
-        data.models.forEach(m => {
-            const opt = document.createElement('option');
+        if (!data.models || data.models.length === 0) { fallback(); return; }
+        const prev = select.value;
+        select.textContent = '';
+        data.models.forEach((m) => {
+            const opt = el('option', null, m.name + (m.size ? ' (' + (m.size / 1e9).toFixed(1) + 'GB)' : ''));
             opt.value = m.name;
-            const sizeMB = m.size ? ' (' + (m.size / 1e9).toFixed(1) + 'GB)' : '';
-            opt.textContent = m.name + sizeMB;
             select.appendChild(opt);
         });
+        if (prev && data.models.some((m) => m.name === prev)) select.value = prev;
         S.ollamaModelsLoaded = true;
     } catch (e) {
-        const select = $('chatModel');
-        select.innerHTML = '<option value="llama3.2">llama3.2 (default)</option>';
+        fallback();
     }
 }
 
-// ─── 8. CHAT TAB ────────────────────────────────────────────
+// ─── 10. CHAT TAB ───────────────────────────────────────────
 async function sendChat(text, retryMsgEl) {
     if (!text || S.chatBusy) return;
     S.chatBusy = true;
 
     const model = $('chatModel').value || 'llama3.2';
     const voice = $('chatVoice').value;
+    if (voice) Player.claim('chat'); // created inside the click so playback is allowed later
 
     // If retrying, remove the old retry button; otherwise append new user message
     let userMsgEl;
@@ -1542,9 +1556,7 @@ async function sendChat(text, retryMsgEl) {
     $('chatSendBtn').disabled = true;
 
     function addRetryBtn(msgEl, originalText) {
-        const btn = document.createElement('button');
-        btn.className = 'chat-retry-btn';
-        btn.textContent = 'Retry';
+        const btn = el('button', 'chat-retry-btn', 'Retry');
         btn.addEventListener('click', () => sendChat(originalText, msgEl));
         msgEl.appendChild(btn);
     }
@@ -1578,11 +1590,8 @@ async function sendChat(text, retryMsgEl) {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ text: data.response, voice }),
                 });
-                if (ttsRes.ok) {
-                    const blob = await ttsRes.blob();
-                    const url = URL.createObjectURL(blob);
-                    const audio = new Audio(url);
-                    audio.play().catch(() => {});
+                if (ttsRes.ok && S.activeTab === 'chat' && Player.owner === 'chat') {
+                    Player.enqueue(await ttsRes.arrayBuffer());
                 }
             } catch (_) { /* TTS for chat is best-effort */ }
         }
@@ -1598,57 +1607,46 @@ async function sendChat(text, retryMsgEl) {
 
 function appendChatMessage(role, text) {
     const area = $('chatMessages');
-    const msg = document.createElement('div');
-    msg.className = 'chat-msg ' + role;
-    const sender = role === 'user' ? '[You]' : '[Vox]';
-    msg.innerHTML =
-        '<div class="chat-msg-sender">' + sender + '</div>' +
-        '<div class="chat-msg-text">' + escapeHtml(text) + '</div>';
+    const hint = area.querySelector('.empty-hint');
+    if (hint) hint.remove();
+    const msg = el('div', 'chat-msg ' + role);
+    msg.appendChild(el('div', 'chat-msg-sender', role === 'user' ? 'You' : 'Vox'));
+    msg.appendChild(el('div', 'chat-msg-text', text));
     area.appendChild(msg);
     area.scrollTop = area.scrollHeight;
     return msg;
 }
 
 function toggleChatMic() {
-    if (S.chatMicActive) stopChatMic();
+    if (S.chatPhase !== 'idle') stopChatMic();
     else startChatMic();
 }
 
-async function startChatMic() {
+function b64ToArrayBuffer(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+}
+
+function startChatMic() {
+    if (S.chatPhase !== 'idle') return;
+    S.chatPhase = 'connecting';
+    const gen = ++S.chatGen;
+
     const btn = $('chatMicBtn');
     const input = $('chatInput');
     const model = $('chatModel').value || 'llama3.2';
     const voice = $('chatVoice').value || null;
+    btn.classList.add('recording');
+    btn.setAttribute('aria-pressed', 'true');
+    Player.claim('chat');
 
     // Per-turn streaming state
     let currentAssistantMsg = null;
-    const audioQueue = [];
-    let isPlaying = false;
 
-    function b64ToBlob(b64, mime) {
-        const bin = atob(b64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        return new Blob([bytes], { type: mime });
-    }
-
-    async function playNext() {
-        if (isPlaying || audioQueue.length === 0) return;
-        isPlaying = true;
-        const blob = audioQueue.shift();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        const cleanup = () => {
-            URL.revokeObjectURL(url);
-            isPlaying = false;
-            playNext();
-        };
-        audio.onended = cleanup;
-        audio.onerror = cleanup;
-        try { await audio.play(); } catch (_) { cleanup(); }
-    }
-
-    S.chatWs = connectWs('/v1/converse', (data) => {
+    const ws = connectWs('/v1/converse', (data) => {
+        if (gen !== S.chatGen) return;
         switch (data.type) {
             case 'ready':
                 input.placeholder = 'Listening... speak naturally';
@@ -1685,8 +1683,7 @@ async function startChatMic() {
                     msgs.scrollTop = msgs.scrollHeight;
                 }
                 if (data.audio_b64) {
-                    audioQueue.push(b64ToBlob(data.audio_b64, 'audio/wav'));
-                    playNext();
+                    try { Player.enqueue(b64ToArrayBuffer(data.audio_b64)); } catch (_) { /* bad base64: text still shown */ }
                 }
                 break;
             }
@@ -1701,124 +1698,208 @@ async function startChatMic() {
                 break;
         }
     });
+    S.chatWs = ws;
 
-    S.chatWs.onopen = async () => {
-        // Send config as first text message (within 250ms).
+    ws.onopen = async () => {
+        if (gen !== S.chatGen) return;
+        // Send config as first text message (the server waits only briefly for it).
         try {
-            S.chatWs.send(JSON.stringify({ model, voice }));
+            ws.send(JSON.stringify({ model, voice }));
         } catch (_) { /* ignore */ }
 
-        const ok = await startMic((chunk) => {
-            if (S.chatWs && S.chatWs.readyState === WebSocket.OPEN) {
-                S.chatWs.send(chunk.buffer);
-            }
+        const ok = await MicManager.acquire('chat', (chunk) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(chunk.buffer);
         });
-        if (!ok) {
-            S.chatWs.close();
-            S.chatWs = null;
-            return;
-        }
+        if (gen !== S.chatGen) return;
+        if (!ok) { stopChatMic(); return; }
+        S.chatPhase = 'active';
         S.chatMicActive = true;
-        btn.classList.add('recording');
-        // Placeholder is managed by the 'ready' message handler — don't overwrite here.
-        // The server's `ready` event arrives during `await startMic()` and sets
-        // "Listening... speak naturally". Any write here races against that.
+        // The placeholder is managed by the 'ready' handler, which usually
+        // fires while the mic is still being opened. Do not overwrite it here.
     };
 
-    S.chatWs.onerror = () => {
+    ws.onerror = () => {
+        if (gen !== S.chatGen) return;
         showToast('WebSocket connection failed', 'error');
         stopChatMic();
     };
 
-    S.chatWs.onclose = () => {
-        if (S.chatMicActive) stopChatMic();
+    ws.onclose = () => {
+        if (gen === S.chatGen) stopChatMic();
     };
 }
 
 function stopChatMic() {
+    const wasRunning = S.chatPhase !== 'idle';
+    S.chatGen++;
+    S.chatPhase = 'idle';
     S.chatMicActive = false;
-    stopMic();
+    MicManager.release('chat');
     if (S.chatWs) {
-        S.chatWs.onclose = null;
-        S.chatWs.close();
+        try { S.chatWs.close(); } catch (_) {}
         S.chatWs = null;
     }
+    if (wasRunning && Player.owner === 'chat') Player.flush();
     const btn = $('chatMicBtn');
     btn.classList.remove('recording');
     btn.classList.remove('speaking');
+    btn.setAttribute('aria-pressed', 'false');
     $('chatInput').placeholder = 'Type a message...';
     $('chatThinking').textContent = '';
 }
 
-// ─── 8b. LIVE TALK TAB ──────────────────────────────────────
+// ─── 11. LIVE TALK TAB ──────────────────────────────────────
 // State machine: idle → listening → transcribing → thinking → speaking → listening
-// Barge-in paths: (a) server VAD (speech_start during active turn),
-//                 (b) client RMS gate while speaking, (c) Cancel button.
+// Barge-in paths: (a) server VAD (speech_start while a reply is playing),
+//                 (b) client RMS gate while speaking, (c) Stop reply button,
+//                 (d) pressing push-to-talk during a reply.
 const LT = {
     ws: null,              // WebSocket
-    active: false,         // mic enabled
+    phase: 'idle',         // session: idle | connecting | active
+    gen: 0,                // bumped on every start/stop; stale socket callbacks compare against it
+    active: false,         // mic is live and the socket is open
+    ready: false,          // server sent 'ready'
     state: 'idle',         // idle|listening|transcribing|thinking|speaking|cancelled
+    stateTimer: null,      // leaves transient states (cancelled, transcribing)
+    cutBars: 0,            // red bars still to draw on the tape after an interruption
     mode: 'vad',           // 'vad' | 'push_to_talk'
     pttHeld: false,        // PTT button currently pressed
-    audioCtx: null,        // dedicated playback AudioContext (default sample rate, NOT the 16kHz mic ctx)
-    currentSource: null,   // currently-playing AudioBufferSourceNode
-    queue: [],             // [{ sentence_index, text, buffer }]
     pendingHeader: null,   // last 'audio_chunk' header awaiting binary frame
     sentencesInTurn: 0,    // count of sentences since the last turn_done
     currentAssistantEl: null,
-    turnActive: false,     // have we started a turn that hasn't ended yet
-    turnCancelled: false,  // set true when we sent cancel or got cancelled event
+    turnActive: false,     // the server is still producing this turn
+    turnCancelled: false,  // we sent cancel or got 'cancelled'; late frames of this turn are dropped
+    turn: null,            // per-turn metrics: { t0, stt, llm, audio, heard, received, cancelled, metaEl }
+    metrics: [],           // { stt, llm, audio } of turns that reached playback, for the dashboard
     bargeInEnabled: true,
-    // Client-side RMS barge-in during 'speaking': trailing window RMS
-    micRmsHistory: [],
-    RMS_WINDOW: 6,         // 6 * 300ms chunks ≈ 1.8s
+    // Client-side RMS barge-in during 'speaking'. All limits are in milliseconds
+    // so they do not depend on the mic chunk size.
+    micRmsHistory: [],     // [{ rms, ms }], newest last
+    RMS_WINDOW_MS: 1800,   // how much history is kept
+    BARGE_SUSTAIN_MS: 240, // continuous loud audio needed to interrupt
     RMS_THRESHOLD: 0.03,   // empirical: above this during 'speaking' => barge-in
+};
+const STATE_LABEL = { cancelled: 'interrupted' };
+const STATE_HINT = {
+    idle: 'Mic is off. Press the mic to start.',
+    listening: 'Speak whenever you are ready.',
+    transcribing: 'Turning your speech into text.',
+    thinking: 'Waiting for the first words from the model.',
+    speaking: 'Talk over the reply to interrupt it.',
+    cancelled: 'Reply stopped.',
 };
 
 function setLiveState(state) {
     LT.state = state;
+    if (LT.stateTimer) { clearTimeout(LT.stateTimer); LT.stateTimer = null; }
     const badge = $('liveStateBadge');
-    if (!badge) return;
-    badge.textContent = state;
+    badge.textContent = STATE_LABEL[state] || state;
     badge.className = 'live-state-badge ' + state;
-    const cancelBtn = $('liveCancelBtn');
-    if (cancelBtn) {
-        cancelBtn.disabled = !(state === 'thinking' || state === 'speaking');
-    }
+    $('liveStateHint').textContent = STATE_HINT[state] || '';
+    const track = $('liveStateTrack');
+    track.classList.toggle('cut', state === 'cancelled');
+    track.querySelectorAll('li').forEach((li) => {
+        if (li.dataset.state === state) li.setAttribute('aria-current', 'step');
+        else li.removeAttribute('aria-current');
+    });
+    $('liveCancelBtn').disabled = !(state === 'thinking' || state === 'speaking');
+
+    // Transient states fall back to listening on their own, so a lost server
+    // event can never leave the UI stuck.
+    const backToListening = (ms) => {
+        LT.stateTimer = setTimeout(() => {
+            LT.stateTimer = null;
+            if (LT.active && LT.state === state) setLiveState('listening');
+        }, ms);
+    };
+    if (state === 'cancelled') { LT.cutBars = 2; backToListening(900); }
+    else if (state === 'transcribing') backToListening(10000);
 }
 
 function appendLiveMsg(role, text) {
     const area = $('liveTalkMessages');
-    if (!area) return null;
-    const msg = document.createElement('div');
-    msg.className = 'live-msg ' + role;
-    const sender = role === 'user' ? '[You]' : '[Vox]';
-    msg.innerHTML =
-        '<div class="live-msg-sender">' + sender + '</div>' +
-        '<div class="live-msg-text">' + escapeHtml(text) + '</div>';
+    const hint = area.querySelector('.empty-hint');
+    if (hint) hint.remove();
+    const msg = el('div', 'live-msg ' + role);
+    msg.appendChild(el('div', 'live-msg-sender', role === 'user' ? 'You' : 'Vox'));
+    msg.appendChild(el('div', 'live-msg-text', text));
     area.appendChild(msg);
     area.scrollTop = area.scrollHeight;
     return msg;
 }
 
-function appendLiveSentence(text) {
+// Latency chips. stt comes from the server (transcript.processing_time_ms); the other two are
+// measured in the browser from the moment the transcript arrives: until the first sentence
+// event, and until the first reply audio actually starts playing.
+const CHIP_DEF = [['stt', 'stt', 300, 700], ['llm', 'first sentence', 600, 1500], ['audio', 'first audio', 900, 2000]];
+function renderChips(turn) {
+    if (!turn || !turn.metaEl) return;
+    const meta = turn.metaEl;
+    meta.textContent = '';
+    CHIP_DEF.forEach(([key, label, ok, warn]) => {
+        const v = turn[key];
+        const chip = el('span', 'chip' + (v == null ? '' : v <= ok ? ' ok' : v <= warn ? ' warn' : ' slow'));
+        chip.appendChild(el('span', 'chip-k', label));
+        chip.appendChild(document.createTextNode(v == null ? '…' : Math.round(v) + ' ms'));
+        meta.appendChild(chip);
+    });
+    if (turn.cancelled) {
+        meta.appendChild(el('span', 'tag-cut', turn.received
+            ? 'Interrupted · heard ' + turn.heard + ' of ' + turn.received + ' sentence' + (turn.received === 1 ? '' : 's')
+            : 'Interrupted before the reply'));
+    }
+}
+function beginTurnMeta(stt) {
+    const meta = el('div', 'turn-meta');
+    $('liveTalkMessages').appendChild(meta);
+    LT.turn = {
+        t0: performance.now(), stt: typeof stt === 'number' ? stt : null,
+        llm: null, audio: null, heard: 0, received: 0, cancelled: false, metaEl: meta,
+    };
+    renderChips(LT.turn);
+    return LT.turn;
+}
+
+// One <span class="s"> per sentence so playback can mark what was actually heard.
+function appendLiveSentence(text, index) {
+    const area = $('liveTalkMessages');
     if (!LT.currentAssistantEl) {
         LT.currentAssistantEl = appendLiveMsg('assistant', '');
+        if (LT.turn && LT.turn.metaEl && LT.turn.metaEl.parentNode === area) {
+            area.insertBefore(LT.currentAssistantEl, LT.turn.metaEl);
+        }
     }
-    if (!LT.currentAssistantEl) return;
     const t = LT.currentAssistantEl.querySelector('.live-msg-text');
-    if (t) {
-        const prev = t.textContent || '';
-        t.textContent = prev + (prev ? ' ' : '') + text;
-        const area = $('liveTalkMessages');
-        if (area) area.scrollTop = area.scrollHeight;
-    }
+    const span = el('span', 's pending', text);
+    span.dataset.i = String(index);
+    if (t.childNodes.length) t.appendChild(document.createTextNode(' '));
+    t.appendChild(span);
+    area.scrollTop = area.scrollHeight;
+}
+
+function markSentence(index, cls) {
+    if (!LT.currentAssistantEl) return;
+    LT.currentAssistantEl.querySelectorAll('.s').forEach((s) => {
+        const i = Number(s.dataset.i);
+        if (cls === 'playing') {
+            s.classList.toggle('playing', i === index);
+            if (i <= index) s.classList.remove('pending');
+        } else if (cls === 'done' && (index < 0 || i === index)) {
+            s.classList.remove('playing');
+        }
+    });
 }
 
 function markLastAssistantCancelled() {
+    const turn = LT.turn;
     if (LT.currentAssistantEl) {
         LT.currentAssistantEl.classList.add('cancelled');
+        LT.currentAssistantEl.querySelectorAll('.s').forEach((s) => {
+            s.classList.remove('playing');
+            if (s.classList.contains('pending')) { s.classList.remove('pending'); s.classList.add('unheard'); }
+        });
     }
+    if (turn && !turn.cancelled) { turn.cancelled = true; renderChips(turn); }
 }
 
 function updateLiveMeter(chunk) {
@@ -1826,16 +1907,15 @@ function updateLiveMeter(chunk) {
     let sum = 0;
     for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
     const rms = Math.sqrt(sum / chunk.length);
-    const level = Math.min(100, rms * 500);
-    const el = $('liveMeterFill');
-    if (el) el.style.width = level + '%';
+    $('liveMeterFill').style.width = Math.min(100, rms * 500) + '%';
 }
 
-function fastRms(chunk) {
-    // Subsampled RMS: every 8th sample ≈ 600 samples / 4800 chunk → ~10x faster
+function fastRms(chunk, sampleRate) {
+    // Subsampled RMS: one sample every ~0.5 ms is plenty for an energy gate.
+    const stride = Math.max(1, Math.round(sampleRate / 2000));
     let sum = 0;
     let n = 0;
-    for (let i = 0; i < chunk.length; i += 8) {
+    for (let i = 0; i < chunk.length; i += stride) {
         const s = chunk[i];
         sum += s * s;
         n++;
@@ -1846,150 +1926,141 @@ function fastRms(chunk) {
 function clientBargeInCheck(chunk) {
     // Only meaningful while we're actively speaking response audio.
     if (!LT.bargeInEnabled) return;
+    const hist = LT.micRmsHistory;
     if (LT.state !== 'speaking') {
-        LT.micRmsHistory.length = 0;
+        hist.length = 0;
         return;
     }
-    const rms = fastRms(chunk);
-    LT.micRmsHistory.push(rms);
-    if (LT.micRmsHistory.length > LT.RMS_WINDOW) {
-        LT.micRmsHistory.shift();
+    const rate = S.audioCtx ? S.audioCtx.sampleRate : 16000;
+    hist.push({ rms: fastRms(chunk, rate), ms: chunk.length / rate * 1000 });
+    let total = 0;
+    for (let i = 0; i < hist.length; i++) total += hist[i].ms;
+    while (hist.length > 1 && total - hist[0].ms >= LT.RMS_WINDOW_MS) total -= hist.shift().ms;
+    // Require the newest chunks to be loud for BARGE_SUSTAIN_MS without a gap,
+    // and never a single chunk, to ignore glitches (AGC pop, key click).
+    let loudMs = 0;
+    let loudChunks = 0;
+    for (let i = hist.length - 1; i >= 0 && hist[i].rms > LT.RMS_THRESHOLD; i--) {
+        loudMs += hist[i].ms;
+        loudChunks++;
     }
-    if (LT.micRmsHistory.length < 2) return;
-    // Require at least two consecutive chunks above threshold to avoid
-    // single-frame glitches (AGC pop, typing, keyboard click).
-    const tail = LT.micRmsHistory.slice(-2);
-    if (tail.every((v) => v > LT.RMS_THRESHOLD)) {
-        LT.micRmsHistory.length = 0;
+    if (loudChunks >= 2 && loudMs >= LT.BARGE_SUSTAIN_MS) {
+        hist.length = 0;
         sendLiveCancel('user_barge_in_client');
     }
 }
 
+// Interrupt the reply. While the server is still producing the turn it is told
+// to cancel. Once the turn is finished on the server and only queued audio is
+// left, playback is stopped locally and nothing is sent: a cancel with no
+// active turn would only reset the server's VAD.
 function sendLiveCancel(_reason) {
-    if (!LT.ws || LT.ws.readyState !== WebSocket.OPEN) return;
-    if (LT.turnCancelled || !LT.turnActive) return;
-    LT.turnCancelled = true;
-    try {
-        LT.ws.send(JSON.stringify({ type: 'cancel' }));
-    } catch (_) { /* ignore */ }
+    if (!LT.active) return;
+    if (LT.turnActive && !LT.turnCancelled) {
+        LT.turnCancelled = true;
+        if (LT.ws && LT.ws.readyState === WebSocket.OPEN) {
+            try { LT.ws.send(JSON.stringify({ type: 'cancel' })); } catch (_) { /* ignore */ }
+        }
+    } else if (!Player.busy()) {
+        return;
+    }
     cancelLivePlayback();
     markLastAssistantCancelled();
     setLiveState('cancelled');
 }
 
 function cancelLivePlayback() {
-    if (LT.currentSource) {
-        try { LT.currentSource.onended = null; LT.currentSource.stop(0); } catch (_) {}
-        LT.currentSource = null;
-    }
-    LT.queue.length = 0;
+    if (Player.owner === 'live') Player.flush();
+    LT.pendingHeader = null;
 }
 
-function playNextLive() {
-    if (LT.currentSource) return; // already playing
-    const next = LT.queue.shift();
-    if (!next) {
-        // Queue drained. If the server has already said turn_done and we
-        // weren't cancelled, return to listening.
-        if (!LT.turnActive && !LT.turnCancelled && LT.active) {
-            setLiveState('listening');
-        }
-        return;
-    }
-    try {
-        const src = LT.audioCtx.createBufferSource();
-        src.buffer = next.buffer;
-        src.connect(LT.audioCtx.destination);
-        src.onended = () => {
-            LT.currentSource = null;
-            playNextLive();
-        };
-        LT.currentSource = src;
-        setLiveState('speaking');
-        src.start();
-    } catch (e) {
-        LT.currentSource = null;
-        playNextLive();
+// The playback queue ran dry. If the server already said turn_done and we
+// weren't cancelled, return to listening; otherwise more audio is on its way.
+function onLivePlaybackDrained() {
+    if (!LT.turnActive && !LT.turnCancelled && LT.active && (LT.state === 'speaking' || LT.state === 'thinking')) {
+        markSentence(-1, 'done');
+        setLiveState('listening');
     }
 }
 
-async function decodeAndEnqueue(arrayBuffer, headerInfo) {
-    try {
-        if (!LT.audioCtx) {
-            // Use a dedicated playback AudioContext at the browser's default
-            // sample rate (typically 44.1/48 kHz). The mic AudioContext
-            // (S.audioCtx) is locked to 16 kHz for VAD/STT; reusing it for
-            // playback forced decodeAudioData to resample TTS audio (22050 Hz
-            // Piper WAV) to 16 kHz, causing decode failures and quality loss
-            // — especially on the first chunk where the context might still
-            // be suspended.
-            LT.audioCtx = new AudioContext();
-        }
-        if (LT.audioCtx.state === 'suspended') {
-            try { await LT.audioCtx.resume(); } catch (_) {}
-        }
-        // decodeAudioData requires a non-detached ArrayBuffer. We get ours
-        // directly from WebSocket.onmessage, so copy defensively.
-        const copy = arrayBuffer.slice(0);
-        const buffer = await new Promise((resolve, reject) => {
-            LT.audioCtx.decodeAudioData(copy, resolve, reject);
-        });
-        LT.queue.push({
-            sentence_index: headerInfo ? headerInfo.sentence_index : -1,
-            buffer,
-        });
-        playNextLive();
-    } catch (e) {
-        console.error('Live Talk: decodeAndEnqueue failed:', e,
-            'header:', headerInfo, 'byteLength:', arrayBuffer && arrayBuffer.byteLength);
-    }
+function decodeAndEnqueue(arrayBuffer, headerInfo) {
+    // Audio of a turn we already cancelled is dropped, never queued.
+    if (LT.turnCancelled || !LT.active) return;
+    const turn = LT.turn;
+    const index = headerInfo && typeof headerInfo.sentence_index === 'number' ? headerInfo.sentence_index : -1;
+    Player.enqueue(arrayBuffer, {
+        onstart: () => {
+            setLiveState('speaking');
+            if (turn) {
+                if (index >= 0) turn.heard = Math.max(turn.heard, index + 1);
+                if (turn.audio == null) {
+                    turn.audio = performance.now() - turn.t0;
+                    LT.metrics.push({ stt: turn.stt, llm: turn.llm, audio: turn.audio });
+                    if (LT.metrics.length > 200) LT.metrics.shift();
+                }
+                renderChips(turn);
+            }
+            markSentence(index, 'playing');
+        },
+        onend: () => markSentence(index, 'done'),
+    });
 }
 
 function handleLiveEvent(data) {
     switch (data.type) {
         case 'ready':
-            setLiveState('listening');
+            LT.ready = true;
+            if (data.model) $('trackModel').textContent = data.model;
+            if (LT.active) setLiveState('listening');
             break;
         case 'speech_start':
-            // Server VAD detected speech. If we were speaking, this is
-            // a barge-in: cancel the active turn immediately.
+            // Server VAD detected speech. If a reply is in progress this is
+            // a barge-in: stop it immediately.
             if (LT.state === 'speaking' || LT.state === 'thinking') {
                 sendLiveCancel('user_barge_in_server');
-            } else {
+            } else if (LT.active) {
                 setLiveState('listening');
             }
             break;
         case 'transcript':
+            // A new turn starts: whatever is left of the previous reply must not overlap it.
+            cancelLivePlayback();
+            markSentence(-1, 'done');
             if (data.text && data.text.trim()) {
                 appendLiveMsg('user', data.text);
             }
-            setLiveState('thinking');
+            beginTurnMeta(data.processing_time_ms);
             LT.currentAssistantEl = null;
             LT.turnActive = true;
             LT.turnCancelled = false;
             LT.sentencesInTurn = 0;
-            break;
-        case 'thinking':
             setLiveState('thinking');
             break;
+        case 'thinking':
+            if (!LT.turnCancelled) setLiveState('thinking');
+            break;
         case 'sentence':
-            // Text-only — audio arrives via a subsequent audio_chunk header
+            // Text-only; audio arrives via a subsequent audio_chunk header
             // + binary frame pair.
-            appendLiveSentence(data.text);
+            if (LT.turnCancelled) break;
+            if (LT.turn) {
+                LT.turn.received = data.index + 1;
+                if (LT.turn.llm == null) { LT.turn.llm = performance.now() - LT.turn.t0; renderChips(LT.turn); }
+            }
+            appendLiveSentence(data.text, data.index);
             LT.sentencesInTurn = data.index + 1;
             break;
         case 'audio_chunk':
-            // Header — the NEXT binary frame is the WAV payload for this
+            // Header: the NEXT binary frame is the WAV payload for this
             // sentence. We stash it so ws.onmessage can pair them.
             LT.pendingHeader = data;
             break;
         case 'turn_done':
             LT.turnActive = false;
-            // If we're still playing queued audio, stay in speaking until
-            // the queue drains; playNextLive() will transition back to
-            // listening. If nothing queued and we weren't cancelled, go
-            // straight to listening.
-            if (!LT.currentSource && LT.queue.length === 0 && !LT.turnCancelled && LT.active) {
+            // If queued audio is still playing, stay in speaking until the
+            // queue drains; onLivePlaybackDrained() returns to listening.
+            if (!Player.busy() && !LT.turnCancelled && LT.active) {
+                markSentence(-1, 'done');
                 setLiveState('listening');
             }
             break;
@@ -1998,11 +2069,8 @@ function handleLiveEvent(data) {
             LT.turnCancelled = true;
             cancelLivePlayback();
             markLastAssistantCancelled();
+            // setLiveState returns to listening after a beat so the user can speak again.
             setLiveState('cancelled');
-            // Return to listening after a beat so the user can speak again.
-            setTimeout(() => {
-                if (LT.active && LT.state === 'cancelled') setLiveState('listening');
-            }, 400);
             break;
         case 'error':
             if (data.fatal) {
@@ -2014,27 +2082,46 @@ function handleLiveEvent(data) {
             break;
         case 'partial':
         case 'token':
-            // P1 wire events — not yet emitted by server, ignore.
+            // Defined on the wire but not emitted by the server yet; ignore.
             break;
     }
 }
 
-async function startLiveTalk() {
-    if (LT.active) return;
+function setLiveButton(on) {
     const btn = $('liveTalkMicBtn');
-    if (btn) btn.classList.add('recording');
+    btn.classList.toggle('recording', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.setAttribute('aria-label', on ? 'Stop live talk' : 'Start live talk');
+}
 
-    const model = ($('liveTalkModel') && $('liveTalkModel').value) || null;
-    const voice = ($('liveTalkVoice') && $('liveTalkVoice').value) || null;
-    const modeSel = $('liveMode');
-    LT.mode = modeSel && modeSel.value === 'push_to_talk' ? 'push_to_talk' : 'vad';
+function resetPttButton() {
+    const ptt = $('livePttBtn');
+    LT.pttHeld = false;
+    ptt.classList.remove('active');
+    ptt.textContent = 'Hold to talk';
+}
 
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(proto + '//' + location.host + '/v1/live-talk');
+function startLiveTalk() {
+    if (LT.phase !== 'idle') return;
+    LT.phase = 'connecting';
+    const gen = ++LT.gen;
+    setLiveButton(true);
+    $('liveStateHint').textContent = 'Connecting...';
+
+    const model = $('liveTalkModel').value || null;
+    const voice = $('liveTalkVoice').value || null;
+    LT.mode = $('liveMode').value === 'push_to_talk' ? 'push_to_talk' : 'vad';
+
+    // Created inside the click so the browser allows playback, and early so
+    // the first TTS chunk does not pay context start-up latency.
+    Player.claim('live', onLivePlaybackDrained);
+
+    const ws = new WebSocket(wsUrl('/v1/live-talk'));
     ws.binaryType = 'arraybuffer';
     LT.ws = ws;
 
     ws.onmessage = (e) => {
+        if (gen !== LT.gen) return;
         if (typeof e.data === 'string') {
             let data;
             try { data = JSON.parse(e.data); } catch (_) { return; }
@@ -2048,6 +2135,7 @@ async function startLiveTalk() {
     };
 
     ws.onopen = async () => {
+        if (gen !== LT.gen) return;
         try {
             const cfg = { type: 'config' };
             if (model) cfg.model = model;
@@ -2056,71 +2144,66 @@ async function startLiveTalk() {
             ws.send(JSON.stringify(cfg));
         } catch (_) { /* ignore */ }
 
-        const ok = await startMic((chunk) => {
+        const ok = await MicManager.acquire('live', (chunk) => {
             // Always send audio: the server only runs VAD / PTT segmentation
             // on its end. This includes during 'speaking' so server-side
             // VAD can detect user barge-in.
-            if (LT.ws && LT.ws.readyState === WebSocket.OPEN) {
-                try { LT.ws.send(chunk.buffer); } catch (_) {}
+            if (ws.readyState === WebSocket.OPEN) {
+                try { ws.send(chunk.buffer); } catch (_) {}
             }
             updateLiveMeter(chunk);
             clientBargeInCheck(chunk);
         });
-        if (!ok) {
-            try { ws.close(); } catch (_) {}
-            LT.ws = null;
-            if (btn) btn.classList.remove('recording');
-            return;
-        }
+        if (gen !== LT.gen) return; // stopped while the permission prompt was open
+        if (!ok) { stopLiveTalk(); return; }
+        LT.phase = 'active';
         LT.active = true;
-        // Pre-initialize a dedicated playback AudioContext so the first
-        // TTS chunk doesn't pay resume() latency. Using the browser's
-        // default sample rate (44.1/48 kHz) avoids the 22050->16000
-        // resampling that caused first-chunk decode failures.
-        if (!LT.audioCtx) {
-            LT.audioCtx = new AudioContext();
-        }
-        // Reveal / hide the PTT button based on mode.
-        const pttBtn = $('livePttBtn');
-        if (pttBtn) pttBtn.style.display = LT.mode === 'push_to_talk' ? '' : 'none';
+        $('liveTabDot').hidden = false;
+        $('livePttBtn').hidden = LT.mode !== 'push_to_talk';
+        if (LT.ready) setLiveState('listening');
     };
 
     ws.onerror = () => {
-        showToast('Live Talk connection failed', 'error');
+        if (gen === LT.gen) showToast('Live Talk connection failed', 'error');
     };
 
     ws.onclose = () => {
-        if (LT.active) {
-            stopLiveTalk();
-        }
+        if (gen !== LT.gen) return;
+        const wasActive = LT.phase === 'active';
+        stopLiveTalk();
+        if (wasActive) showToast('Live Talk disconnected', 'warning');
     };
 }
 
 function stopLiveTalk() {
+    const interrupted = LT.turnActive || (Player.owner === 'live' && Player.busy());
+    LT.gen++;
+    LT.phase = 'idle';
     LT.active = false;
+    LT.ready = false;
+    cancelLivePlayback();
+    if (interrupted) markLastAssistantCancelled();
     LT.turnActive = false;
     LT.turnCancelled = false;
-    LT.pendingHeader = null;
     LT.sentencesInTurn = 0;
-    cancelLivePlayback();
-    stopMic();
-    if (LT.audioCtx) {
-        try { LT.audioCtx.close(); } catch (_) {}
-        LT.audioCtx = null;
-    }
+    LT.turn = null;
+    LT.currentAssistantEl = null;
+    LT.micRmsHistory.length = 0;
+    MicManager.release('live');
     if (LT.ws) {
-        try { LT.ws.onclose = null; LT.ws.close(); } catch (_) {}
+        try { LT.ws.close(); } catch (_) {}
         LT.ws = null;
     }
-    const btn = $('liveTalkMicBtn');
-    if (btn) btn.classList.remove('recording');
+    setLiveButton(false);
+    resetPttButton();
+    $('liveTabDot').hidden = true;
+    $('livePttBtn').hidden = true;
     setLiveState('idle');
-    const meter = $('liveMeterFill');
-    if (meter) meter.style.width = '0%';
+    $('liveMeterFill').style.width = '0%';
 }
 
 function toggleLiveTalk() {
-    if (LT.active) stopLiveTalk();
+    if (LT.phase !== 'idle') stopLiveTalk();
     else startLiveTalk();
 }
 
@@ -2131,25 +2214,26 @@ function sendLivePtt(kind) {
     } catch (_) {}
 }
 
-async function loadLiveTalkSelectors() {
-    // Live Talk shares the same ollama + voice catalogues as the Chat tab.
-    // The /v1/ollama/models and /v1/voices endpoints are already used by
-    // loadOllamaModels() / loadVoices(); we just mirror their results.
-    if (!S.voicesLoaded) await loadVoices();
-    if (!S.ollamaModelsLoaded) await loadOllamaModels();
-    // After the chat selectors have populated, copy their current option
-    // sets over so Live Talk offers the same choices. Using innerHTML of
-    // the source selects is safe here — they were built from server data
-    // that's already been escaped.
-    const chatModel = $('chatModel');
-    const liveModel = $('liveTalkModel');
-    if (chatModel && liveModel) liveModel.innerHTML = chatModel.innerHTML;
-    const chatVoice = $('chatVoice');
-    const liveVoice = $('liveTalkVoice');
-    if (chatVoice && liveVoice) liveVoice.innerHTML = chatVoice.innerHTML;
+function mirrorOptions(src, dst) {
+    const prev = dst.value;
+    dst.textContent = '';
+    [...src.options].forEach((o) => dst.appendChild(o.cloneNode(true)));
+    if (prev && [...dst.options].some((o) => o.value === prev)) dst.value = prev;
+    else dst.value = src.value;
 }
 
-// ─── 9. DASHBOARD ───────────────────────────────────────────
+async function loadLiveTalkSelectors() {
+    // Live Talk shares the same ollama + voice catalogues as the Chat tab.
+    // The /v1/ollama-models and /v1/voices endpoints are already used by
+    // loadOllamaModels() / loadVoices(); we just mirror their results and
+    // keep whatever the user had picked here.
+    if (!S.voicesLoaded) await loadVoices();
+    if (!S.ollamaModelsLoaded) await loadOllamaModels();
+    mirrorOptions($('chatModel'), $('liveTalkModel'));
+    mirrorOptions($('chatVoice'), $('liveTalkVoice'));
+}
+
+// ─── 12. DASHBOARD ──────────────────────────────────────────
 function startDashPolling() {
     refreshDashboard();
     if (S.dashPollId) return;
@@ -2163,87 +2247,132 @@ function stopDashPolling() {
     }
 }
 
-async function refreshDashboard() {
-    const [healthRes, modelsRes, statsRes] = await Promise.allSettled([
-        fetch('/health'),
-        fetch('/v1/models'),
-        fetch('/v1/stats'),
-    ]);
+function median(values) {
+    if (!values.length) return null;
+    const s = [...values].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+}
 
-    // Health
-    if (healthRes.status === 'fulfilled' && healthRes.value.ok) {
-        const data = await healthRes.value.json();
-        const ok = data.status === 'ok';
-        $('dashHealth').textContent = data.status;
-        $('dashHealth').className = 'dash-card-value ' + (ok ? 'ok' : 'err');
-        $('healthDot').className = 'health-dot ' + (ok ? 'ok' : 'err');
-        $('healthText').textContent = 'health: ' + data.status;
-    } else {
-        $('dashHealth').textContent = 'error';
-        $('dashHealth').className = 'dash-card-value err';
-        $('healthDot').className = 'health-dot err';
-        $('healthText').textContent = 'health: error';
+function applyHealth(status) {
+    const ok = status === 'ok';
+    $('dashHealth').textContent = status;
+    $('dashHealth').className = 'dash-card-value ' + (ok ? 'ok' : 'err');
+    $('healthDot').className = 'health-dot ' + (ok ? 'ok' : 'err');
+    $('healthText').textContent = 'health: ' + status;
+}
+
+async function fetchHealth() {
+    try {
+        const res = await fetch('/health');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        applyHealth(typeof data.status === 'string' ? data.status : 'error');
+    } catch (_) {
+        applyHealth('error');
     }
+}
 
-    // Models
-    if (modelsRes.status === 'fulfilled' && modelsRes.value.ok) {
-        const data = await modelsRes.value.json();
+// vox's own model report. Servers that answer /v1/models in the OpenAI list
+// shape keep the vox shape at /v1/vox/models; switch once and remember.
+async function fetchModels() {
+    try {
+        let res = await fetch(S.modelsUrl);
+        if (!res.ok) return null;
+        let data = await res.json();
+        if (data && data.object === 'list' && S.modelsUrl !== '/v1/vox/models') {
+            S.modelsUrl = '/v1/vox/models';
+            res = await fetch(S.modelsUrl);
+            if (!res.ok) return null;
+            data = await res.json();
+        }
+        return data;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function fetchStats() {
+    try {
+        const res = await fetch('/v1/stats');
+        if (!res.ok) return null;
+        return await res.json();
+    } catch (_) {
+        return null;
+    }
+}
+
+function renderLatency() {
+    const m = LT.metrics;
+    const box = $('dashLatency');
+    if (m.length === 0) {
+        box.innerHTML = '<span class="label">No turns yet</span>';
+        return;
+    }
+    let html = '';
+    CHIP_DEF.forEach(([key, label]) => {
+        const med = median(m.map((t) => t[key]).filter((v) => v != null));
+        html += '<div class="dash-row"><span class="label">' + label + '</span><span>' + (med == null ? '--' : Math.round(med) + ' ms') + '</span></div>';
+    });
+    html += '<div class="dash-row"><span class="label">turns measured</span><span>' + m.length + '</span></div>';
+    box.innerHTML = html;
+}
+
+async function refreshDashboard() {
+    const [, models, stats] = await Promise.all([fetchHealth(), fetchModels(), fetchStats()]);
+
+    if (models) {
         let html = '';
         const renderBackend = (label, info) => {
             if (info) {
                 const cls = info.loaded ? 'loaded' : 'not-loaded';
                 const detail = info.model ? info.model : info.name;
-                const size = info.size_mb ? ' (' + info.size_mb + 'MB)' : '';
+                const size = info.size_mb ? ' (' + escapeHtml(info.size_mb) + 'MB)' : '';
                 html += '<div class="dash-row"><span class="label">' + label + '</span><span><span class="dash-indicator ' + cls + '"></span>' + escapeHtml(detail) + size + '</span></div>';
             } else {
                 html += '<div class="dash-row"><span class="label">' + label + '</span><span><span class="dash-indicator not-loaded"></span>not loaded</span></div>';
             }
         };
-        renderBackend('stt', data.stt);
-        renderBackend('streaming', data.streaming_stt);
-        renderBackend('tts', data.tts);
-
-
-        if (data.ollama) {
-            const cls = data.ollama.connected ? 'loaded' : 'not-loaded';
-            const status = data.ollama.connected ? data.ollama.model_count + ' models' : 'offline';
+        renderBackend('stt', models.stt);
+        renderBackend('streaming', models.streaming_stt);
+        renderBackend('tts', models.tts);
+        if (models.ollama) {
+            const cls = models.ollama.connected ? 'loaded' : 'not-loaded';
+            const status = models.ollama.connected ? fmtInt(models.ollama.model_count) + ' models' : 'offline';
             html += '<div class="dash-row"><span class="label">ollama</span><span><span class="dash-indicator ' + cls + '"></span>' + status + '</span></div>';
         }
-
         $('dashModels').innerHTML = html;
-        updateStatusBar(data, null);
+        updateStatusBar(models, null);
     }
 
-    // Stats
-    if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
-        const data = await statsRes.value.json();
-        $('dashStats').innerHTML =
-            '<div class="dash-row"><span class="label">requests</span><span>' + data.requests + '</span></div>' +
-            '<div class="dash-row"><span class="label">transcriptions</span><span>' + data.transcriptions + '</span></div>' +
-            '<div class="dash-row"><span class="label">syntheses</span><span>' + data.syntheses + '</span></div>';
-        $('dashUptime').textContent = formatUptime(data.uptime_secs);
-        $('dashUptime').className = 'dash-card-value';
-        updateStatusBar(null, data);
+    if (stats) {
+        $('dashStats').innerHTML = ['requests', 'transcriptions', 'syntheses'].map((k) =>
+            '<div class="dash-row"><span class="label">' + k + '</span><span>' + fmtInt(stats[k]) + '</span></div>').join('');
+        $('dashUptime').textContent = formatUptime(stats.uptime_secs);
+        updateStatusBar(null, stats);
     }
+
+    renderLatency();
 }
 
 function formatUptime(secs) {
+    secs = Math.max(0, Math.floor(Number(secs) || 0));
     const h = Math.floor(secs / 3600);
     const m = Math.floor((secs % 3600) / 60);
     const s = secs % 60;
-    return String(h).padStart(1, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    return String(h) + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
 }
 
-// ─── 10. STATUS BAR ─────────────────────────────────────────
+// ─── 13. STATUS BAR ─────────────────────────────────────────
 function updateStatusBar(modelsData, statsData) {
     if (modelsData) {
         const sttLabel = modelsData.stt ? (modelsData.stt.model || modelsData.stt.name) : 'none';
         $('statusStt').textContent = 'stt: ' + sttLabel;
+        $('trackStt').textContent = modelsData.stt ? String(sttLabel) : 'speech to text';
         const ttsLabel = modelsData.tts ? (modelsData.tts.model || modelsData.tts.name) : 'none';
         $('statusTts').textContent = 'tts: ' + ttsLabel;
         const hasStreaming = !!modelsData.streaming_stt;
         $('statusStreaming').textContent = 'streaming: ' + (hasStreaming ? 'on' : 'off');
-        $('statusStreaming').style.color = hasStreaming ? 'var(--accent)' : '';
+        $('statusStreaming').classList.toggle('on', hasStreaming);
         if (modelsData.ollama) {
             const ollamaLabel = modelsData.ollama.connected
                 ? modelsData.ollama.model_count + ' models'
@@ -2252,24 +2381,16 @@ function updateStatusBar(modelsData, statsData) {
         }
     }
     if (statsData) {
-        S.uptimeBase = statsData.uptime_secs;
+        S.uptimeBase = Number(statsData.uptime_secs) || 0;
         S.uptimeReceivedAt = Date.now();
-        $('statusUptime').textContent = 'uptime: ' + formatUptime(statsData.uptime_secs);
+        $('statusUptime').textContent = 'uptime: ' + formatUptime(S.uptimeBase);
     }
 }
 
-// ─── 11. STATUS BAR POLLING ──────────────────────────────────
 async function refreshStatusBar() {
-    try {
-        const [modelsRes, statsRes] = await Promise.allSettled([
-            fetch('/v1/models'),
-            fetch('/v1/stats'),
-        ]);
-        if (modelsRes.status === 'fulfilled' && modelsRes.value.ok)
-            updateStatusBar(await modelsRes.value.json(), null);
-        if (statsRes.status === 'fulfilled' && statsRes.value.ok)
-            updateStatusBar(null, await statsRes.value.json());
-    } catch (_) {}
+    const [, models, stats] = await Promise.all([fetchHealth(), fetchModels(), fetchStats()]);
+    if (models) updateStatusBar(models, null);
+    if (stats) updateStatusBar(null, stats);
 }
 
 function tickUptime() {
@@ -2281,14 +2402,50 @@ function tickUptime() {
     }
 }
 
-// ─── 12. INIT ───────────────────────────────────────────────
+// ─── 14. THEME + HEADER ─────────────────────────────────────
+const THEMES = ['system', 'light', 'dark'];
+function applyTheme(theme) {
+    if (theme === 'light' || theme === 'dark') document.documentElement.setAttribute('data-theme', theme);
+    else { theme = 'system'; document.documentElement.removeAttribute('data-theme'); }
+    $('themeBtn').textContent = 'Theme: ' + theme;
+    $('themeBtn').setAttribute('aria-label', 'Colour theme: ' + theme);
+    $('themeBtn').dataset.theme = theme;
+    refreshColors();
+}
+
+function initLocalPill() {
+    const host = location.hostname;
+    const local = host === 'localhost' || host === '[::1]' || host === '::1' || /^127\./.test(host);
+    $('localPillLong').textContent = (local ? 'Runs on this machine' : 'Self-hosted') + ' · ' + location.host;
+    $('localPillShort').textContent = local ? 'Local' : 'Self-hosted';
+    $('localPill').title = local
+        ? 'Speech recognition and speech synthesis run on this computer'
+        : 'Audio is processed by the vox server at ' + location.host;
+}
+
+// ─── 15. INIT ───────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
+    initLocalPill();
+    TAPES.listen = createTape($('listenTape'));
+    TAPES.live = createTape($('liveTape'));
+    MicManager.stoppers = { listen: stopListening, chat: stopChatMic, live: stopLiveTalk };
+
+    // Theme: system → light → dark, remembered per browser.
+    let savedTheme = 'system';
+    try { savedTheme = localStorage.getItem(THEME_KEY) || 'system'; } catch (_e) {}
+    applyTheme(savedTheme);
+    $('themeBtn').addEventListener('click', () => {
+        const next = THEMES[(THEMES.indexOf($('themeBtn').dataset.theme) + 1) % THEMES.length];
+        applyTheme(next);
+        try { localStorage.setItem(THEME_KEY, next); } catch (_e) {}
+    });
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', refreshColors);
 
     // Listen tab
     $('listenMicBtn').addEventListener('click', toggleListening);
     $('clearTranscript').addEventListener('click', () => {
-        $('transcriptArea').innerHTML = '';
+        $('transcriptArea').textContent = '';
     });
     $('diarizeCheckbox').addEventListener('change', (e) => {
         const cbx = e.target;
@@ -2303,13 +2460,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 S.diarizationOn = true;
                 toggle.classList.add('on');
                 sendDiarizationConfig(true);
-                renderSpeakersSidebar();
+                renderSpeakersSidebar(true);
             });
         } else {
             S.diarizationOn = false;
             toggle.classList.remove('on');
             sendDiarizationConfig(false);
-            renderSpeakersSidebar();
+            renderSpeakersSidebar(true);
         }
     });
 
@@ -2320,7 +2477,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Chat tab
     $('chatSendBtn').addEventListener('click', () => sendChat($('chatInput').value.trim()));
     $('chatInput').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
             e.preventDefault();
             sendChat($('chatInput').value.trim());
         }
@@ -2328,67 +2485,89 @@ document.addEventListener('DOMContentLoaded', () => {
     $('chatMicBtn').addEventListener('click', toggleChatMic);
 
     // Live Talk tab
-    const liveMicBtn = $('liveTalkMicBtn');
-    if (liveMicBtn) liveMicBtn.addEventListener('click', toggleLiveTalk);
-    const liveCancelBtn = $('liveCancelBtn');
-    if (liveCancelBtn) liveCancelBtn.addEventListener('click', () => sendLiveCancel('client_request'));
-    const liveClearBtn = $('liveClearBtn');
-    if (liveClearBtn) liveClearBtn.addEventListener('click', () => {
+    $('liveTalkMicBtn').addEventListener('click', toggleLiveTalk);
+    $('liveCancelBtn').addEventListener('click', () => sendLiveCancel('client_request'));
+    $('liveClearBtn').addEventListener('click', () => {
         const area = $('liveTalkMessages');
-        if (area) area.innerHTML = '';
+        area.textContent = '';
+        area.appendChild(el('div', 'empty-hint', 'View cleared. The model still has this session’s history until you stop.'));
+        LT.currentAssistantEl = null;
+        if (LT.turn) LT.turn.metaEl = null;
     });
-    const liveModeSel = $('liveMode');
-    if (liveModeSel) liveModeSel.addEventListener('change', (e) => {
+    $('liveMode').addEventListener('change', (e) => {
         LT.mode = e.target.value === 'push_to_talk' ? 'push_to_talk' : 'vad';
-        const pttBtn = $('livePttBtn');
-        if (pttBtn) pttBtn.style.display = LT.mode === 'push_to_talk' ? '' : 'none';
+        if (LT.pttHeld) { sendLivePtt('end'); resetPttButton(); }
+        $('livePttBtn').hidden = !(LT.active && LT.mode === 'push_to_talk');
         // If already connected, send a config update (server may choose to
         // honor or ignore mid-session mode swap).
         if (LT.ws && LT.ws.readyState === WebSocket.OPEN) {
             try { LT.ws.send(JSON.stringify({ type: 'config', mode: LT.mode })); } catch (_) {}
         }
     });
-    const livePttBtn = $('livePttBtn');
-    if (livePttBtn) {
-        const pttStart = (ev) => {
-            if (ev) ev.preventDefault();
-            if (!LT.active || LT.pttHeld) return;
-            LT.pttHeld = true;
-            livePttBtn.classList.add('active');
-            sendLivePtt('start');
-        };
-        const pttEnd = (ev) => {
-            if (ev) ev.preventDefault();
-            if (!LT.pttHeld) return;
-            LT.pttHeld = false;
-            livePttBtn.classList.remove('active');
-            sendLivePtt('end');
-        };
-        livePttBtn.addEventListener('mousedown', pttStart);
-        livePttBtn.addEventListener('mouseup', pttEnd);
-        livePttBtn.addEventListener('mouseleave', pttEnd);
-        livePttBtn.addEventListener('touchstart', pttStart, { passive: false });
-        livePttBtn.addEventListener('touchend', pttEnd, { passive: false });
-    }
+
+    // Push to talk: pointer (mouse, touch, pen) and keyboard (Space / Enter).
+    const ptt = $('livePttBtn');
+    const pttStart = (ev) => {
+        if (ev) ev.preventDefault();
+        if (!LT.active || LT.pttHeld) return;
+        // Pressing to talk during a reply interrupts it.
+        if (LT.state === 'speaking' || LT.state === 'thinking') sendLiveCancel('client_request');
+        LT.pttHeld = true;
+        ptt.classList.add('active');
+        ptt.textContent = 'Release to send';
+        sendLivePtt('start');
+    };
+    const pttEnd = (ev) => {
+        if (ev) ev.preventDefault();
+        if (!LT.pttHeld) return;
+        resetPttButton();
+        sendLivePtt('end');
+        // The server has no "end of speech" event here yet; show the step locally.
+        if (LT.active && (LT.state === 'listening' || LT.state === 'cancelled')) setLiveState('transcribing');
+    };
+    ptt.addEventListener('pointerdown', (e) => {
+        if (e.button !== undefined && e.button > 0) return;
+        try { ptt.setPointerCapture(e.pointerId); } catch (_) {}
+        pttStart(e);
+    });
+    ptt.addEventListener('pointerup', pttEnd);
+    ptt.addEventListener('pointercancel', pttEnd);
+    ptt.addEventListener('lostpointercapture', pttEnd);
+    ptt.addEventListener('contextmenu', (e) => e.preventDefault());
+    ptt.addEventListener('keydown', (e) => {
+        if (e.code !== 'Space' && e.key !== 'Enter') return;
+        e.preventDefault();
+        if (!e.repeat) pttStart();
+    });
+    ptt.addEventListener('keyup', (e) => { if (e.code === 'Space' || e.key === 'Enter') pttEnd(e); });
+    ptt.addEventListener('blur', () => pttEnd());
 
     // Keyboard shortcut: Space toggles mic in Listen tab
     document.addEventListener('keydown', (e) => {
-        if (e.code === 'Space' && S.activeTab === 'listen') {
-            const tag = document.activeElement.tagName;
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-            e.preventDefault();
-            toggleListening();
-        }
+        if (e.code !== 'Space' || e.repeat || S.activeTab !== 'listen') return;
+        if (document.querySelector('dialog[open]')) return;
+        const active = document.activeElement;
+        const tag = active ? active.tagName : '';
+        // A focused control keeps its own Space behaviour (a focused mic button
+        // would otherwise toggle twice).
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'A') return;
+        e.preventDefault();
+        toggleListening();
     });
 
-    // Initial data load
+    window.addEventListener('resize', () => Object.values(TAPES).forEach((t) => t.resize()));
+    window.addEventListener('pagehide', () => { stopListening(); stopChatMic(); stopLiveTalk(); });
+
+    // Initial data load. Live Talk is the default tab, so its selectors load now.
+    renderSpeakersSidebar(true);
+    Object.values(TAPES).forEach((t) => t.resize());
     refreshDashboard();
-    loadOllamaModels();
+    loadLiveTalkSelectors().catch(() => {});
 
     // Status bar: poll server every 30s, tick uptime every 1s
-    refreshStatusBar();
     S.statusPollId = setInterval(refreshStatusBar, STATUS_POLL_INTERVAL);
     S.uptimeTickId = setInterval(tickUptime, 1000);
+    setInterval(tickTapes, REDUCED ? 240 : 60);
 });
 </script>
 </body>
