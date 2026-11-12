@@ -352,10 +352,21 @@ pub async fn synthesize(
 pub async fn vox_models_response(state: &ServerState) -> ModelsResponse {
     // Check Ollama connectivity, bounded so a hung Ollama cannot stall the UI.
     let ollama = {
-        let url = format!("http://{}/api/tags", state.ollama_host);
-        let request = state.http_client.get(&url).timeout(OLLAMA_TAGS_TIMEOUT);
-        match request.send().await {
-            Ok(resp) if resp.status().is_success() => {
+        let request =
+            vox::privacy::ollama_request(&state.ollama_host, "/api/tags", "llm status check", 0);
+        let response = match &request {
+            Ok((url, _)) => {
+                let request = state.http_client.get(url).timeout(OLLAMA_TAGS_TIMEOUT);
+                request.send().await.ok()
+            }
+            // Refused by offline mode: reported as not connected.
+            Err(_) => None,
+        };
+        match response {
+            Some(resp) if resp.status().is_success() => {
+                if let (Ok((_, egress)), Some(len)) = (&request, resp.content_length()) {
+                    egress.add_received(len);
+                }
                 let body: serde_json::Value = resp.json().await.unwrap_or_default();
                 let count = body["models"].as_array().map(|a| a.len()).unwrap_or(0);
                 Some(OllamaStatus {
@@ -579,6 +590,12 @@ fn ollama_send_error(host: &str, err: &reqwest::Error) -> ServerError {
     }
 }
 
+/// An Ollama request refused by offline mode: 403 `offline_mode`.
+fn offline_denied(err: vox::privacy::EgressDenied) -> ServerError {
+    tracing::warn!("{err}");
+    ServerError::forbidden(err.to_string()).with_code("offline_mode")
+}
+
 /// Log (truncated) what an upstream said without handing it to the client:
 /// upstream bodies can carry internal paths, and with a mis-pointed
 /// `--ollama-host` they are whatever that other service returns.
@@ -610,7 +627,6 @@ pub async fn chat(
         &state.capabilities,
     );
 
-    let url = format!("http://{host}/api/generate");
     let body = OllamaRequest {
         model: model.clone(),
         prompt: req.text,
@@ -619,6 +635,13 @@ pub async fn chat(
         keep_alive: vox::conversation::OLLAMA_KEEP_ALIVE,
         options: vox::conversation::ollama_options(),
     };
+    let (url, egress) = vox::privacy::ollama_request(
+        host,
+        "/api/generate",
+        "llm chat",
+        vox::privacy::json_len(&body),
+    )
+    .map_err(offline_denied)?;
 
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -639,6 +662,7 @@ pub async fn chat(
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
+        egress.add_received(text.len() as u64);
         log_upstream_body(&format!("Ollama returned HTTP {status}"), &text);
         return Err(if status == reqwest::StatusCode::NOT_FOUND {
             ServerError::not_found(format!(
@@ -661,6 +685,8 @@ pub async fn chat(
         }
     })?;
 
+    egress.add_received(body.len() as u64);
+
     let ollama_resp: OllamaResponse = serde_json::from_str(&body).map_err(|e| {
         log_upstream_body(&format!("invalid Ollama response: {e}"), &body);
         ServerError::bad_gateway("Ollama returned an invalid response")
@@ -677,7 +703,9 @@ pub async fn chat(
 pub async fn ollama_models(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ServerError> {
-    let url = format!("http://{}/api/tags", state.ollama_host);
+    let (url, egress) =
+        vox::privacy::ollama_request(&state.ollama_host, "/api/tags", "llm model list", 0)
+            .map_err(offline_denied)?;
 
     let resp = state
         .http_client
@@ -686,6 +714,7 @@ pub async fn ollama_models(
         .send()
         .await
         .map_err(|e| ollama_send_error(&state.ollama_host, &e))?;
+    egress.add_received(resp.content_length().unwrap_or(0));
 
     if !resp.status().is_success() {
         return Err(ServerError::bad_gateway(format!(
@@ -734,20 +763,27 @@ pub async fn ollama_models(
         }
     }
 
-    let show_url = format!("http://{}/api/show", state.ollama_host);
     let client = state.http_client.clone();
 
     // Probe untrusted candidates in parallel, with a global 3s budget.
     let probes = candidates.into_iter().map(|(name, size, trusted)| {
         let client = client.clone();
-        let show_url = show_url.clone();
+        let host = state.ollama_host.clone();
         async move {
             if trusted {
                 return Some(OllamaModelInfo { name, size });
             }
+            let show_body = serde_json::json!({ "name": name.clone() });
+            let (show_url, egress) = vox::privacy::ollama_request(
+                &host,
+                "/api/show",
+                "llm model details",
+                vox::privacy::json_len(&show_body),
+            )
+            .ok()?;
             let req = client
                 .post(&show_url)
-                .json(&serde_json::json!({ "name": name.clone() }))
+                .json(&show_body)
                 .timeout(OLLAMA_SHOW_TIMEOUT)
                 .send();
             // Per-probe cap (2s) on top of client timeout — keeps the overall
@@ -755,6 +791,7 @@ pub async fn ollama_models(
             let result = tokio::time::timeout(Duration::from_secs(2), req).await;
             let has_template = match result {
                 Ok(Ok(r)) => {
+                    egress.add_received(r.content_length().unwrap_or(0));
                     let info_fut = r.json::<serde_json::Value>();
                     tokio::time::timeout(Duration::from_secs(1), info_fut)
                         .await

@@ -7,6 +7,7 @@ pub mod listen;
 pub mod models;
 pub mod speak;
 pub mod test;
+pub mod tune;
 
 #[cfg(feature = "server")]
 pub mod serve;

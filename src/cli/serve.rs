@@ -61,6 +61,8 @@ pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
 
     // Refuse an exposed bind address before downloading or loading anything.
     crate::server::check_bind_host(&args.host, server_opts.allow_remote)?;
+    // Offline mode: refuse a remote Ollama before downloading or loading anything.
+    vox::privacy::ensure_ollama_host_allowed(&server_opts.resolved_ollama_host())?;
 
     // Reject an unknown language up front instead of starting a server
     // whose STT silently failed to load.

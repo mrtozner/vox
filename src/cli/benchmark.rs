@@ -8,7 +8,8 @@ use vox::{SileroVad, WhisperBackend};
 
 #[cfg(feature = "kokoro")]
 const TEST_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
-const TEST_AUDIO_DURATION_MS: u64 = 3000; // 3 seconds of silence for VAD/STT test
+/// Length of the silent fallback clip used when no speech can be synthesized.
+const SILENCE_DURATION_MS: u64 = 3000;
 
 /// Run the benchmark command.
 pub async fn run(yes: bool) -> anyhow::Result<()> {
@@ -100,22 +101,50 @@ async fn benchmark_stt_whisper(yes: bool) -> anyhow::Result<()> {
     let load_time = load_start.elapsed();
     println!("{}ms", load_time.as_millis());
 
-    // Create 3 seconds of silence for testing (48000 samples at 16kHz)
+    // Whisper returns early on silence, so a silent clip reports a speed no
+    // real utterance reaches. Transcribe a spoken sentence when a TTS backend
+    // is available to produce one.
+    let sample = super::tune::english_sample(yes).await;
+    let (samples, reference) = match sample {
+        Some(sample) => {
+            println!(
+                "  Audio: {:.1} s of speech ({})",
+                sample.duration_ms() as f64 / 1000.0,
+                sample.source
+            );
+            (sample.samples, sample.reference)
+        }
+        None => {
+            println!(
+                "  Audio: {} s of SILENCE, because no TTS model is installed to synthesize speech.",
+                SILENCE_DURATION_MS / 1000
+            );
+            println!("         Real speech is slower than this; `vox tune` measures it properly.");
+            (vec![0.0f32; (SILENCE_DURATION_MS * 16) as usize], None)
+        }
+    };
+    let test_audio_duration_ms = samples.len() as u64 * 1000 / 16_000;
     let test_utterance = Utterance {
         audio: AudioChunk {
-            samples: vec![0.0f32; 48000],
+            samples,
             sample_rate: 16000,
             channels: 1,
         },
-        duration_ms: TEST_AUDIO_DURATION_MS,
+        duration_ms: test_audio_duration_ms,
         #[cfg(feature = "diarization")]
         speaker_id: None,
     };
 
     // Warmup
     print!("  Warmup... ");
-    let _ = stt.transcribe(&test_utterance).await;
+    let warmup = stt.transcribe(&test_utterance).await;
     println!("done");
+    if let (Some(reference), Ok(result)) = (&reference, &warmup) {
+        println!(
+            "  Words correct: {:.0}%",
+            super::tune::word_accuracy(reference, &result.text) * 100.0
+        );
+    }
 
     // Benchmark 10 iterations
     print!("  Processing 10 iterations... ");
@@ -128,8 +157,7 @@ async fn benchmark_stt_whisper(yes: bool) -> anyhow::Result<()> {
     println!("{}ms per transcription (avg)", avg_time);
 
     // Calculate RTFx: wall-clock time / audio duration
-    // Each audio is 3 seconds, so 10 iterations = 30 seconds
-    let audio_duration_ms = TEST_AUDIO_DURATION_MS * 10;
+    let audio_duration_ms = (test_audio_duration_ms * 10).max(1);
     let rtfx = process_time.as_secs_f64() * 1000.0 / audio_duration_ms as f64;
     println!(
         "  RTFx: {:.4} ({}x real-time speed)",

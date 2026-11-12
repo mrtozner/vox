@@ -11,7 +11,7 @@ use super::access::AccessPolicy;
 use super::error::ServerError;
 
 /// Default Ollama address when neither `--ollama-host` nor `VOX_OLLAMA_HOST` is set.
-pub const DEFAULT_OLLAMA_HOST: &str = "localhost:11434";
+pub const DEFAULT_OLLAMA_HOST: &str = vox::privacy::DEFAULT_OLLAMA_HOST;
 
 /// Shared server state accessible from all handlers.
 ///
@@ -301,17 +301,7 @@ impl ServerOptions {
 /// `http://{host}/api/...` URLs, so a scheme, path or trailing slash typed by
 /// the operator would otherwise produce a broken URL.
 pub fn normalize_ollama_host(raw: &str) -> String {
-    let s = raw.trim();
-    let s = s
-        .strip_prefix("http://")
-        .or_else(|| s.strip_prefix("https://"))
-        .unwrap_or(s);
-    let s = s.split('/').next().unwrap_or(s).trim();
-    if s.is_empty() {
-        DEFAULT_OLLAMA_HOST.to_string()
-    } else {
-        s.to_string()
-    }
+    vox::privacy::normalize_ollama_host(raw)
 }
 
 /// Cumulative request counters.

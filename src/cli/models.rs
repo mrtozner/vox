@@ -672,6 +672,8 @@ async fn fetch_to_part(model: &ModelInfo, part: &Path) -> anyhow::Result<()> {
     if offset == model.size_bytes {
         return Ok(()); // Fully downloaded earlier; only verification is left.
     }
+    // The only place a model is fetched: refused in offline mode, recorded otherwise.
+    let egress = vox::privacy::download_request(model.url, model.name)?;
 
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -688,6 +690,7 @@ async fn fetch_to_part(model: &ModelInfo, part: &Path) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Download failed: {e}"))?;
 
+    egress.served_by(response.url().as_str());
     let status = response.status();
     if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
         let _ = tokio::fs::remove_file(part).await;
@@ -743,6 +746,7 @@ async fn fetch_to_part(model: &ModelInfo, part: &Path) -> anyhow::Result<()> {
             )
         })?;
 
+        egress.add_received(chunk.len() as u64);
         written += chunk.len() as u64;
         if written > model.size_bytes {
             drop(file);
