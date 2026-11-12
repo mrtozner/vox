@@ -9,9 +9,10 @@
 //! ```
 
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
+use vox::audio::{AudioCapture, AudioResampler};
 use vox::diarization::{RecognitionConfig, SpeakerDatabase, SpeakerRegistry};
-use vox::{SileroVad, Vox, VoxContext, WhisperBackend};
+use vox::{AudioChunk, SileroVad, SttBackend, Utterance, VadBackend, VadEvent, WhisperBackend};
 
 /// Extract voice characteristics as a simple embedding
 fn extract_voice_features(audio: &[f32]) -> Vec<f32> {
@@ -73,8 +74,8 @@ fn normalize_vector(vec: &[f32]) -> Vec<f32> {
 }
 
 struct SpeakerUI {
-    registry: Arc<Mutex<SpeakerRegistry>>,
-    db: Arc<Mutex<SpeakerDatabase>>,
+    registry: Mutex<SpeakerRegistry>,
+    db: SpeakerDatabase,
 }
 
 impl SpeakerUI {
@@ -83,8 +84,8 @@ impl SpeakerUI {
             threshold: 0.65, // Lower threshold for simplified features
             require_threshold: true,
         };
-        let registry = Arc::new(Mutex::new(SpeakerRegistry::with_config(config)));
-        let db = Arc::new(Mutex::new(SpeakerDatabase::open("speakers_live.db").await?));
+        let registry = Mutex::new(SpeakerRegistry::with_config(config));
+        let db = SpeakerDatabase::open("speakers_live.db").await?;
 
         Ok(Self { registry, db })
     }
@@ -95,25 +96,17 @@ impl SpeakerUI {
 
         let id = format!("speaker_{}", name.to_lowercase().replace(' ', "_"));
 
-        {
+        // Enroll in memory, then clone the record out so the registry lock is
+        // released before the database write is awaited.
+        let speaker = {
             let mut reg = self.registry.lock().unwrap();
             reg.enroll(&id, name, embedding)?;
-        }
-
-        // Store in database
-        let speaker = {
-            let reg = self.registry.lock().unwrap();
-            reg.list_speakers()
-                .into_iter()
-                .find(|s| s.id == id)
+            reg.get_speaker(&id)
+                .cloned()
                 .expect("Just enrolled speaker should exist")
         };
 
-        {
-            let db = self.db.lock().unwrap();
-            let runtime = tokio::runtime::Handle::current();
-            runtime.block_on(async { db.store_speaker(&speaker).await })?;
-        }
+        self.db.store_speaker(&speaker).await?;
 
         Ok(())
     }
@@ -152,17 +145,100 @@ impl SpeakerUI {
         duration_ms: u64,
     ) -> anyhow::Result<()> {
         let id = format!("speaker_{}", speaker_name.to_lowercase().replace(' ', "_"));
-
-        let db = self.db.lock().unwrap();
-        let runtime = tokio::runtime::Handle::current();
-        runtime.block_on(async { db.record_utterance(&id, duration_ms, Some(text)).await })?;
-
+        self.db
+            .record_utterance(&id, duration_ms, Some(text))
+            .await?;
         Ok(())
     }
 
     fn list_speakers(&self) -> Vec<String> {
         let reg = self.registry.lock().unwrap();
         reg.list_speakers().iter().map(|s| s.name.clone()).collect()
+    }
+}
+
+/// Microphone → 16 kHz mono → VAD. Yields one utterance at a time.
+///
+/// The `Vox` engine callback only hands out the transcript, and speaker
+/// identification needs the utterance audio, so this demo drives capture and
+/// VAD itself.
+struct Mic {
+    _capture: AudioCapture,
+    rx: tokio::sync::mpsc::Receiver<AudioChunk>,
+    resampler: Option<AudioResampler>,
+    vad: SileroVad,
+    pending: Vec<f32>,
+}
+
+impl Mic {
+    fn open(vad: SileroVad) -> anyhow::Result<Self> {
+        let (capture, rx) = AudioCapture::new(16000, 1)?;
+        capture.start()?;
+        Ok(Self {
+            _capture: capture,
+            rx,
+            resampler: None,
+            vad,
+            pending: Vec::new(),
+        })
+    }
+
+    /// Throw away audio captured while the user was reading prompts.
+    fn flush(&mut self) {
+        while self.rx.try_recv().is_ok() {}
+        self.pending.clear();
+        self.vad.reset();
+    }
+
+    /// Wait for the next complete utterance. Returns `None` if nothing was
+    /// said within `timeout` or the capture device went away.
+    async fn next_utterance(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<Option<Utterance>> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let frame_size = self.vad.frame_size();
+        let mut speaking = false;
+
+        loop {
+            // Never cut off an utterance that is already in progress.
+            let chunk = if speaking {
+                self.rx.recv().await
+            } else {
+                match tokio::time::timeout_at(deadline, self.rx.recv()).await {
+                    Ok(chunk) => chunk,
+                    Err(_) => return Ok(None),
+                }
+            };
+            let Some(chunk) = chunk else {
+                return Ok(None);
+            };
+
+            if self.resampler.is_none() {
+                self.resampler = Some(AudioResampler::new(chunk.sample_rate, 16000)?);
+            }
+            let resampled = self
+                .resampler
+                .as_mut()
+                .expect("resampler initialized above")
+                .process(&chunk)?;
+            self.pending.extend_from_slice(&resampled.samples);
+
+            while self.pending.len() >= frame_size {
+                let frame = AudioChunk {
+                    samples: self.pending.drain(..frame_size).collect(),
+                    sample_rate: 16000,
+                    channels: 1,
+                };
+                for event in self.vad.process_frame(&frame).await? {
+                    match event {
+                        VadEvent::SpeechStart => speaking = true,
+                        VadEvent::SpeechEnd(utterance) => return Ok(Some(utterance)),
+                        VadEvent::Silence => {}
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -189,7 +265,7 @@ async fn main() -> anyhow::Result<()> {
     let stt = WhisperBackend::from_model(stt_model)?;
     println!("✅ Models loaded\n");
 
-    let speaker_ui = Arc::new(SpeakerUI::new().await?);
+    let speaker_ui = SpeakerUI::new().await?;
 
     // Check for existing speakers
     let existing_speakers = speaker_ui.list_speakers();
@@ -213,11 +289,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\nGreat! I'll enroll {} speaker(s).\n", num_speakers);
 
-    let speaker_ui_clone = Arc::clone(&speaker_ui);
-
-    // Callback for enrollment
-    let enrollment_samples: Arc<Mutex<Vec<(String, Vec<f32>)>>> = Arc::new(Mutex::new(Vec::new()));
-    let enrollment_samples_clone = Arc::clone(&enrollment_samples);
+    let mut mic = Mic::open(vad)?;
 
     for i in 0..num_speakers {
         println!("👤 SPEAKER {} ENROLLMENT", i + 1);
@@ -242,44 +314,22 @@ async fn main() -> anyhow::Result<()> {
 
         println!("🔴 Recording... (speak now!)");
 
-        let enrollment_samples_capture = Arc::clone(&enrollment_samples_clone);
-        let name_capture = name.clone();
-
-        let vox_enrollment = Vox::builder()
-            .vad(SileroVad::new(vad_model)?)
-            .stt(WhisperBackend::from_model(stt_model)?)
-            .on_utterance(move |result, ctx| {
-                println!("   ✓ Captured: \"{}\"", result.text);
-
-                // Store the audio sample
-                let audio_samples = ctx
-                    .last_utterance
-                    .as_ref()
-                    .map(|u| u.audio.samples.clone())
-                    .unwrap_or_default();
-
-                enrollment_samples_capture
-                    .lock()
-                    .unwrap()
-                    .push((name_capture.clone(), audio_samples));
-            })
-            .build()?;
-
         // Listen for one utterance
-        tokio::select! {
-            _ = vox_enrollment.listen() => {},
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
-                println!("   ⏱️  Timeout - moving on");
+        mic.flush();
+        match mic
+            .next_utterance(std::time::Duration::from_secs(10))
+            .await?
+        {
+            Some(utterance) => {
+                let result = stt.transcribe(&utterance).await?;
+                println!("   ✓ Captured: \"{}\"", result.text);
+                speaker_ui
+                    .enroll_speaker(&name, &utterance.audio.samples)
+                    .await?;
+                println!("   ✅ {} enrolled!\n", name);
             }
+            None => println!("   ⏱️  Timeout - moving on"),
         }
-
-        // Process enrollment
-        let samples = enrollment_samples.lock().unwrap();
-        if let Some((speaker_name, audio)) = samples.last() {
-            speaker_ui.enroll_speaker(speaker_name, audio).await?;
-            println!("   ✅ {} enrolled!\n", speaker_name);
-        }
-        drop(samples);
     }
 
     println!("💾 All speakers enrolled!\n");
@@ -291,75 +341,71 @@ async fn main() -> anyhow::Result<()> {
     println!("Take turns speaking naturally.\n");
     println!("Press Ctrl+C to stop.\n");
 
-    // Set up UI display
-    let speaker_ui_identify = Arc::clone(&speaker_ui_clone);
+    println!("🎧 Listening for speakers...\n");
+    mic.flush();
 
-    let vox = Vox::builder()
-        .vad(vad)
-        .stt(stt)
-        .on_utterance(move |result, ctx| {
-            let audio_samples = ctx
-                .last_utterance
-                .as_ref()
-                .map(|u| u.audio.samples.clone())
-                .unwrap_or_default();
+    loop {
+        let utterance = tokio::select! {
+            next = mic.next_utterance(std::time::Duration::from_secs(3600)) => next?,
+            _ = tokio::signal::ctrl_c() => break,
+        };
+        // No speech for an hour, or the capture device went away.
+        let Some(utterance) = utterance else {
+            break;
+        };
+        let audio_samples = &utterance.audio.samples;
+        if audio_samples.is_empty() {
+            continue;
+        }
 
-            if audio_samples.is_empty() {
-                return;
-            }
+        let result = stt.transcribe(&utterance).await?;
 
-            match speaker_ui_identify.identify_speaker(&audio_samples) {
-                Ok((speaker_name, confidence)) => {
-                    // UI Display
-                    let confidence_bar = {
-                        let filled = (confidence * 10.0) as usize;
-                        let empty = 10 - filled;
-                        format!("{}{}", "█".repeat(filled), "░".repeat(empty))
-                    };
+        match speaker_ui.identify_speaker(audio_samples) {
+            Ok((speaker_name, confidence)) => {
+                // UI Display
+                let confidence_bar = {
+                    let filled = (confidence.clamp(0.0, 1.0) * 10.0) as usize;
+                    let empty = 10 - filled;
+                    format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+                };
 
-                    let color = if confidence > 0.8 {
-                        "\x1b[32m" // Green for high confidence
-                    } else if confidence > 0.65 {
-                        "\x1b[33m" // Yellow for medium confidence
-                    } else {
-                        "\x1b[90m" // Gray for low confidence
-                    };
+                let color = if confidence > 0.8 {
+                    "\x1b[32m" // Green for high confidence
+                } else if confidence > 0.65 {
+                    "\x1b[33m" // Yellow for medium confidence
+                } else {
+                    "\x1b[90m" // Gray for low confidence
+                };
 
-                    println!("\n┌─────────────────────────────────────────────────────────┐");
-                    println!(
-                        "│ 🎤 Speaker: {}{:20}\x1b[0m                       │",
-                        color, speaker_name
-                    );
-                    println!(
-                        "│ 📊 Confidence: {} {:.0}%                         │",
-                        confidence_bar,
-                        confidence * 100.0
-                    );
-                    println!("└─────────────────────────────────────────────────────────┘");
-                    println!("💬 {}: \"{}\"", speaker_name, result.text);
-                    println!();
+                println!("\n┌─────────────────────────────────────────────────────────┐");
+                println!(
+                    "│ 🎤 Speaker: {}{:20}\x1b[0m                       │",
+                    color, speaker_name
+                );
+                println!(
+                    "│ 📊 Confidence: {} {:.0}%                         │",
+                    confidence_bar,
+                    confidence * 100.0
+                );
+                println!("└─────────────────────────────────────────────────────────┘");
+                println!("💬 {}: \"{}\"", speaker_name, result.text);
+                println!();
 
-                    // Record in database
-                    if speaker_name != "Unknown" {
-                        let duration_ms = (audio_samples.len() as f64 / 16000.0 * 1000.0) as u64;
-                        let ui = Arc::clone(&speaker_ui_identify);
-                        let text = result.text.clone();
-                        let name = speaker_name.clone();
-
-                        tokio::spawn(async move {
-                            let _ = ui.record_utterance(&name, &text, duration_ms).await;
-                        });
+                // Record in database
+                if speaker_name != "Unknown" {
+                    if let Err(e) = speaker_ui
+                        .record_utterance(&speaker_name, &result.text, utterance.duration_ms)
+                        .await
+                    {
+                        eprintln!("❌ Failed to record utterance: {}", e);
                     }
                 }
-                Err(e) => {
-                    eprintln!("❌ Identification error: {}", e);
-                }
             }
-        })
-        .build()?;
-
-    println!("🎧 Listening for speakers...\n");
-    vox.listen().await?;
+            Err(e) => {
+                eprintln!("❌ Identification error: {}", e);
+            }
+        }
+    }
 
     Ok(())
 }
