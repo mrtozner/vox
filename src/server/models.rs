@@ -184,17 +184,6 @@ pub enum ConverseWsEvent {
     Error { message: String },
 }
 
-/// Model cache statistics response.
-#[derive(Debug, Serialize)]
-pub struct CacheStatsResponse {
-    pub enabled: bool,
-    pub entries: usize,
-    pub max_entries: usize,
-    pub hits: u64,
-    pub misses: u64,
-    pub hit_rate: f64,
-}
-
 // ─── Live Talk (/v1/live-talk) ───────────────────────────────
 
 /// JSON events sent from server to client on `/v1/live-talk`.

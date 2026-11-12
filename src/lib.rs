@@ -29,8 +29,6 @@
 pub mod audio;
 pub mod engine;
 pub mod error;
-pub mod model_cache;
-pub mod streaming_pipeline;
 pub mod stt;
 pub mod traits;
 pub mod tts;
@@ -57,7 +55,6 @@ pub mod system_profile;
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
-pub use model_cache::{CacheKey, CacheStats, ModelCache};
 pub use traits::{
     StreamingSttBackend, StreamingTtsBackend, SttBackend, SttSession, TtsBackend, TtsChunk,
     TtsSession, VadBackend, VadEvent,

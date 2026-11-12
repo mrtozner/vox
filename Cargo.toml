@@ -124,11 +124,6 @@ path = "tests/wav_safety_tests.rs"
 required-features = ["server"]
 
 [[test]]
-name = "streaming_pipeline_tests"
-path = "tests/streaming_pipeline_tests.rs"
-required-features = ["whisper", "silero"]
-
-[[test]]
 name = "capabilities_tests"
 path = "tests/capabilities_tests.rs"
 required-features = ["server"]
@@ -176,16 +171,8 @@ required-features = ["chatterbox"]
 name = "tts_comparison_bench"
 harness = false
 
-[[bench]]
-name = "streaming_pipeline_bench"
-harness = false
-
 [[example]]
 name = "simple_listen"
-required-features = ["whisper", "silero"]
-
-[[example]]
-name = "streaming_pipeline_demo"
 required-features = ["whisper", "silero"]
 
 [[example]]

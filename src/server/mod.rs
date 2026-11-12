@@ -42,7 +42,7 @@ pub use state::{ServerState, ServerStats};
 /// the corresponding endpoints return 503 until models are available.
 ///
 /// # Arguments
-/// - `cache_models`: Enable model caching (disabled by default for backwards compatibility)
+/// - `cache_models`: deprecated, ignored (kept so `vox serve --cache-models` still parses)
 pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()> {
     // Use the single source of truth for model resolution -- repo-relative
     // by default, overridable via `VOX_MODELS_DIR`. Mirrors the logic in
@@ -51,13 +51,12 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
     let models_dir = resolve_models_dir();
     info!(dir = %models_dir.display(), "server using models directory");
 
-    // Initialize model cache if enabled
-    let model_cache = if cache_models {
-        info!("model caching enabled (--cache-models)");
-        Some(vox::ModelCache::new(3)) // LRU cache with max 3 models
-    } else {
-        None
-    };
+    // `--cache-models` used to construct a `ModelCache` that nothing ever
+    // read from or wrote to. The cache is gone; the flag is accepted and
+    // ignored so existing invocations keep working.
+    if cache_models {
+        tracing::warn!("--cache-models is deprecated and has no effect");
+    }
 
     #[cfg(feature = "whisper")]
     let (stt, stt_model_name, stt_model_size): (
@@ -250,7 +249,6 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
         stt_model_size,
         tts_model_name,
         tts_model_size,
-        model_cache,
         capabilities,
         #[cfg(feature = "diarization")]
         diarization,
@@ -268,7 +266,6 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
         .route("/v1/synthesize", post(handlers::synthesize))
         .route("/v1/models", get(handlers::models))
         .route("/v1/stats", get(handlers::stats))
-        .route("/v1/cache/stats", get(handlers::cache_stats))
         .route("/health", get(handlers::health))
         .route("/v1/listen", get(ws_listen::listen_ws))
         .route("/v1/speak", get(ws_speak::speak_ws))
@@ -295,7 +292,6 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
     println!("    POST /v1/synthesize  — text-to-speech (JSON body)");
     println!("    GET  /v1/models      — list loaded backends");
     println!("    GET  /v1/stats       — server statistics");
-    println!("    GET  /v1/cache/stats — model cache statistics");
     println!("    WS   /v1/listen       — real-time voice transcription");
     println!("    WS   /v1/speak        — streaming text-to-speech");
     println!("    WS   /v1/converse     — continuous voice chat (VAD+STT+LLM+TTS)");

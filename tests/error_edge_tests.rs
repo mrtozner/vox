@@ -42,7 +42,7 @@ fn test_state() -> Arc<ServerState> {
         tts_model_name: None,
         tts_model_size: None,
         streaming_stt: None,
-        model_cache: None,
+        conversation_tts: None,
         capabilities: Arc::new(vox::CapabilityRegistry::default()),
         #[cfg(feature = "diarization")]
         diarization: None,
@@ -377,7 +377,7 @@ mod wav_decoding {
             tts_model_name: None,
             tts_model_size: None,
             streaming_stt: None,
-            model_cache: None,
+            conversation_tts: None,
             capabilities: Arc::new(vox::CapabilityRegistry::default()),
             #[cfg(feature = "diarization")]
             diarization: None,

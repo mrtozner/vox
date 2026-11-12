@@ -28,7 +28,6 @@ pub struct ServerState {
     pub stt_model_size: Option<u64>,
     pub tts_model_name: Option<String>,
     pub tts_model_size: Option<u64>,
-    pub model_cache: Option<vox::ModelCache>,
     pub capabilities: Arc<vox::CapabilityRegistry>,
     #[cfg(feature = "diarization")]
     pub diarization: Option<Arc<vox::DiarizationPipeline>>,
