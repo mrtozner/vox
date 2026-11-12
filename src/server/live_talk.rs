@@ -41,6 +41,15 @@
 //!   turn is also written to the [`MemoryStore`], and the first message of
 //!   theirs in a session carries a block of what is remembered about them.
 //!   Unidentified speakers are never written.
+//! - **Distill on evict.** When a finished turn pushes older turns out of
+//!   the context window, the local model is asked, in the pause that
+//!   follows, what in those turns is worth keeping about each person who
+//!   has memory on; the answer is stored as facts and reported with
+//!   `memory_distilled`. It runs right after a trim because the model's
+//!   cached prompt prefix is void at that moment anyway. It never competes
+//!   with the conversation: the user starting to speak, a `cancel`,
+//!   `ptt_start`, `forget_memory` or the socket closing aborts the request,
+//!   and the turns go back in the queue for the next trim.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -56,9 +65,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use vox::conversation::{RecallNeed, SessionStore, SharedConversation, SpeakerLabel, UserMessage};
+use vox::conversation::{
+    ChatMessage, EvictedTurn, RecallNeed, SessionStore, SharedConversation, SpeakerLabel,
+    UserMessage,
+};
 use vox::diarization::IdentifyMode;
-use vox::memory::{ExchangeRef, MemoryStore};
+use vox::memory::{ExchangeRef, HeardExchange, MemoryStore};
 use vox::streaming_chat::{StopReason, StreamOptions};
 
 use super::ServerState;
@@ -98,6 +110,27 @@ pub const DEFAULT_IDENTIFY_GRACE: Duration = Duration::from_millis(150);
 /// Longest wait for the lookup of what is remembered about a speaker. It is
 /// a local database read; when it takes longer the turn goes on without.
 const RECALL_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Stored facts shown to the model in a distillation request, so it does
+/// not repeat them.
+const DISTILL_KNOWN_FACTS: u32 = 40;
+
+/// A distillation reply is a handful of short lines. One that grows past
+/// this is cut off and read as far as it got.
+const MAX_DISTILL_REPLY_BYTES: usize = 4_000;
+
+/// Environment variable that switches distillation of trimmed turns off
+/// (`0`, `false`, `off` or `no`).
+pub const DISTILL_ENV: &str = "VOX_MEMORY_DISTILL";
+
+/// Whether trimmed turns are distilled, from [`DISTILL_ENV`]. On by default.
+pub fn distill_enabled_from_env() -> bool {
+    let value = std::env::var(DISTILL_ENV).unwrap_or_default();
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "no"
+    )
+}
 
 /// Model used when the client names none.
 const DEFAULT_MODEL: &str = "llama3.2";
@@ -230,6 +263,9 @@ pub struct LiveTalkDeps {
     /// ready. The lookup runs alongside transcription, so this is extra
     /// latency only when identification is the slower of the two.
     pub identify_grace: Duration,
+    /// Distill turns that were trimmed out of the context into long-term
+    /// facts while the session is idle. Needs `memory`.
+    pub distill: bool,
 }
 
 /// Upgrade HTTP connection to Live Talk WebSocket. Returns 503 if STT/TTS/VAD unavailable.
@@ -322,6 +358,7 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
             speakers,
             memory: state.speaker_db.as_deref().map(MemoryStore::new),
             identify_grace: DEFAULT_IDENTIFY_GRACE,
+            distill: distill_enabled_from_env(),
         },
     )
     .await;
@@ -524,6 +561,205 @@ async fn memory_worker(store: MemoryStore, mut rx: mpsc::UnboundedReceiver<Memor
     }
 }
 
+// ─── Distill on evict ────────────────────────────────────────
+
+/// A running distillation of trimmed turns.
+struct DistillJob {
+    cancel: CancellationToken,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+/// Trimmed turns of one person that go into one request.
+struct DistillBatch {
+    speaker: SpeakerLabel,
+    turns: Vec<EvictedTurn>,
+}
+
+/// What became of a batch.
+enum Distilled {
+    /// The facts that were new and are stored now (possibly none).
+    Stored(Vec<String>),
+    /// Nothing to do for this person: memory is off, or the session was
+    /// told to forget meanwhile.
+    Skipped,
+    /// Aborted before an answer was there; the turns are still to do.
+    Cancelled,
+}
+
+/// Longest excerpt in one distillation request, in characters: about a
+/// quarter of the context window at the conservative three characters per
+/// token.
+fn distill_batch_chars() -> usize {
+    vox::conversation::ollama_num_ctx() * 3 / 4
+}
+
+/// Group trimmed turns by speaker, in order of first appearance, and cut
+/// each group into batches of at most `max_chars` of excerpt. A turn is
+/// never split; one that is larger than `max_chars` gets a batch of its own.
+fn distill_batches(turns: Vec<EvictedTurn>, max_chars: usize) -> VecDeque<DistillBatch> {
+    let mut groups: Vec<DistillBatch> = Vec::new();
+    for turn in turns {
+        match groups.iter_mut().find(|g| g.speaker.id == turn.speaker.id) {
+            Some(group) => {
+                // The newest name the person was known by.
+                group.speaker.name.clone_from(&turn.speaker.name);
+                group.turns.push(turn);
+            }
+            None => groups.push(DistillBatch {
+                speaker: turn.speaker.clone(),
+                turns: vec![turn],
+            }),
+        }
+    }
+    let line = |text: &str| {
+        text.chars()
+            .count()
+            .min(vox::memory::MAX_DISTILL_LINE_CHARS)
+            + 16
+    };
+    let mut batches = VecDeque::new();
+    for group in groups {
+        let mut batch = Vec::new();
+        let mut size = 0;
+        for turn in group.turns {
+            let cost = line(&turn.user) + line(&turn.assistant);
+            if !batch.is_empty() && size + cost > max_chars {
+                batches.push_back(DistillBatch {
+                    speaker: group.speaker.clone(),
+                    turns: std::mem::take(&mut batch),
+                });
+                size = 0;
+            }
+            size += cost;
+            batch.push(turn);
+        }
+        if !batch.is_empty() {
+            batches.push_back(DistillBatch {
+                speaker: group.speaker,
+                turns: batch,
+            });
+        }
+    }
+    batches
+}
+
+/// Ask the model what is worth keeping from one batch and store it.
+async fn distill_batch(
+    ctx: &TurnCtx,
+    store: &MemoryStore,
+    model: &str,
+    batch: &DistillBatch,
+    epoch: u64,
+    cancel: &CancellationToken,
+) -> Result<Distilled, vox::VoxError> {
+    if cancel.is_cancelled() {
+        return Ok(Distilled::Cancelled);
+    }
+    let speaker_id = &batch.speaker.id;
+    // Nothing about a person who has memory off is sent anywhere, not even
+    // to the local model.
+    if !store.is_enabled(speaker_id).await? {
+        return Ok(Distilled::Skipped);
+    }
+    let known = store.facts(speaker_id, DISTILL_KNOWN_FACTS).await?;
+    let exchanges: Vec<HeardExchange> = batch
+        .turns
+        .iter()
+        .map(|turn| HeardExchange {
+            user: turn.user.clone(),
+            assistant: turn.assistant.clone(),
+            interrupted: turn.interrupted,
+        })
+        .collect();
+    let (system, user) = vox::memory::distill_messages(&batch.speaker.name, &known, &exchanges);
+    let messages = [ChatMessage::system(system), ChatMessage::user(user)];
+
+    // A child token, so a reply that runs away can be cut off without
+    // that looking like the session cancelling the work.
+    let stop = cancel.child_token();
+    let mut reply = String::new();
+    let stopped = vox::streaming_chat::stream_chat(
+        &ctx.http_client,
+        &ctx.ollama_host,
+        model,
+        &messages,
+        &ctx.stream_options,
+        stop.clone(),
+        |token: &str| {
+            reply.push_str(token);
+            if reply.len() > MAX_DISTILL_REPLY_BYTES {
+                stop.cancel();
+            }
+        },
+        |_: &str| async { Ok(()) },
+    )
+    .await?;
+    if stopped == StopReason::Cancelled && cancel.is_cancelled() {
+        return Ok(Distilled::Cancelled);
+    }
+    if ctx.forget_epoch.load(Ordering::SeqCst) != epoch {
+        return Ok(Distilled::Skipped);
+    }
+    let facts = vox::memory::parse_distilled_facts(&reply);
+    // The store checks the person's setting once more when it writes.
+    store
+        .add_facts(speaker_id, &facts)
+        .await
+        .map(Distilled::Stored)
+}
+
+/// Distill `turns`, one request per batch. When `cancel` fires, the turns
+/// that are not done go back to the conversation's queue, unless the session
+/// was told to forget since `epoch`.
+async fn run_distill(
+    ctx: Arc<TurnCtx>,
+    store: MemoryStore,
+    model: String,
+    turns: Vec<EvictedTurn>,
+    epoch: u64,
+    cancel: CancellationToken,
+) {
+    let mut batches = distill_batches(turns, distill_batch_chars());
+    while let Some(batch) = batches.pop_front() {
+        match distill_batch(&ctx, &store, &model, &batch, epoch, &cancel).await {
+            Ok(Distilled::Stored(facts)) => {
+                debug!(
+                    speaker_id = %batch.speaker.id,
+                    turns = batch.turns.len(),
+                    facts = facts.len(),
+                    "live_talk: trimmed turns distilled"
+                );
+                if !facts.is_empty() {
+                    ctx.out.send(LiveTalkWsEvent::MemoryDistilled {
+                        speaker_id: batch.speaker.id,
+                        speaker_name: batch.speaker.name,
+                        facts,
+                    });
+                }
+            }
+            Ok(Distilled::Skipped) => {}
+            Ok(Distilled::Cancelled) => {
+                let mut rest = batch.turns;
+                rest.extend(batches.into_iter().flat_map(|b| b.turns));
+                debug!(
+                    turns = rest.len(),
+                    "live_talk: distillation interrupted, turns kept for later"
+                );
+                let mut conv = ctx.conversation.lock().unwrap_or_else(|e| e.into_inner());
+                if ctx.forget_epoch.load(Ordering::SeqCst) == epoch {
+                    conv.restore_evicted(rest);
+                }
+                return;
+            }
+            Err(e) => {
+                // The turns of this batch are given up; what was said is
+                // still in the person's stored exchanges.
+                tracing::warn!(error = %e, "live_talk: trimmed turns could not be distilled");
+            }
+        }
+    }
+}
+
 /// Per-connection state shared with turn tasks.
 struct TurnCtx {
     stt: Arc<dyn vox::traits::SttBackend>,
@@ -545,10 +781,69 @@ struct TurnCtx {
     memory: Option<MemoryStore>,
     /// Queue of [`memory_worker`]; `None` without a memory store.
     memory_tx: Option<mpsc::UnboundedSender<MemoryOp>>,
+    /// The distillation of trimmed turns that is running, if any. `None`
+    /// when the session does not distill (no memory store, or switched off).
+    distill: Option<std::sync::Mutex<Option<DistillJob>>>,
 }
 
 impl TurnCtx {
-    /// Store a turn and tell the client what memory looks like now.
+    /// Start distilling the turns that were trimmed out of the context,
+    /// unless a distillation is already running or there are none.
+    fn start_distill(self: &Arc<Self>, model: &str) {
+        let (Some(slot), Some(store)) = (&self.distill, &self.memory) else {
+            return;
+        };
+        let mut job = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if job.as_ref().is_some_and(|job| !job.handle.is_finished()) {
+            return;
+        }
+        let (turns, epoch) = {
+            let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                conv.take_evicted(),
+                self.forget_epoch.load(Ordering::SeqCst),
+            )
+        };
+        if turns.is_empty() {
+            return;
+        }
+        debug!(turns = turns.len(), "live_talk: distilling trimmed turns");
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(run_distill(
+            Arc::clone(self),
+            store.clone(),
+            model.to_string(),
+            turns,
+            epoch,
+            cancel.clone(),
+        ));
+        *job = Some(DistillJob { cancel, handle });
+    }
+
+    /// Abort a running distillation: the model is needed for the
+    /// conversation. Its unfinished turns go back in the queue.
+    fn cancel_distill(&self) {
+        if let Some(slot) = &self.distill
+            && let Some(job) = slot.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        {
+            job.cancel.cancel();
+        }
+    }
+
+    /// Abort a running distillation and hand out its task, to wait for it.
+    fn stop_distill(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let job = self
+            .distill
+            .as_ref()?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()?;
+        job.cancel.cancel();
+        Some(job.handle)
+    }
+
+    /// Store a turn and tell the client what memory looks like now. Returns
+    /// whether older turns were trimmed out of the context to make room.
     ///
     /// `epoch` is the value of `forget_epoch` when the turn started: if the
     /// user said "forget" in between, the turn is not stored.
@@ -559,12 +854,13 @@ impl TurnCtx {
         user: &UserMessage,
         spoken: &[String],
         interrupted: bool,
-    ) {
+    ) -> bool {
         let stored =
             !user.text().is_empty() && (interrupted || spoken.iter().any(|s| !s.trim().is_empty()));
         if !stored {
-            return;
+            return false;
         }
+        let trimmed;
         let snapshot = {
             let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
             if self.forget_epoch.load(Ordering::SeqCst) != epoch {
@@ -572,9 +868,10 @@ impl TurnCtx {
                     turn_id,
                     "live_talk: turn not stored, memory was cleared meanwhile"
                 );
-                return;
+                return false;
             }
             let dropped = conv.commit_message(user, spoken, interrupted);
+            trimmed = dropped > 0;
             *self
                 .last_committed
                 .lock()
@@ -606,6 +903,7 @@ impl TurnCtx {
                 interrupted,
             });
         }
+        trimmed
     }
 
     /// The block of remembered context to put in front of this speaker's
@@ -673,6 +971,9 @@ impl TurnCtx {
     }
 
     fn forget(&self) {
+        // Turns that were waiting to be distilled are forgotten too; a
+        // request that is under way is dropped without storing anything.
+        self.cancel_distill();
         let snapshot = {
             let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
             conv.clear();
@@ -964,9 +1265,10 @@ async fn run_turn(
         spoken.truncate(heard);
         interrupted = interrupted.map(|_| true);
     }
-    if let Some(interrupted) = interrupted {
-        ctx.commit(turn_id, epoch, &user, &spoken, interrupted);
-    }
+    let trimmed = match interrupted {
+        Some(interrupted) => ctx.commit(turn_id, epoch, &user, &spoken, interrupted),
+        None => false,
+    };
 
     let metrics = LiveTalkWsEvent::TurnMetrics {
         turn_id,
@@ -984,6 +1286,13 @@ async fn run_turn(
                     sentences: sentence_count.load(Ordering::SeqCst),
                 },
             );
+            // The model is idle until the user speaks again, and its cached
+            // prefix went with the trimmed turns: the moment to distill
+            // them. Turns trimmed by a turn that did not finish wait for
+            // the next one that does.
+            if trimmed && !cancel.is_cancelled() {
+                ctx.start_distill(&cfg.model);
+            }
         }
         Ok(StopReason::Cancelled) => {
             // The connection loop already told the client.
@@ -1184,6 +1493,8 @@ impl Session {
             for event in events {
                 match event {
                     vox::VadEvent::SpeechStart => {
+                        // The model is about to be needed.
+                        self.ctx.cancel_distill();
                         // Speech while a turn is still transcribing or
                         // thinking: the user goes on, or changed their mind.
                         self.interrupt(CancelReason::UserBargeIn, None).await;
@@ -1247,6 +1558,9 @@ impl Session {
             utterance.duration_ms = (samples.len() as u64 * 1000) / MIC_SAMPLE_RATE;
             utterance.audio.samples = samples;
         }
+        // Whatever started it, a turn never shares the model with a
+        // distillation.
+        self.ctx.cancel_distill();
         self.playback = None;
         self.last_turn_id += 1;
         let id = self.last_turn_id;
@@ -1278,6 +1592,8 @@ impl Session {
 
     async fn on_cancel(&mut self, turn_id: Option<u64>, heard: Option<usize>) {
         self.reap();
+        // A cancel is the client's barge-in: the user is speaking.
+        self.ctx.cancel_distill();
         let active_id = self.active.as_ref().map(|turn| turn.id);
         match active_id {
             Some(active) if turn_id.is_none_or(|id| id == active) => {
@@ -1412,6 +1728,7 @@ impl Session {
         self.reap();
         self.ptt_active = true;
         self.ptt_buffer.clear();
+        self.ctx.cancel_distill();
         self.interrupt(CancelReason::UserBargeIn, None).await;
         if self.playback.take().is_some() {
             self.out.kill_turn(self.last_turn_id);
@@ -1575,6 +1892,7 @@ where
             forget_epoch: AtomicU64::new(0),
             speakers: deps.speakers,
             identify_grace: deps.identify_grace,
+            distill: (deps.distill && deps.memory.is_some()).then(|| std::sync::Mutex::new(None)),
             memory: deps.memory,
             memory_tx,
         }),
@@ -1626,6 +1944,11 @@ where
     if let Some(turn) = session.active.take() {
         turn.cancel.cancel();
         let _ = tokio::time::timeout(CANCEL_JOIN, turn.handle).await;
+    }
+    // A distillation holds the outgoing queue open. Stop it; its turns go
+    // back to the session and are picked up after a reconnect.
+    if let Some(distill) = session.ctx.stop_distill() {
+        let _ = tokio::time::timeout(CANCEL_JOIN, distill).await;
     }
     deps.sessions.touch(&session_handle.id);
     // Dropping the session drops the last queue handles; the writer then
@@ -1684,6 +2007,55 @@ mod tests {
         enroll(&ctx, "speaker_1", "Alice", &[1.0, 0.0]).await;
         let service = ServerSpeakers(ctx);
         assert_eq!(service.identify(&two_seconds()).await, None);
+    }
+
+    fn evicted(id: &str, name: &str, user: &str) -> EvictedTurn {
+        EvictedTurn {
+            speaker: SpeakerLabel {
+                id: id.into(),
+                name: name.into(),
+            },
+            user: user.into(),
+            assistant: "ok.".into(),
+            interrupted: false,
+        }
+    }
+
+    #[test]
+    fn distill_batches_are_per_speaker_and_bounded() {
+        let turns = vec![
+            evicted("speaker_1", "Mert", "one"),
+            evicted("speaker_2", "Ada", "two"),
+            evicted("speaker_1", "Mert Ozoner", "three"),
+            evicted("speaker_1", "Mert Ozoner", &"x".repeat(5_000)),
+            evicted("speaker_1", "Mert Ozoner", "five"),
+        ];
+        // Room for two short turns (each costs 3 + 3 + 2 * 16) or for one
+        // long one, whose text counts as cut to the line limit.
+        let batches = distill_batches(turns, 700);
+        let shape: Vec<(&str, &str, Vec<usize>)> = batches
+            .iter()
+            .map(|b| {
+                (
+                    b.speaker.id.as_str(),
+                    b.speaker.name.as_str(),
+                    b.turns.iter().map(|t| t.user.len()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                // Renamed meanwhile: the newest name is used throughout.
+                ("speaker_1", "Mert Ozoner", vec![3, 5]),
+                ("speaker_1", "Mert Ozoner", vec![5_000, 4]),
+                ("speaker_2", "Ada", vec![3]),
+            ]
+        );
+        assert!(distill_batches(Vec::new(), 700).is_empty());
+        // A turn that is larger than the limit still gets through, alone.
+        let batches = distill_batches(vec![evicted("speaker_1", "Mert", "one")], 1);
+        assert_eq!(batches.len(), 1);
     }
 
     #[test]
