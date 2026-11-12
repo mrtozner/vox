@@ -124,6 +124,10 @@ enum Commands {
         /// name like tr_TR-dfki-medium) [env: VOX_PIPER_VOICE]
         #[arg(long)]
         piper_voice: Option<String>,
+        /// Ollama address for chat, Converse and Live Talk (host:port).
+        /// Clients cannot override it [env: VOX_OLLAMA_HOST] [default: localhost:11434]
+        #[arg(long)]
+        ollama_host: Option<String>,
     },
     /// Check the installation: models directory, missing or corrupt models, and why
     Doctor {
@@ -243,6 +247,7 @@ async fn main() -> anyhow::Result<()> {
             language,
             stt_model,
             piper_voice,
+            ollama_host,
         } => {
             cli::serve::run(cli::serve::ServeArgs {
                 host,
@@ -252,6 +257,7 @@ async fn main() -> anyhow::Result<()> {
                 language,
                 stt_model,
                 piper_voice,
+                ollama_host,
             })
             .await?;
         }
@@ -339,6 +345,16 @@ mod tests {
                 assert_eq!(stt_model.as_deref(), Some("small"));
                 assert_eq!(piper_voice.as_deref(), Some("tr"));
             }
+            _ => panic!("expected serve"),
+        }
+        match parse(&["vox", "serve", "--ollama-host", "gpu-box:11434"]) {
+            Commands::Serve { ollama_host, .. } => {
+                assert_eq!(ollama_host.as_deref(), Some("gpu-box:11434"));
+            }
+            _ => panic!("expected serve"),
+        }
+        match parse(&["vox", "serve"]) {
+            Commands::Serve { ollama_host, .. } => assert_eq!(ollama_host, None),
             _ => panic!("expected serve"),
         }
         for flag in ["--download", "--yes"] {

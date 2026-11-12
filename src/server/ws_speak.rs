@@ -26,15 +26,29 @@ pub async fn speak_ws(
         .ok_or_else(|| ServerError::service_unavailable("TTS backend not loaded"))?;
     let tts = Arc::clone(tts);
 
-    Ok(ws.on_upgrade(move |socket| handle_speak_ws(socket, tts)))
+    Ok(ws.on_upgrade(move |socket| handle_speak_ws(socket, tts, state)))
 }
 
-async fn handle_speak_ws(socket: WebSocket, tts: Arc<dyn vox::traits::TtsBackend>) {
+async fn handle_speak_ws(
+    socket: WebSocket,
+    tts: Arc<dyn vox::traits::TtsBackend>,
+    state: Arc<ServerState>,
+) {
+    // Counted as an open session until this function returns, so shutdown
+    // can wait for it.
+    let _session = state.ws_session();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Wait for the first text message containing the TTS request.
     let req: SpeakWsRequest = loop {
-        match ws_rx.next().await {
+        let msg = tokio::select! {
+            msg = ws_rx.next() => msg,
+            () = state.shutdown.cancelled() => {
+                let _ = ws_tx.send(super::shutdown_close_message()).await;
+                return;
+            }
+        };
+        match msg {
             Some(Ok(Message::Text(text))) => match serde_json::from_str::<SpeakWsRequest>(&text) {
                 Ok(r) => break r,
                 Err(e) => {
@@ -64,6 +78,13 @@ async fn handle_speak_ws(socket: WebSocket, tts: Arc<dyn vox::traits::TtsBackend
         .await;
         return;
     }
+
+    // One inference slot for the whole synthesis; waits while the server
+    // is at its limit instead of failing the session.
+    let Some(_permit) = state.inference_permit_wait().await else {
+        let _ = ws_tx.send(super::shutdown_close_message()).await;
+        return;
+    };
 
     let handle = tokio::runtime::Handle::current();
     let adapter = SentenceStreamingAdapter::new(Arc::clone(&tts), handle);
@@ -114,7 +135,17 @@ async fn handle_speak_ws(socket: WebSocket, tts: Arc<dyn vox::traits::TtsBackend
 
     let mut chunk_index: usize = 0;
 
-    while let Some(result) = chunk_rx.recv().await {
+    loop {
+        let result = tokio::select! {
+            result = chunk_rx.recv() => match result {
+                Some(result) => result,
+                None => break,
+            },
+            () = state.shutdown.cancelled() => {
+                let _ = ws_tx.send(super::shutdown_close_message()).await;
+                return;
+            }
+        };
         match result {
             Ok(chunk) => {
                 chunk_index += 1;

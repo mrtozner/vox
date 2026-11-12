@@ -117,6 +117,9 @@ async fn handle_ws(
     streaming_stt: Option<Arc<dyn vox::traits::StreamingSttBackend>>,
     state: Arc<ServerState>,
 ) {
+    // Counted as an open session until this function returns, so shutdown
+    // can wait for it.
+    let _session = state.ws_session();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     #[cfg(feature = "silero")]
@@ -183,7 +186,13 @@ async fn handle_ws(
         let mut residual: Vec<f32> = Vec::with_capacity(frame_size * 2);
 
         loop {
-            let ws_msg = ws_rx.next().await;
+            let ws_msg = tokio::select! {
+                msg = ws_rx.next() => msg,
+                () = state.shutdown.cancelled() => {
+                    let _ = ws_tx.send(super::shutdown_close_message()).await;
+                    break;
+                }
+            };
             let Some(msg) = ws_msg else { break };
             match msg {
                 Ok(Message::Binary(data)) => {
@@ -286,6 +295,10 @@ async fn handle_ws(
                                                             .await;
                                                     }
                                                     let t_fallback = Instant::now();
+                                                    // Waits for an inference slot; `None`
+                                                    // only while shutting down.
+                                                    let _permit =
+                                                        state.inference_permit_wait().await;
                                                     match stt.transcribe(&utterance).await {
                                                         Ok(result) => {
                                                             tracing::debug!(

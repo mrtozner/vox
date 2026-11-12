@@ -9,15 +9,15 @@ mod server;
 
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::routing::{get, post};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use server::{ServerState, ServerStats};
+use server::ServerState;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -26,44 +26,13 @@ use server::{ServerState, ServerStats};
 /// Build a minimal ServerState with no backends loaded.
 fn test_state() -> Arc<ServerState> {
     Arc::new(ServerState {
-        stt: None,
-        tts: None,
-        vad_model_path: None,
-        stats: Arc::new(std::sync::Mutex::new(ServerStats {
-            requests: 0,
-            transcriptions: 0,
-            syntheses: 0,
-        })),
-        start_time: std::time::Instant::now(),
-        ollama_host: "localhost:11434".to_string(),
-        http_client: reqwest::Client::new(),
-        stt_model_name: None,
-        stt_model_size: None,
-        tts_model_name: None,
-        tts_model_size: None,
-        streaming_stt: None,
-        conversation_tts: None,
-        capabilities: Arc::new(vox::CapabilityRegistry::default()),
-        #[cfg(feature = "diarization")]
-        diarization: None,
-        #[cfg(feature = "diarization")]
-        speaker_db: None,
+        ..ServerState::empty()
     })
 }
 
 /// Build the Router matching the production server layout.
 fn test_router(state: Arc<ServerState>) -> Router {
-    Router::new()
-        .route("/", get(server::handlers::index))
-        .route("/v1/chat", post(server::handlers::chat))
-        .route("/v1/voices", get(server::handlers::voices))
-        .route("/v1/ollama-models", get(server::handlers::ollama_models))
-        .route("/v1/transcribe", post(server::handlers::transcribe))
-        .route("/v1/synthesize", post(server::handlers::synthesize))
-        .route("/v1/models", get(server::handlers::models))
-        .route("/v1/stats", get(server::handlers::stats))
-        .route("/health", get(server::handlers::health))
-        .with_state(state)
+    server::build_router(state)
 }
 
 /// Encode a mono WAV file from f32 samples at the given sample rate.
@@ -131,7 +100,7 @@ mod server_error_formatting {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let json = body_json(response.into_body()).await;
-        assert_eq!(json["error"], "invalid input");
+        assert_eq!(json["error"]["message"], "invalid input");
     }
 
     #[tokio::test]
@@ -142,7 +111,7 @@ mod server_error_formatting {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let json = body_json(response.into_body()).await;
-        assert_eq!(json["error"], "backend offline");
+        assert_eq!(json["error"]["message"], "backend offline");
     }
 
     #[tokio::test]
@@ -174,7 +143,7 @@ mod server_error_formatting {
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response.into_body()).await;
-        assert_eq!(json["error"], "");
+        assert_eq!(json["error"]["message"], "");
     }
 
     #[tokio::test]
@@ -183,7 +152,7 @@ mod server_error_formatting {
         let response = axum::response::IntoResponse::into_response(err);
 
         let json = body_json(response.into_body()).await;
-        assert_eq!(json["error"], r#"bad "value" \n test"#);
+        assert_eq!(json["error"]["message"], r#"bad "value" \n test"#);
     }
 }
 
@@ -209,7 +178,7 @@ mod wav_decoding {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
         let json = body_json(resp.into_body()).await;
-        let error_msg = json["error"].as_str().unwrap();
+        let error_msg = json["error"]["message"].as_str().unwrap();
         assert!(
             error_msg.contains("invalid WAV"),
             "expected 'invalid WAV' in error, got: {error_msg}"
@@ -231,7 +200,12 @@ mod wav_decoding {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
         let json = body_json(resp.into_body()).await;
-        assert!(json["error"].as_str().unwrap().contains("invalid WAV"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("invalid WAV")
+        );
     }
 
     #[tokio::test]
@@ -312,7 +286,7 @@ mod wav_decoding {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let json = body_json(resp.into_body()).await;
-        assert!(json["error"].as_str().unwrap().contains("STT"));
+        assert!(json["error"]["message"].as_str().unwrap().contains("STT"));
     }
 
     #[tokio::test]
@@ -331,9 +305,8 @@ mod wav_decoding {
 
         let _ = app.oneshot(req).await.unwrap();
 
-        let s = stats.lock().unwrap();
-        assert_eq!(s.requests, 1);
-        assert_eq!(s.transcriptions, 1);
+        assert_eq!(stats.requests.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.transcriptions.load(Ordering::Relaxed), 1);
     }
 
     // -- Mock STT for WAV tests --
@@ -362,27 +335,7 @@ mod wav_decoding {
     fn test_state_with_stt() -> Arc<ServerState> {
         Arc::new(ServerState {
             stt: Some(Arc::new(MockStt("transcribed text".into()))),
-            tts: None,
-            vad_model_path: None,
-            stats: Arc::new(std::sync::Mutex::new(ServerStats {
-                requests: 0,
-                transcriptions: 0,
-                syntheses: 0,
-            })),
-            start_time: std::time::Instant::now(),
-            ollama_host: "localhost:11434".to_string(),
-            http_client: reqwest::Client::new(),
-            stt_model_name: None,
-            stt_model_size: None,
-            tts_model_name: None,
-            tts_model_size: None,
-            streaming_stt: None,
-            conversation_tts: None,
-            capabilities: Arc::new(vox::CapabilityRegistry::default()),
-            #[cfg(feature = "diarization")]
-            diarization: None,
-            #[cfg(feature = "diarization")]
-            speaker_db: None,
+            ..ServerState::empty()
         })
     }
 }
@@ -478,7 +431,7 @@ mod synthesize_parsing {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let json = body_json(resp.into_body()).await;
-        assert!(json["error"].as_str().unwrap().contains("TTS"));
+        assert!(json["error"]["message"].as_str().unwrap().contains("TTS"));
     }
 
     #[tokio::test]
@@ -614,7 +567,12 @@ mod vox_error_conversion {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
         let json = body_json(response.into_body()).await;
-        assert!(json["error"].as_str().unwrap().contains("STT error"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("STT error")
+        );
     }
 
     #[tokio::test]
@@ -626,7 +584,12 @@ mod vox_error_conversion {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
         let json = body_json(response.into_body()).await;
-        assert!(json["error"].as_str().unwrap().contains("TTS error"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("TTS error")
+        );
     }
 
     #[tokio::test]
@@ -638,7 +601,12 @@ mod vox_error_conversion {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
         let json = body_json(response.into_body()).await;
-        assert!(json["error"].as_str().unwrap().contains("pipeline error"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("pipeline error")
+        );
     }
 
     #[tokio::test]
@@ -650,7 +618,12 @@ mod vox_error_conversion {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let json = body_json(response.into_body()).await;
-        assert!(json["error"].as_str().unwrap().contains("no STT backend"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no STT backend")
+        );
     }
 
     #[tokio::test]
@@ -662,7 +635,12 @@ mod vox_error_conversion {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let json = body_json(response.into_body()).await;
-        assert!(json["error"].as_str().unwrap().contains("no VAD backend"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no VAD backend")
+        );
     }
 
     #[tokio::test]
@@ -685,15 +663,22 @@ mod vox_error_conversion {
     }
 
     #[tokio::test]
-    async fn model_not_found_maps_to_500() {
+    async fn model_not_found_maps_to_503() {
+        // A missing model is a deployment problem the operator can fix, not a
+        // bug in the server: 503, like any other backend that is not loaded.
         let err = vox::VoxError::ModelNotFound(PathBuf::from("/missing/model.bin"));
         let server_err: server::error::ServerError = err.into();
         let response = axum::response::IntoResponse::into_response(server_err);
 
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let json = body_json(response.into_body()).await;
-        assert!(json["error"].as_str().unwrap().contains("model not found"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("model not found")
+        );
     }
 
     #[tokio::test]
@@ -714,113 +699,67 @@ mod vox_error_conversion {
 mod stats_thread_safety {
     use super::*;
 
-    #[tokio::test]
-    async fn concurrent_stats_requests_are_consistent() {
-        let state = test_state();
-        let stats = Arc::clone(&state.stats);
-
-        let num_tasks = 50;
-        let mut handles = Vec::with_capacity(num_tasks);
-
-        for _ in 0..num_tasks {
-            let app = test_router(Arc::clone(&state));
+    async fn hit(state: &Arc<ServerState>, uri: &'static str, n: usize) {
+        let mut handles = Vec::with_capacity(n);
+        for _ in 0..n {
+            let app = test_router(Arc::clone(state));
             handles.push(tokio::spawn(async move {
                 let req = Request::builder()
                     .method("GET")
-                    .uri("/v1/stats")
+                    .uri(uri)
                     .body(Body::empty())
                     .unwrap();
                 let resp = app.oneshot(req).await.unwrap();
                 assert_eq!(resp.status(), StatusCode::OK);
             }));
         }
-
         for h in handles {
             h.await.unwrap();
         }
-
-        let s = stats.lock().unwrap();
-        assert_eq!(
-            s.requests, num_tasks as u64,
-            "expected {num_tasks} requests, got {}",
-            s.requests
-        );
     }
 
     #[tokio::test]
-    async fn concurrent_health_does_not_increment_stats() {
+    async fn concurrent_requests_are_counted_exactly() {
         let state = test_state();
-        let stats = Arc::clone(&state.stats);
+        hit(&state, "/health", 50).await;
+        assert_eq!(state.stats.requests.load(Ordering::Relaxed), 50);
+    }
 
-        let num_tasks = 20;
-        let mut handles = Vec::with_capacity(num_tasks);
-
-        for _ in 0..num_tasks {
-            let app = test_router(Arc::clone(&state));
-            handles.push(tokio::spawn(async move {
-                let req = Request::builder()
-                    .method("GET")
-                    .uri("/health")
-                    .body(Body::empty())
-                    .unwrap();
-                let _ = app.oneshot(req).await.unwrap();
-            }));
-        }
-
-        for h in handles {
-            h.await.unwrap();
-        }
-
-        let s = stats.lock().unwrap();
-        // Health endpoint does not bump the stats counter
-        assert_eq!(s.requests, 0);
+    #[tokio::test]
+    async fn concurrent_stats_polling_does_not_increment_stats() {
+        let state = test_state();
+        hit(&state, "/v1/stats", 20).await;
+        // Reading the statistics must not change them.
+        assert_eq!(state.stats.requests.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
     async fn mixed_concurrent_endpoints_count_correctly() {
         let state = test_state();
-        let stats = Arc::clone(&state.stats);
-
-        let mut handles = Vec::new();
-
-        // 10 stats requests (each increments requests by 1)
-        for _ in 0..10 {
-            let app = test_router(Arc::clone(&state));
-            handles.push(tokio::spawn(async move {
-                let req = Request::builder()
-                    .method("GET")
-                    .uri("/v1/stats")
-                    .body(Body::empty())
-                    .unwrap();
-                let _ = app.oneshot(req).await.unwrap();
-            }));
-        }
-
-        // 5 models requests (each increments requests by 1)
-        for _ in 0..5 {
-            let app = test_router(Arc::clone(&state));
-            handles.push(tokio::spawn(async move {
-                let req = Request::builder()
-                    .method("GET")
-                    .uri("/v1/models")
-                    .body(Body::empty())
-                    .unwrap();
-                let _ = app.oneshot(req).await.unwrap();
-            }));
-        }
-
-        for h in handles {
-            h.await.unwrap();
-        }
-
-        let s = stats.lock().unwrap();
-        assert_eq!(
-            s.requests, 15,
-            "expected 15 total requests, got {}",
-            s.requests
+        tokio::join!(
+            hit(&state, "/v1/stats", 10),
+            hit(&state, "/health", 5),
+            hit(&state, "/v1/voices", 5),
         );
-        assert_eq!(s.transcriptions, 0);
-        assert_eq!(s.syntheses, 0);
+        assert_eq!(state.stats.requests.load(Ordering::Relaxed), 10);
+        assert_eq!(state.stats.transcriptions.load(Ordering::Relaxed), 0);
+        assert_eq!(state.stats.syntheses.load(Ordering::Relaxed), 0);
+        assert_eq!(state.stats.client_errors.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn a_panicking_holder_cannot_poison_the_counters() {
+        // The counters used to live behind a Mutex; a panic while holding it
+        // poisoned every later request. Atomics have nothing to poison.
+        let state = test_state();
+        let stats = Arc::clone(&state.stats);
+        let _ = tokio::spawn(async move {
+            stats.requests.fetch_add(1, Ordering::Relaxed);
+            panic!("handler panicked mid-update");
+        })
+        .await;
+        hit(&state, "/health", 1).await;
+        assert_eq!(state.stats.requests.load(Ordering::Relaxed), 2);
     }
 }
 
@@ -957,8 +896,8 @@ mod endpoint_edge_cases {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let json = body_json(resp.into_body()).await;
-        // The stats request itself bumps the counter to 1
-        assert_eq!(json["requests"], 1);
+        // Reading the statistics does not count as a request
+        assert_eq!(json["requests"], 0);
         assert_eq!(json["transcriptions"], 0);
         assert_eq!(json["syntheses"], 0);
         assert!(json["uptime_secs"].as_u64().is_some());

@@ -57,9 +57,9 @@ tokio-util = { version = "0.7", features = ["io"], optional = true }
 toml = { version = "0.8", optional = true }
 
 # Server dependencies
-axum = { version = "0.8", optional = true, features = ["ws"] }
+axum = { version = "0.8", optional = true, features = ["ws", "multipart"] }
 futures-util = { version = "0.3", optional = true }
-tower-http = { version = "0.6", optional = true, features = ["cors", "trace"] }
+tower-http = { version = "0.6", optional = true, features = ["cors", "trace", "timeout"] }
 
 # Auto-GPU: when `qwen3` or `pocket` features are active on macOS, Metal is
 # enabled automatically via Cargo's additive feature merging. The explicit

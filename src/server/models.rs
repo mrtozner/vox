@@ -17,9 +17,14 @@ pub struct SynthesizeRequest {
     pub text: String,
     pub voice: Option<String>,
     pub seed: Option<u64>,
+    /// Audio container/encoding. `wav` (default): 16-bit PCM WAV, playable
+    /// in every browser. `wav_f32`: 32-bit float WAV (the pre-0.7 default).
+    /// `pcm`: headerless 16-bit little-endian samples.
+    pub format: Option<String>,
 }
 
-/// Response listing available backends.
+/// Response listing available backends (`GET /v1/vox/models`; also merged
+/// into `GET /v1/models` for one release).
 #[derive(Debug, Serialize)]
 pub struct ModelsResponse {
     pub stt: Option<BackendInfo>,
@@ -48,24 +53,77 @@ pub struct BackendInfo {
 /// Server statistics response.
 #[derive(Debug, Serialize)]
 pub struct StatsResponse {
+    /// HTTP requests served, not counting `/v1/stats` itself.
     pub requests: u64,
     pub transcriptions: u64,
     pub syntheses: u64,
     pub uptime_secs: u64,
+    /// Successful `/v1/chat` completions.
+    pub chats: u64,
+    /// Responses with a 4xx status.
+    pub client_errors: u64,
+    /// Responses with a 5xx status.
+    pub server_errors: u64,
+    /// Latency counters (cumulative totals and derived averages).
+    pub latency: LatencyStats,
+    /// WebSocket sessions currently open / opened since start.
+    pub ws_active: u64,
+    pub ws_total: u64,
+    /// Inference slots: configured maximum and how many are free right now.
+    pub inference_slots: usize,
+    pub inference_slots_free: usize,
 }
 
-/// Health check response.
+/// Cumulative latency counters reported by `/v1/stats`.
+#[derive(Debug, Serialize)]
+pub struct LatencyStats {
+    /// Total audio transcribed / time spent transcribing it.
+    pub transcribe_audio_ms: u64,
+    pub transcribe_ms: u64,
+    pub transcribe_avg_ms: Option<u64>,
+    /// Processing time divided by audio duration (below 1.0 is faster than real time).
+    pub transcribe_rtf: Option<f64>,
+    /// Total audio synthesized / time spent synthesizing it.
+    pub synthesize_audio_ms: u64,
+    pub synthesize_ms: u64,
+    pub synthesize_avg_ms: Option<u64>,
+    pub synthesize_rtf: Option<f64>,
+    /// Time spent waiting on the LLM for `/v1/chat`.
+    pub chat_ms: u64,
+    pub chat_avg_ms: Option<u64>,
+}
+
+/// Health check response (`GET /health`): the process is up.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
     pub status: String,
+    /// vox version (`CARGO_PKG_VERSION`).
+    pub version: String,
+}
+
+/// Readiness response (`GET /health/ready`): 200 when the speech backends
+/// are loaded, 503 otherwise.
+#[derive(Debug, Serialize)]
+pub struct ReadyResponse {
+    /// `ready` or `not_ready`.
+    pub status: String,
+    pub version: String,
+    pub stt: bool,
+    pub tts: bool,
+    pub vad: bool,
+    /// Names of the required backends that are not loaded.
+    pub missing: Vec<String>,
 }
 
 /// Request body for the chat endpoint (Ollama proxy).
+///
+/// The Ollama address is fixed by the operator (`vox serve --ollama-host`).
+/// A `host` field sent by older clients is ignored: letting a request pick
+/// the upstream turned the server into an open proxy.
 #[derive(Debug, Deserialize)]
 pub struct ChatRequest {
     pub text: String,
     pub model: Option<String>,
-    pub host: Option<String>,
 }
 
 /// Response from the chat endpoint.
@@ -78,7 +136,16 @@ pub struct ChatResponse {
 /// Response listing available TTS voices.
 #[derive(Debug, Serialize)]
 pub struct VoicesResponse {
+    /// Voices of the main TTS engine (`/v1/synthesize`, `/v1/speak`).
     pub voices: Vec<VoiceInfo>,
+    /// Backend name of the main TTS engine, `null` when none is loaded.
+    pub engine: Option<String>,
+    /// Backend that speaks in Live Talk / Converse. It can differ from
+    /// `engine` (Piper for conversation, Kokoro for the Speak tab), in which
+    /// case `voices` does not apply to conversations.
+    pub conversation_engine: Option<String>,
+    /// Voices of the conversation engine.
+    pub conversation_voices: Vec<VoiceInfo>,
 }
 
 /// Info about a TTS voice.

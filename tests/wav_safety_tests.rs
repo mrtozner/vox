@@ -19,11 +19,10 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::routing::{get, post};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use server::{ServerState, ServerStats};
+use server::ServerState;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -33,40 +32,13 @@ use server::{ServerState, ServerStats};
 fn test_state_with_stt() -> Arc<ServerState> {
     Arc::new(ServerState {
         stt: Some(Arc::new(MockStt)),
-        tts: None,
-        vad_model_path: None,
-        stats: Arc::new(std::sync::Mutex::new(ServerStats {
-            requests: 0,
-            transcriptions: 0,
-            syntheses: 0,
-        })),
-        start_time: std::time::Instant::now(),
-        ollama_host: "localhost:11434".to_string(),
-        http_client: reqwest::Client::new(),
-        stt_model_name: None,
-        stt_model_size: None,
-        tts_model_name: None,
-        tts_model_size: None,
-        streaming_stt: None,
-        conversation_tts: None,
-        capabilities: Arc::new(vox::CapabilityRegistry::default()),
-        #[cfg(feature = "diarization")]
-        diarization: None,
-        #[cfg(feature = "diarization")]
-        speaker_db: None,
+        ..ServerState::empty()
     })
 }
 
 /// Build the Router matching the production server layout.
 fn test_router(state: Arc<ServerState>) -> Router {
-    Router::new()
-        .route("/", get(server::handlers::index))
-        .route("/v1/transcribe", post(server::handlers::transcribe))
-        .route("/v1/synthesize", post(server::handlers::synthesize))
-        .route("/v1/models", get(server::handlers::models))
-        .route("/v1/stats", get(server::handlers::stats))
-        .route("/health", get(server::handlers::health))
-        .with_state(state)
+    server::build_router(state)
 }
 
 /// Encode a mono WAV file from i16 samples at the given sample rate.
@@ -403,7 +375,10 @@ mod wav_truncated_header {
         let (status, json) = transcribe_bytes(buf).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(
-            json["error"].as_str().unwrap().contains("invalid WAV"),
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("invalid WAV"),
             "error should mention invalid WAV"
         );
     }

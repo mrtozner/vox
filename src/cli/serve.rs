@@ -1,7 +1,7 @@
 //! Handler for `vox serve` — HTTP API server.
 
 use super::models::{self, BundleOptions};
-use crate::server::LoadOptions;
+use crate::server::{LoadOptions, ServerOptions};
 
 /// Arguments of `vox serve`.
 #[derive(Debug, Clone)]
@@ -18,6 +18,22 @@ pub struct ServeArgs {
     pub stt_model: Option<String>,
     /// `--piper-voice` (falls back to `VOX_PIPER_VOICE`).
     pub piper_voice: Option<String>,
+    /// `--ollama-host` (falls back to `VOX_OLLAMA_HOST`, then `localhost:11434`).
+    pub ollama_host: Option<String>,
+}
+
+/// Merge `--ollama-host` with the `VOX_*` server options.
+pub fn server_options(args: &ServeArgs, env: ServerOptions) -> ServerOptions {
+    ServerOptions {
+        ollama_host: args
+            .ollama_host
+            .as_deref()
+            .map(str::trim)
+            .filter(|h| !h.is_empty())
+            .map(str::to_string)
+            .or(env.ollama_host),
+        ..env
+    }
 }
 
 /// Merge command-line flags with the `VOX_*` environment fallbacks.
@@ -41,6 +57,10 @@ fn bundle_options(opts: &LoadOptions) -> BundleOptions {
 /// Start the server, downloading the default models first when asked to.
 pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
     let opts = load_options(&args, LoadOptions::from_env());
+    let server_opts = server_options(&args, ServerOptions::from_env());
+
+    // Refuse an exposed bind address before downloading or loading anything.
+    crate::server::check_bind_host(&args.host, server_opts.allow_remote)?;
 
     // Reject an unknown language up front instead of starting a server
     // whose STT silently failed to load.
@@ -75,7 +95,8 @@ pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
-    crate::server::run_with_options(&args.host, args.port, args.cache_models, opts).await
+    crate::server::run_with_config(&args.host, args.port, args.cache_models, opts, server_opts)
+        .await
 }
 
 #[cfg(test)]
@@ -91,7 +112,30 @@ mod tests {
             language: language.map(str::to_string),
             stt_model: None,
             piper_voice: piper_voice.map(str::to_string),
+            ollama_host: None,
         }
+    }
+
+    #[test]
+    fn ollama_host_flag_overrides_environment() {
+        let env = ServerOptions {
+            ollama_host: Some("env-host:11434".into()),
+            ..ServerOptions::default()
+        };
+        let mut a = args(None, None);
+        assert_eq!(
+            server_options(&a, env.clone()).resolved_ollama_host(),
+            "env-host:11434"
+        );
+        a.ollama_host = Some("http://gpu-box:11434/".into());
+        assert_eq!(
+            server_options(&a, env).resolved_ollama_host(),
+            "gpu-box:11434"
+        );
+        assert_eq!(
+            server_options(&args(None, None), ServerOptions::default()).resolved_ollama_host(),
+            "localhost:11434"
+        );
     }
 
     #[test]
