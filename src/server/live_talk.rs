@@ -25,7 +25,7 @@
 //!   which cuts the stored turn down to what was really played, also after
 //!   `turn_done`.
 //! - **Sessions.** Memory lives in the server's
-//!   [`SessionStore`](vox::conversation::SessionStore), keyed by the
+//!   [`SessionStore`](crate::conversation::SessionStore), keyed by the
 //!   `session_id` from `ready`, so closing the socket (for example by
 //!   toggling the microphone) does not lose the conversation.
 //! - **Speakers.** With `config.diarization` on, the speaker of an utterance
@@ -65,13 +65,13 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use vox::conversation::{
+use crate::conversation::{
     ChatMessage, EvictedTurn, RecallNeed, SessionStore, SharedConversation, SpeakerLabel,
     UserMessage,
 };
-use vox::diarization::IdentifyMode;
-use vox::memory::{ExchangeRef, HeardExchange, MemoryStore};
-use vox::streaming_chat::{StopReason, StreamOptions};
+use crate::diarization::IdentifyMode;
+use crate::memory::{ExchangeRef, HeardExchange, MemoryStore};
+use crate::streaming_chat::{StopReason, StreamOptions};
 
 use super::ServerState;
 use super::error::ServerError;
@@ -162,14 +162,14 @@ pub struct Enrollment {
 pub trait SpeakerService: Send + Sync {
     /// Who spoke `audio`, if it is a known voice. Must not change anything:
     /// no enrollment, no adaptation.
-    async fn identify(&self, audio: &vox::AudioChunk) -> Option<SpeakerTag>;
+    async fn identify(&self, audio: &crate::AudioChunk) -> Option<SpeakerTag>;
 
     /// Store the voice in `audio` as a speaker, on the user's explicit
     /// request. A new speaker gets `name` when one is given. The error is a
     /// message for the user.
     async fn enroll(
         &self,
-        audio: &vox::AudioChunk,
+        audio: &crate::AudioChunk,
         name: Option<&str>,
     ) -> Result<Enrollment, String>;
 }
@@ -179,7 +179,7 @@ struct ServerSpeakers(SpeakerCtx);
 
 #[async_trait]
 impl SpeakerService for ServerSpeakers {
-    async fn identify(&self, audio: &vox::AudioChunk) -> Option<SpeakerTag> {
+    async fn identify(&self, audio: &crate::AudioChunk) -> Option<SpeakerTag> {
         let found = speakers::identify_speaker(&self.0, audio, IdentifyMode::IdentifyOnly).await?;
         Some(SpeakerTag {
             id: found.id,
@@ -190,12 +190,12 @@ impl SpeakerService for ServerSpeakers {
 
     async fn enroll(
         &self,
-        audio: &vox::AudioChunk,
+        audio: &crate::AudioChunk,
         name: Option<&str>,
     ) -> Result<Enrollment, String> {
         let name = match name.map(str::trim).filter(|n| !n.is_empty()) {
             Some(name) => {
-                Some(vox::diarization::validate_speaker_name(name).map_err(|e| e.to_string())?)
+                Some(crate::diarization::validate_speaker_name(name).map_err(|e| e.to_string())?)
             }
             None => None,
         };
@@ -213,7 +213,7 @@ impl SpeakerService for ServerSpeakers {
                 format!(
                     "The voice could not be stored: the last utterance is shorter than {} ms \
                      or could not be analysed.",
-                    vox::diarization::MIN_SPEAKER_AUDIO_MS
+                    crate::diarization::MIN_SPEAKER_AUDIO_MS
                 )
             })?;
         let created = found.new_speaker.is_some();
@@ -240,9 +240,9 @@ impl SpeakerService for ServerSpeakers {
 /// Everything a Live Talk session needs. The transport is passed separately
 /// so the session can be driven without a real socket.
 pub struct LiveTalkDeps {
-    pub stt: Arc<dyn vox::traits::SttBackend>,
-    pub tts: Arc<dyn vox::traits::TtsBackend>,
-    pub vad: Box<dyn vox::traits::VadBackend>,
+    pub stt: Arc<dyn crate::traits::SttBackend>,
+    pub tts: Arc<dyn crate::traits::TtsBackend>,
+    pub vad: Box<dyn crate::traits::VadBackend>,
     pub http_client: reqwest::Client,
     /// Ollama `host:port`. Server configuration; never taken from the client.
     pub ollama_host: String,
@@ -317,17 +317,17 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
     let Some(vad_path) = state.vad_model_path.clone() else {
         return refuse(socket, "VAD model not available".into()).await;
     };
-    let vad: Box<dyn vox::traits::VadBackend> = match vox::SileroVad::new(&vad_path) {
+    let vad: Box<dyn crate::traits::VadBackend> = match crate::SileroVad::new(&vad_path) {
         Ok(v) => Box::new(v),
         Err(e) => return refuse(socket, format!("failed to initialize VAD: {e}")).await,
     };
 
     // Every STT/TTS call of the session takes a server inference slot.
-    let stt: Arc<dyn vox::traits::SttBackend> = Arc::new(super::ws::LimitedStt {
+    let stt: Arc<dyn crate::traits::SttBackend> = Arc::new(super::ws::LimitedStt {
         inner: stt,
         state: Arc::clone(&state),
     });
-    let tts: Arc<dyn vox::traits::TtsBackend> = Arc::new(super::ws::LimitedTts {
+    let tts: Arc<dyn crate::traits::TtsBackend> = Arc::new(super::ws::LimitedTts {
         inner: tts,
         state: Arc::clone(&state),
     });
@@ -492,7 +492,7 @@ struct TurnConfig {
 /// tags and recall blocks when speakers are identified.
 fn effective_prompt(base: &str, diarization: bool) -> String {
     if diarization {
-        vox::prompts::with_speaker_awareness(base)
+        crate::prompts::with_speaker_awareness(base)
     } else {
         base.to_string()
     }
@@ -590,7 +590,7 @@ enum Distilled {
 /// quarter of the context window at the conservative three characters per
 /// token.
 fn distill_batch_chars() -> usize {
-    vox::conversation::ollama_num_ctx() * 3 / 4
+    crate::conversation::ollama_num_ctx() * 3 / 4
 }
 
 /// Group trimmed turns by speaker, in order of first appearance, and cut
@@ -614,7 +614,7 @@ fn distill_batches(turns: Vec<EvictedTurn>, max_chars: usize) -> VecDeque<Distil
     let line = |text: &str| {
         text.chars()
             .count()
-            .min(vox::memory::MAX_DISTILL_LINE_CHARS)
+            .min(crate::memory::MAX_DISTILL_LINE_CHARS)
             + 16
     };
     let mut batches = VecDeque::new();
@@ -651,7 +651,7 @@ async fn distill_batch(
     batch: &DistillBatch,
     epoch: u64,
     cancel: &CancellationToken,
-) -> Result<Distilled, vox::VoxError> {
+) -> Result<Distilled, crate::VoxError> {
     if cancel.is_cancelled() {
         return Ok(Distilled::Cancelled);
     }
@@ -671,14 +671,14 @@ async fn distill_batch(
             interrupted: turn.interrupted,
         })
         .collect();
-    let (system, user) = vox::memory::distill_messages(&batch.speaker.name, &known, &exchanges);
+    let (system, user) = crate::memory::distill_messages(&batch.speaker.name, &known, &exchanges);
     let messages = [ChatMessage::system(system), ChatMessage::user(user)];
 
     // A child token, so a reply that runs away can be cut off without
     // that looking like the session cancelling the work.
     let stop = cancel.child_token();
     let mut reply = String::new();
-    let stopped = vox::streaming_chat::stream_chat(
+    let stopped = crate::streaming_chat::stream_chat(
         &ctx.http_client,
         &ctx.ollama_host,
         model,
@@ -700,7 +700,7 @@ async fn distill_batch(
     if ctx.forget_epoch.load(Ordering::SeqCst) != epoch {
         return Ok(Distilled::Skipped);
     }
-    let facts = vox::memory::parse_distilled_facts(&reply);
+    let facts = crate::memory::parse_distilled_facts(&reply);
     // The store checks the person's setting once more when it writes.
     store
         .add_facts(speaker_id, &facts)
@@ -762,8 +762,8 @@ async fn run_distill(
 
 /// Per-connection state shared with turn tasks.
 struct TurnCtx {
-    stt: Arc<dyn vox::traits::SttBackend>,
-    tts: Arc<dyn vox::traits::TtsBackend>,
+    stt: Arc<dyn crate::traits::SttBackend>,
+    tts: Arc<dyn crate::traits::TtsBackend>,
     http_client: reqwest::Client,
     ollama_host: String,
     stream_options: StreamOptions,
@@ -1007,7 +1007,7 @@ async fn run_turn(
     ctx: Arc<TurnCtx>,
     cfg: TurnConfig,
     turn_id: u64,
-    utterance: Arc<vox::Utterance>,
+    utterance: Arc<crate::Utterance>,
     cancel: CancellationToken,
     shared: Arc<TurnShared>,
 ) {
@@ -1186,7 +1186,7 @@ async fn run_turn(
                     return Ok(());
                 }
                 let tts_started = Instant::now();
-                let request = vox::TtsRequest {
+                let request = crate::TtsRequest {
                     text: text.clone(),
                     voice,
                     seed: None,
@@ -1194,7 +1194,7 @@ async fn run_turn(
                 let output = ctx.tts.synthesize(&request).await?;
                 let wav =
                     super::ws::encode_wav_chunk(&output.audio.samples, output.audio.sample_rate)
-                        .map_err(vox::VoxError::Tts)?;
+                        .map_err(crate::VoxError::Tts)?;
 
                 let index = sentence_count.fetch_add(1, Ordering::SeqCst);
                 if index == 0 {
@@ -1230,7 +1230,7 @@ async fn run_turn(
                     wav,
                 );
                 if !sent {
-                    return Err(vox::VoxError::Pipeline("client disconnected".into()));
+                    return Err(crate::VoxError::Pipeline("client disconnected".into()));
                 }
                 spoken.lock().unwrap_or_else(|e| e.into_inner()).push(text);
                 Ok(())
@@ -1238,7 +1238,7 @@ async fn run_turn(
         }
     };
 
-    let stop = vox::streaming_chat::stream_chat(
+    let stop = crate::streaming_chat::stream_chat(
         &ctx.http_client,
         &ctx.ollama_host,
         &cfg.model,
@@ -1322,7 +1322,7 @@ struct ActiveTurn {
     handle: tokio::task::JoinHandle<()>,
     cancel: CancellationToken,
     shared: Arc<TurnShared>,
-    utterance: Arc<vox::Utterance>,
+    utterance: Arc<crate::Utterance>,
 }
 
 /// The turn task is done but the browser is still playing its audio.
@@ -1334,7 +1334,7 @@ struct PlaybackGate {
 struct Session {
     ctx: Arc<TurnCtx>,
     out: Outbox,
-    vad: Box<dyn vox::traits::VadBackend>,
+    vad: Box<dyn crate::traits::VadBackend>,
     frame_size: usize,
     playback_grace: Duration,
 
@@ -1344,7 +1344,7 @@ struct Session {
     mode: LiveTalkMode,
     barge_in_enabled: bool,
     /// The utterance of the newest turn, for `enroll_speaker`.
-    last_utterance: Option<Arc<vox::Utterance>>,
+    last_utterance: Option<Arc<crate::Utterance>>,
 
     /// Samples waiting for a full VAD frame.
     residual: Vec<f32>,
@@ -1471,7 +1471,7 @@ impl Session {
                 // batch. The rest is handled below.
                 break;
             }
-            let frame = vox::AudioChunk {
+            let frame = crate::AudioChunk {
                 samples: self.residual[offset..offset + self.frame_size].to_vec(),
                 sample_rate: MIC_SAMPLE_RATE as u32,
                 channels: 1,
@@ -1492,7 +1492,7 @@ impl Session {
             };
             for event in events {
                 match event {
-                    vox::VadEvent::SpeechStart => {
+                    crate::VadEvent::SpeechStart => {
                         // The model is about to be needed.
                         self.ctx.cancel_distill();
                         // Speech while a turn is still transcribing or
@@ -1500,12 +1500,12 @@ impl Session {
                         self.interrupt(CancelReason::UserBargeIn, None).await;
                         self.out.send(LiveTalkWsEvent::SpeechStart);
                     }
-                    vox::VadEvent::SpeechEnd(utterance) => {
+                    crate::VadEvent::SpeechEnd(utterance) => {
                         self.interrupt(CancelReason::UserBargeIn, None).await;
                         self.out.send(LiveTalkWsEvent::SpeechEnd);
                         self.dispatch(utterance);
                     }
-                    vox::VadEvent::Silence => {}
+                    crate::VadEvent::Silence => {}
                 }
             }
         }
@@ -1551,7 +1551,7 @@ impl Session {
     }
 
     /// Start a turn for `utterance` on its own task.
-    fn dispatch(&mut self, mut utterance: vox::Utterance) {
+    fn dispatch(&mut self, mut utterance: crate::Utterance) {
         if !self.carry.is_empty() {
             let mut samples = std::mem::take(&mut self.carry);
             samples.extend_from_slice(&utterance.audio.samples);
@@ -1748,8 +1748,8 @@ impl Session {
         let samples = std::mem::take(&mut self.ptt_buffer);
         let duration_ms = (samples.len() as u64 * 1000) / MIC_SAMPLE_RATE;
         self.interrupt(CancelReason::UserBargeIn, None).await;
-        self.dispatch(vox::Utterance {
-            audio: vox::AudioChunk {
+        self.dispatch(crate::Utterance {
+            audio: crate::AudioChunk {
                 samples,
                 sample_rate: MIC_SAMPLE_RATE as u32,
                 channels: 1,
@@ -1836,7 +1836,7 @@ where
     let mode: LiveTalkMode = config.mode.into();
     let base_prompt = config
         .system_prompt_override
-        .unwrap_or_else(|| vox::build_system_prompt(vox::VoicePromptMode::Voice));
+        .unwrap_or_else(|| crate::build_system_prompt(crate::VoicePromptMode::Voice));
     let diarization = config.diarization && deps.speakers.is_some();
     let cfg = TurnConfig {
         model: config.model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
@@ -1970,8 +1970,8 @@ mod tests {
 
     use super::super::speakers::tests::{enroll, test_ctx};
 
-    fn two_seconds() -> vox::AudioChunk {
-        vox::AudioChunk {
+    fn two_seconds() -> crate::AudioChunk {
+        crate::AudioChunk {
             samples: vec![0.1; 32_000],
             sample_rate: 16_000,
             channels: 1,

@@ -4,8 +4,7 @@
 //! Run with:
 //!   cargo test --features server --test error_edge_tests
 
-#[path = "../src/server/mod.rs"]
-mod server;
+use vox::server;
 
 use std::io::Cursor;
 use std::sync::Arc;

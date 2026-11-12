@@ -11,9 +11,9 @@ use super::ServerState;
 use super::error::ServerError;
 use super::models::{SpeakWsRequest, TtsWsEvent};
 use super::ws::encode_wav_chunk;
-use vox::traits::StreamingTtsBackend;
-use vox::tts::SentenceStreamingAdapter;
-use vox::types::TtsRequest;
+use crate::traits::StreamingTtsBackend;
+use crate::tts::SentenceStreamingAdapter;
+use crate::types::TtsRequest;
 
 /// Upgrade HTTP connection to WebSocket for streaming text-to-speech.
 pub async fn speak_ws(
@@ -31,7 +31,7 @@ pub async fn speak_ws(
 
 async fn handle_speak_ws(
     socket: WebSocket,
-    tts: Arc<dyn vox::traits::TtsBackend>,
+    tts: Arc<dyn crate::traits::TtsBackend>,
     state: Arc<ServerState>,
 ) {
     // Counted as an open session until this function returns, so shutdown

@@ -1,7 +1,46 @@
-//! HTTP server for the Vox voice AI framework.
+//! HTTP and WebSocket server for the Vox voice AI framework.
 //!
-//! Provides a REST API for speech-to-text and text-to-speech operations.
-//! Start with [`run`] from the `vox serve` CLI command.
+//! REST endpoints for speech-to-text and text-to-speech, an OpenAI-compatible
+//! surface, and the WebSocket sessions (`/v1/listen`, `/v1/speak`,
+//! `/v1/converse`, `/v1/live-talk`). Needs the `server` feature.
+//!
+//! There are three ways in, from most to least batteries-included:
+//!
+//! - [`run`] / [`run_with_config`]: what `vox serve` calls. Loads the models
+//!   from the models directory, binds `host:port`, prints the banner and
+//!   serves until Ctrl-C or SIGTERM.
+//! - [`serve`]: serve a [`ServerState`] you built on a listener you bound,
+//!   until a future of your choice resolves, then drain.
+//! - [`build_router`]: the `axum::Router` with every route and middleware
+//!   layer, to nest or merge into your own application.
+//!
+//! # Embedding
+//!
+//! ```rust,no_run
+//! use std::sync::Arc;
+//! use std::time::Duration;
+//!
+//! use vox::server::{self, ServerOptions, ServerState};
+//!
+//! # async fn demo(stt: Arc<dyn vox::SttBackend>) -> anyhow::Result<()> {
+//! let state = Arc::new(ServerState {
+//!     stt: Some(stt),
+//!     ..ServerState::with_options("127.0.0.1", 3000, &ServerOptions::default())
+//! });
+//! let shutdown = state.shutdown.clone();
+//!
+//! let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+//! server::serve(listener, state, Duration::from_secs(5), async move {
+//!     shutdown.cancelled().await
+//! })
+//! .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The server has no authentication. [`ServerState::with_options`] takes the
+//! bind address because the `Host`/`Origin` checks are derived from it; see
+//! [`check_bind_host`] before binding anything that is not loopback.
 
 pub mod access;
 #[cfg(feature = "diarization")]
@@ -43,7 +82,6 @@ pub use loaders::LoadOptions;
 #[cfg(feature = "piper")]
 use loaders::try_load_piper;
 use loaders::{load_stt, load_tts, resolve_models_dir};
-#[allow(unused_imports)]
 pub use state::{
     DEFAULT_OLLAMA_HOST, Limits, ServerOptions, ServerState, ServerStats, WsSessionGuard,
     normalize_ollama_host, shutdown_close_message,
@@ -215,7 +253,7 @@ pub fn check_bind_host(host: &str, allow_remote: bool) -> anyhow::Result<()> {
 /// Start the HTTP server on `host:port`.
 ///
 /// Attempts to load STT (Whisper) and TTS (Kokoro/Piper) backends from
-/// the models directory (see [`vox::paths::models_dir`]). Missing backends
+/// the models directory (see [`crate::paths::models_dir`]). Missing backends
 /// are tolerated -- the corresponding endpoints return 503 until models are
 /// available.
 ///
@@ -225,14 +263,12 @@ pub fn check_bind_host(host: &str, allow_remote: bool) -> anyhow::Result<()> {
 ///
 /// # Arguments
 /// - `cache_models`: deprecated, ignored (kept so `vox serve --cache-models` still parses)
-#[allow(dead_code)]
 pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()> {
     run_with_options(host, port, cache_models, LoadOptions::from_env()).await
 }
 
 /// Like [`run`], with explicit model-loading options. Server options come
 /// from the `VOX_*` environment variables (see [`ServerOptions::from_env`]).
-#[allow(dead_code)]
 pub async fn run_with_options(
     host: &str,
     port: u16,
@@ -260,7 +296,7 @@ pub async fn run_with_config(
     // Fail before loading any model if the bind address is not allowed.
     check_bind_host(host, server_opts.allow_remote)?;
     // Offline mode: refuse a remote Ollama before loading any model.
-    vox::privacy::ensure_ollama_host_allowed(&server_opts.resolved_ollama_host())?;
+    crate::privacy::ensure_ollama_host_allowed(&server_opts.resolved_ollama_host())?;
 
     // Single source of truth for model resolution, shared with the CLI:
     // `VOX_MODELS_DIR` → source checkout → per-user data directory.
@@ -268,7 +304,7 @@ pub async fn run_with_config(
     info!(dir = %models_dir.display(), "server using models directory");
 
     // Hardware profile drives the STT candidate order and thread count.
-    let profile = vox::system_profile::SystemProfile::detect();
+    let profile = crate::system_profile::SystemProfile::detect();
     info!(profile = %profile.summary(), "detected hardware profile");
 
     // `--cache-models` used to build an LRU model cache that nothing ever
@@ -284,7 +320,7 @@ pub async fn run_with_config(
 
     // Load Piper as conversation TTS (better pronunciation for Live Talk/Converse)
     #[cfg(feature = "piper")]
-    let conversation_tts: Option<Arc<dyn vox::traits::TtsBackend>> = {
+    let conversation_tts: Option<Arc<dyn crate::traits::TtsBackend>> = {
         // Only load separately if main TTS isn't already Piper
         if tts_model_name
             .as_deref()
@@ -302,7 +338,7 @@ pub async fn run_with_config(
         }
     };
     #[cfg(not(feature = "piper"))]
-    let conversation_tts: Option<Arc<dyn vox::traits::TtsBackend>> = None;
+    let conversation_tts: Option<Arc<dyn crate::traits::TtsBackend>> = None;
 
     let vad_model_path = {
         let path = models_dir.join("silero_vad.onnx");
@@ -316,10 +352,10 @@ pub async fn run_with_config(
     };
 
     #[cfg(feature = "sherpa")]
-    let streaming_stt: Option<Arc<dyn vox::traits::StreamingSttBackend>> = {
+    let streaming_stt: Option<Arc<dyn crate::traits::StreamingSttBackend>> = {
         let streaming_dir = models_dir.join("sherpa-streaming");
         if streaming_dir.exists() {
-            match vox::SherpaStreamingBackend::from_transducer(&streaming_dir) {
+            match crate::SherpaStreamingBackend::from_transducer(&streaming_dir) {
                 Ok(backend) => {
                     info!(
                         model = %streaming_dir.display(),
@@ -337,7 +373,7 @@ pub async fn run_with_config(
         }
     };
     #[cfg(not(feature = "sherpa"))]
-    let streaming_stt: Option<Arc<dyn vox::traits::StreamingSttBackend>> = None;
+    let streaming_stt: Option<Arc<dyn crate::traits::StreamingSttBackend>> = None;
 
     let ollama_host = server_opts.resolved_ollama_host();
 
@@ -375,7 +411,7 @@ pub async fn run_with_config(
     });
 
     let capabilities = Arc::new(
-        vox::CapabilityRegistry::build(
+        crate::CapabilityRegistry::build(
             &profile,
             stt_tuple,
             streaming_stt_tuple,
@@ -439,7 +475,7 @@ pub async fn run_with_config(
     println!("    GET  /health         — liveness (GET /health/ready — readiness)");
     println!();
     println!("  LLM: Ollama at {}", state.ollama_host);
-    if vox::privacy::offline() {
+    if crate::privacy::offline() {
         println!("  offline mode: only loopback Ollama, no model downloads");
     }
     println!();

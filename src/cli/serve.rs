@@ -1,7 +1,7 @@
 //! Handler for `vox serve` — HTTP API server.
 
 use super::models::{self, BundleOptions};
-use crate::server::{LoadOptions, ServerOptions};
+use vox::server::{LoadOptions, ServerOptions};
 
 /// Arguments of `vox serve`.
 #[derive(Debug, Clone)]
@@ -60,7 +60,7 @@ pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
     let server_opts = server_options(&args, ServerOptions::from_env());
 
     // Refuse an exposed bind address before downloading or loading anything.
-    crate::server::check_bind_host(&args.host, server_opts.allow_remote)?;
+    vox::server::check_bind_host(&args.host, server_opts.allow_remote)?;
     // Offline mode: refuse a remote Ollama before downloading or loading anything.
     vox::privacy::ensure_ollama_host_allowed(&server_opts.resolved_ollama_host())?;
 
@@ -97,8 +97,7 @@ pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
-    crate::server::run_with_config(&args.host, args.port, args.cache_models, opts, server_opts)
-        .await
+    vox::server::run_with_config(&args.host, args.port, args.cache_models, opts, server_opts).await
 }
 
 #[cfg(test)]

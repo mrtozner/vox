@@ -8,8 +8,7 @@
 //!
 //! Run with: `cargo test --test server_tests --features server`
 
-#[path = "../src/server/mod.rs"]
-mod server;
+use vox::server;
 
 use std::io::Cursor;
 use std::sync::atomic::{AtomicUsize, Ordering};

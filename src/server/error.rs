@@ -189,7 +189,6 @@ impl ServerError {
     }
 
     /// The HTTP status of this error.
-    #[allow(dead_code)]
     pub fn status(&self) -> StatusCode {
         self.status
     }
@@ -200,15 +199,14 @@ impl ServerError {
     }
 
     /// The machine-readable code.
-    #[allow(dead_code)]
     pub fn code(&self) -> &str {
         self.code
     }
 }
 
-impl From<vox::VoxError> for ServerError {
-    fn from(err: vox::VoxError) -> Self {
-        use vox::VoxError;
+impl From<crate::VoxError> for ServerError {
+    fn from(err: crate::VoxError) -> Self {
+        use crate::VoxError;
         let message = err.to_string();
         match &err {
             VoxError::NoStt => Self::service_unavailable(message).with_code("stt_unavailable"),

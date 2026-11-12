@@ -31,7 +31,7 @@ use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use vox::types::{AudioChunk, TtsRequest};
+use crate::types::{AudioChunk, TtsRequest};
 
 use super::ServerState;
 use super::error::ServerError;
@@ -301,7 +301,7 @@ pub struct SpeechRequest {
 fn select_tts<'a>(
     state: &'a ServerState,
     model: Option<&str>,
-) -> Option<&'a Arc<dyn vox::traits::TtsBackend>> {
+) -> Option<&'a Arc<dyn crate::traits::TtsBackend>> {
     if let (Some(model), Some(conv)) = (model, state.conversation_tts.as_ref())
         && conv.backend_name().eq_ignore_ascii_case(model)
     {
@@ -311,7 +311,10 @@ fn select_tts<'a>(
 }
 
 /// Map the requested voice onto one the backend has.
-fn resolve_voice(tts: &Arc<dyn vox::traits::TtsBackend>, voice: Option<String>) -> Option<String> {
+fn resolve_voice(
+    tts: &Arc<dyn crate::traits::TtsBackend>,
+    voice: Option<String>,
+) -> Option<String> {
     let voice = voice
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())?;
@@ -391,7 +394,7 @@ async fn to_openai_pcm(audio: AudioChunk) -> Result<AudioChunk, ServerError> {
     if audio.sample_rate == OPENAI_PCM_SAMPLE_RATE && audio.channels <= 1 {
         return Ok(audio);
     }
-    tokio::task::spawn_blocking(move || vox::audio::resample_once(&audio, OPENAI_PCM_SAMPLE_RATE))
+    tokio::task::spawn_blocking(move || crate::audio::resample_once(&audio, OPENAI_PCM_SAMPLE_RATE))
         .await
         .map_err(|e| ServerError::internal(format!("resampling task failed: {e}")))?
         .map_err(|e| ServerError::internal(format!("resampling failed: {e}")))

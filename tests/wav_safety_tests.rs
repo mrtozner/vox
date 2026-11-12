@@ -10,8 +10,7 @@
 #![allow(clippy::single_match)]
 #![allow(dead_code)]
 
-#[path = "../src/server/mod.rs"]
-mod server;
+use vox::server;
 
 use std::io::Cursor;
 use std::sync::Arc;

@@ -19,8 +19,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-#[path = "../src/server/mod.rs"]
-mod server;
+use vox::server;
 
 use server::live_talk::{Enrollment, LiveTalkDeps, SpeakerService, SpeakerTag, run_live_talk};
 use server::models::{

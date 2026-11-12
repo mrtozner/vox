@@ -6,8 +6,7 @@
 //!
 //! Run with: `cargo test --test offline_server_tests --features server`
 
-#[path = "../src/server/mod.rs"]
-mod server;
+use vox::server;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

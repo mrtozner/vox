@@ -11,7 +11,7 @@ use super::access::AccessPolicy;
 use super::error::ServerError;
 
 /// Default Ollama address when neither `--ollama-host` nor `VOX_OLLAMA_HOST` is set.
-pub const DEFAULT_OLLAMA_HOST: &str = vox::privacy::DEFAULT_OLLAMA_HOST;
+pub const DEFAULT_OLLAMA_HOST: &str = crate::privacy::DEFAULT_OLLAMA_HOST;
 
 /// Shared server state accessible from all handlers.
 ///
@@ -33,10 +33,10 @@ pub const DEFAULT_OLLAMA_HOST: &str = vox::privacy::DEFAULT_OLLAMA_HOST;
 /// let state = ServerState { stt: Some(stt), ..ServerState::empty() };
 /// ```
 pub struct ServerState {
-    pub stt: Option<Arc<dyn vox::traits::SttBackend>>,
-    pub tts: Option<Arc<dyn vox::traits::TtsBackend>>,
-    pub conversation_tts: Option<Arc<dyn vox::traits::TtsBackend>>,
-    pub streaming_stt: Option<Arc<dyn vox::traits::StreamingSttBackend>>,
+    pub stt: Option<Arc<dyn crate::traits::SttBackend>>,
+    pub tts: Option<Arc<dyn crate::traits::TtsBackend>>,
+    pub conversation_tts: Option<Arc<dyn crate::traits::TtsBackend>>,
+    pub streaming_stt: Option<Arc<dyn crate::traits::StreamingSttBackend>>,
     pub vad_model_path: Option<std::path::PathBuf>,
     /// Lock-free counters; see [`ServerStats`].
     pub stats: Arc<ServerStats>,
@@ -49,7 +49,7 @@ pub struct ServerState {
     pub stt_model_size: Option<u64>,
     pub tts_model_name: Option<String>,
     pub tts_model_size: Option<u64>,
-    pub capabilities: Arc<vox::CapabilityRegistry>,
+    pub capabilities: Arc<crate::CapabilityRegistry>,
     /// Which `Host` / `Origin` values may talk to this server.
     pub access: AccessPolicy,
     /// Request limits (text length, timeouts).
@@ -64,17 +64,16 @@ pub struct ServerState {
     /// select on it and send [`shutdown_close_message`] before returning.
     pub shutdown: CancellationToken,
     /// Live Talk conversation memory by session id, kept across reconnects.
-    pub sessions: Arc<vox::conversation::SessionStore>,
+    pub sessions: Arc<crate::conversation::SessionStore>,
     #[cfg(feature = "diarization")]
-    pub diarization: Option<Arc<vox::DiarizationPipeline>>,
+    pub diarization: Option<Arc<crate::DiarizationPipeline>>,
     #[cfg(feature = "diarization")]
-    pub speaker_db: Option<Arc<vox::SpeakerDatabase>>,
+    pub speaker_db: Option<Arc<crate::SpeakerDatabase>>,
 }
 
 impl ServerState {
     /// A state with no backends loaded and default options, bound to
     /// `127.0.0.1:3000` for access-control purposes.
-    #[allow(dead_code)]
     pub fn empty() -> Self {
         Self::with_options("127.0.0.1", 3000, &ServerOptions::default())
     }
@@ -96,7 +95,7 @@ impl ServerState {
             stt_model_size: None,
             tts_model_name: None,
             tts_model_size: None,
-            capabilities: Arc::new(vox::CapabilityRegistry::default()),
+            capabilities: Arc::new(crate::CapabilityRegistry::default()),
             access: AccessPolicy::new(host, port)
                 .with_extra_hosts(opts.allowed_hosts.iter().cloned())
                 .with_extra_origins(opts.allowed_origins.iter().cloned()),
@@ -301,7 +300,7 @@ impl ServerOptions {
 /// `http://{host}/api/...` URLs, so a scheme, path or trailing slash typed by
 /// the operator would otherwise produce a broken URL.
 pub fn normalize_ollama_host(raw: &str) -> String {
-    vox::privacy::normalize_ollama_host(raw)
+    crate::privacy::normalize_ollama_host(raw)
 }
 
 /// Cumulative request counters.

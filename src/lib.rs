@@ -60,6 +60,10 @@ pub mod system_profile;
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod privacy;
 
+// HTTP + WebSocket server: REST, OpenAI-compatible endpoints, Live Talk.
+#[cfg(feature = "server")]
+pub mod server;
+
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
