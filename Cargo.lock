@@ -6295,7 +6295,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "vox"
+name = "vox-python"
+version = "0.2.0"
+dependencies = [
+ "dirs 5.0.1",
+ "hound",
+ "once_cell",
+ "pyo3",
+ "tokio",
+ "vox-voice",
+]
+
+[[package]]
+name = "vox-voice"
 version = "0.6.0"
 dependencies = [
  "anyhow",
@@ -6335,18 +6347,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "whisper-rs",
-]
-
-[[package]]
-name = "vox-python"
-version = "0.2.0"
-dependencies = [
- "dirs 5.0.1",
- "hound",
- "once_cell",
- "pyo3",
- "tokio",
- "vox",
 ]
 
 [[package]]

@@ -49,7 +49,7 @@ fn main() {
                 }
                 Err(err) => {
                     println!(
-                        "cargo:warning=vox: sherpa-onnx auto-download failed: {err}. See docs/raspberry_pi.md for manual instructions."
+                        "cargo:warning=vox: sherpa-onnx auto-download failed: {err}. Set SHERPA_ONNX_DIR to a sherpa-onnx install, or see docs/raspberry_pi.md."
                     );
                 }
             }

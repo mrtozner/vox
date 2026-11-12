@@ -36,14 +36,22 @@ jobs:
               - 'tests/**'
               - 'benches/**'
               - 'examples/**'
+              - 'build.rs'
+              - 'vendor/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
+              - '.github/workflows/release.yml'
+              - '.github/scripts/**'
             cross_platform:
               - 'src/**/*.rs'
+              - 'build.rs'
+              - 'vendor/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
+              - '.github/workflows/release.yml'
+              - '.github/scripts/**'
               - '!src/**/*_test.rs'
               - '!**/*.md'
             python:
@@ -192,7 +200,12 @@ jobs:
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
       - name: Unit + integration tests
-        run: cargo test
+        run: cargo test --locked
+
+      # The server and the `vox` binary carry most of the test suite
+      # (tests/server_tests.rs, live_talk_integration.rs, src/bin tests, ...).
+      - name: Tests with CLI + server features
+        run: cargo test --locked --features cli,server --lib --bins --tests
 
       - name: Tests with piper feature
         run: cargo test --features piper
@@ -205,22 +218,68 @@ jobs:
         env:
           RUSTFLAGS: ""
 
-      - name: Build CLI binary
-        run: cargo build --features cli --release
+      # Examples that build from crates.io dependencies plus Piper. The
+      # qwen3, pocket and chatterbox examples are covered by clippy/test of
+      # their own features. RUSTFLAGS is cleared because the vendored
+      # piper-rs does not build with -D warnings.
+      - name: Build examples
+        run: cargo build --locked --examples --features cli,kokoro,piper,diarization
+        env:
+          RUSTFLAGS: ""
 
-      - name: CLI smoke test (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          ./target/release/vox --version
-          ./target/release/vox --help
-          ./target/release/vox models list
+      # The exact feature set and profile the release workflow ships.
+      - name: Build release binary (dist features)
+        run: cargo build --locked --release --features dist
+        env:
+          RUSTFLAGS: ""
 
-      - name: CLI smoke test (Windows)
-        if: runner.os == 'Windows'
+      # --version, --help of every subcommand the README documents,
+      # `vox models list`, and `vox serve` answering GET /health.
+      - name: Smoke test
+        shell: bash
         run: |
-          ./target/release/vox.exe --version
-          ./target/release/vox.exe --help
-          ./target/release/vox.exe models list
+          BIN=target/release/vox
+          if [ "$RUNNER_OS" = "Windows" ]; then BIN=target/release/vox.exe; fi
+          .github/scripts/smoke-test.sh "$BIN"
+
+  # The rust-version declared in Cargo.toml must really build the shipped
+  # CLI + server code.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    needs: [quick-check, fmt]
+    if: needs.quick-check.outputs.should_test == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          MSRV="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "vox-voice") | .rust_version')"
+          if [ -z "$MSRV" ] || [ "$MSRV" = "null" ]; then
+            echo "::error::Cargo.toml has no rust-version"
+            exit 1
+          fi
+          echo "rust-version: $MSRV"
+          echo "msrv=$MSRV" >> "$GITHUB_OUTPUT"
+          rustup toolchain install "$MSRV" --profile minimal
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-msrv-${{ steps.msrv.outputs.msrv }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install ALSA dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: cargo check on the MSRV toolchain
+        run: cargo +${{ steps.msrv.outputs.msrv }} check --locked --features cli,server,kokoro
 
   doc:
     name: Documentation
@@ -278,7 +337,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [quick-check, fmt, clippy, test, doc, python]
+    needs: [quick-check, fmt, clippy, test, msrv, doc, python]
     # Run even if some jobs are skipped, but fail if any required job failed
     if: always()
     steps:
@@ -288,6 +347,7 @@ jobs:
           if [[ "${{ needs.fmt.result }}" == "failure" ]] || \
              [[ "${{ needs.clippy.result }}" == "failure" ]] || \
              [[ "${{ needs.test.result }}" == "failure" ]] || \
+             [[ "${{ needs.msrv.result }}" == "failure" ]] || \
              [[ "${{ needs.doc.result }}" == "failure" ]] || \
              [[ "${{ needs.python.result }}" == "failure" ]]; then
             echo "One or more required jobs failed"
@@ -298,7 +358,8 @@ jobs:
           if [[ "${{ needs.quick-check.outputs.should_test }}" == "true" ]]; then
             if [[ "${{ needs.fmt.result }}" == "skipped" ]] || \
                [[ "${{ needs.clippy.result }}" == "skipped" ]] || \
-               [[ "${{ needs.test.result }}" == "skipped" ]]; then
+               [[ "${{ needs.test.result }}" == "skipped" ]] || \
+               [[ "${{ needs.msrv.result }}" == "skipped" ]]; then
               echo "Required jobs were skipped when code changed"
               exit 1
             fi
