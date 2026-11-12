@@ -249,6 +249,49 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+### Your own audio source
+
+`build()` opens the default microphone. To run the same pipeline on audio you already have (a file, a socket, a call), feed it through a channel instead. This path needs neither the `mic` nor the `signal` feature, so an embedding application can drop the audio driver and decide for itself when to stop:
+
+```toml
+[dependencies]
+vox = { package = "vox-voice", git = "https://github.com/mrtozner/vox", default-features = false, features = ["whisper", "silero"] }
+```
+
+```rust
+use vox::{AudioChunk, SileroVad, Vox, WhisperBackend};
+
+let (vox, audio) = Vox::builder()
+    .vad(SileroVad::new("silero_vad.onnx")?)
+    .stt(WhisperBackend::from_model("ggml-tiny.en.bin")?)
+    .on_utterance(|result, _ctx| println!("{}", result.text))
+    .build_with_channel(48_000, 32)?; // source sample rate, channel capacity
+
+// Chunks of any length and channel count; drop `audio` to end the stream.
+audio.send(AudioChunk { samples, sample_rate: 48_000, channels: 2 }).await?;
+
+// Runs until the sender is dropped or the future you pass resolves.
+vox.listen_until(shutdown.cancelled()).await?;
+```
+
+### Embedding the server
+
+With the `server` feature the HTTP/WebSocket server is part of the library as `vox::server`: `run_with_config` is what `vox serve` calls, `serve` runs a `ServerState` you built on a listener you bound, and `build_router` returns the `axum::Router` to merge into your own application.
+
+```rust
+use std::{sync::Arc, time::Duration};
+use vox::server::{self, ServerOptions, ServerState};
+
+let state = Arc::new(ServerState {
+    stt: Some(my_stt), // any Arc<dyn vox::SttBackend>
+    ..ServerState::with_options("127.0.0.1", 3000, &ServerOptions::default())
+});
+let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+server::serve(listener, state, Duration::from_secs(5), my_shutdown_future).await?;
+```
+
+The server has no authentication; read the notes on `vox::server::check_bind_host` before binding anything other than loopback.
+
 <br>
 
 ## Python Bindings
@@ -346,7 +389,9 @@ The speaker database is `speakers.db` in the same per-user `vox` data directory 
 |------|---------|-------------|
 | `dist` | no | What the release binaries are built with: `cli`, `server`, `kokoro`, `piper`. Produces a GPL-3.0 binary |
 | `cli` | no | CLI binary (`vox listen`, `vox speak`, `vox chat`, `vox doctor`, `vox models`) |
-| `server` | no | HTTP/WebSocket server with web UI (includes `diarization`) |
+| `server` | no | HTTP/WebSocket server with web UI, as `vox::server` (includes `diarization` and `silero`) |
+| `mic` | **yes** | Microphone capture via cpal (`Vox::builder().build()`, `AudioCapture`). Off: feed the engine with `build_with_source` / `build_with_channel` |
+| `signal` | **yes** | `Vox::listen()` stops on Ctrl-C. Off: use `Vox::listen_until()` |
 | `whisper` | **yes** | Whisper STT via whisper-rs |
 | `distil-whisper` | no | Distil-Whisper STT (6x faster) |
 | `silero` | **yes** | Silero VAD via ONNX Runtime |

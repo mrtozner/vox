@@ -207,6 +207,15 @@ jobs:
       - name: Tests with CLI + server features
         run: cargo test --locked --features cli,server --lib --bins --tests
 
+      # The embeddable core: no microphone (cpal), no signal handler, and
+      # only the tokio features the library itself declares. Nothing else in
+      # this build turns on extra tokio features, so a missing one fails here.
+      - name: Library without default features
+        run: |
+          cargo check --locked --lib --no-default-features
+          cargo check --locked --lib --no-default-features --features server
+          cargo test --locked --no-default-features --test embedding_tests
+
       - name: Tests with piper feature
         run: cargo test --features piper
         env:
