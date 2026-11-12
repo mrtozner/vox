@@ -2847,6 +2847,16 @@ function handleLiveEvent(data) {
         case 'memory':
             renderMemory(data);
             break;
+        case 'memory_distilled': {
+            // Older turns left the conversation and were condensed into long-term
+            // facts about a person with memory on. Belongs to no turn.
+            const count = Array.isArray(data.facts) ? data.facts.length : 0;
+            if (!count) break;
+            showToast('Remembered ' + count + (count === 1 ? ' thing' : ' things') + ' about '
+                + (data.speaker_name || 'this speaker') + '. You can forget it under People.');
+            loadPeople();
+            break;
+        }
         case 'speaker_enrolled': {
             // Answer to enroll_speaker. created:false means the voice was already known.
             const pending = LT.enroll;
