@@ -30,7 +30,7 @@ fn build_test_app() -> Router {
         stt: None,
         tts: None,
         streaming_stt: None,
-        model_cache: None,
+        conversation_tts: None,
         vad_model_path: None,
         stats: Arc::new(Mutex::new(ServerStats {
             requests: 0,
@@ -356,7 +356,7 @@ async fn stats_counter_increments_across_requests() {
         stt: None,
         tts: None,
         streaming_stt: None,
-        model_cache: None,
+        conversation_tts: None,
         vad_model_path: None,
         stats: Arc::new(Mutex::new(ServerStats {
             requests: 0,
@@ -435,7 +435,7 @@ async fn cors_headers_are_present_on_response() {
         stt: None,
         tts: None,
         streaming_stt: None,
-        model_cache: None,
+        conversation_tts: None,
         vad_model_path: None,
         stats: Arc::new(Mutex::new(ServerStats {
             requests: 0,

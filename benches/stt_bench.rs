@@ -17,6 +17,8 @@ fn generate_utterance(duration_secs: f32) -> Utterance {
             channels: 1,
         },
         duration_ms: (duration_secs * 1000.0) as u64,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     }
 }
 

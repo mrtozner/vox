@@ -88,7 +88,6 @@ qwen3 = ["dep:qwen3-tts", "qwen3-tts/cpu", "dep:candle-core", "dep:rodio"]
 qwen3-cuda = ["qwen3", "qwen3-tts/cuda", "candle-core/cuda"]
 qwen3-metal = ["qwen3", "qwen3-tts/metal", "candle-core/metal"]
 diarization = ["dep:ort", "dep:ndarray", "dep:sqlx", "dep:sha2"]
-intelligence = [] # Semantic caching, user modeling, voice memory (opt-in)
 cli = [
     "dep:clap", "dep:dirs", "dep:indicatif", "dep:reqwest",
     "dep:tracing-subscriber", "dep:tokio-util", "dep:toml",
@@ -123,11 +122,6 @@ required-features = ["server"]
 name = "wav_safety_tests"
 path = "tests/wav_safety_tests.rs"
 required-features = ["server"]
-
-[[test]]
-name = "streaming_pipeline_tests"
-path = "tests/streaming_pipeline_tests.rs"
-required-features = ["whisper", "silero"]
 
 [[test]]
 name = "capabilities_tests"
@@ -177,21 +171,8 @@ required-features = ["chatterbox"]
 name = "tts_comparison_bench"
 harness = false
 
-[[bench]]
-name = "streaming_pipeline_bench"
-harness = false
-
-[[bench]]
-name = "intelligence_bench"
-harness = false
-required-features = ["intelligence"]
-
 [[example]]
 name = "simple_listen"
-required-features = ["whisper", "silero"]
-
-[[example]]
-name = "streaming_pipeline_demo"
 required-features = ["whisper", "silero"]
 
 [[example]]
@@ -233,10 +214,6 @@ required-features = ["qwen3"]
 [[example]]
 name = "demo_voice_mode"
 required-features = ["cli"]
-
-[[example]]
-name = "voice_memory_demo"
-required-features = ["intelligence"]
 
 [[example]]
 name = "diarization_demo"

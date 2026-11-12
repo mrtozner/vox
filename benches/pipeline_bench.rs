@@ -56,6 +56,8 @@ fn bench_end_to_end(c: &mut Criterion) {
             channels: 1,
         },
         duration_ms: 3000,
+        #[cfg(feature = "diarization")]
+        speaker_id: None,
     };
 
     group.bench_function("stt_3s_utterance", |b| {
@@ -85,6 +87,8 @@ fn bench_end_to_end(c: &mut Criterion) {
                             channels: 1,
                         },
                         duration_ms: 3000,
+                        #[cfg(feature = "diarization")]
+                        speaker_id: None,
                     };
                     let _ = stt.transcribe(&utt).await.unwrap();
                 }
