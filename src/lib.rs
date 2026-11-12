@@ -38,6 +38,9 @@ pub mod vad;
 
 #[cfg(feature = "diarization")]
 pub mod diarization;
+// Per-person long-term memory, stored next to the voiceprints.
+#[cfg(feature = "diarization")]
+pub mod memory;
 
 // Tier 1 quality optimizations
 #[cfg(any(feature = "cli", feature = "server"))]
