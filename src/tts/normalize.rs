@@ -104,16 +104,16 @@ fn strip_markdown_links(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '[' {
-            if let Some(close) = chars[i + 1..].iter().position(|&c| c == ']') {
-                let close = i + 1 + close;
-                if chars.get(close + 1) == Some(&'(') {
-                    if let Some(end) = chars[close + 2..].iter().position(|&c| c == ')') {
-                        out.extend(&chars[i + 1..close]);
-                        i = close + 2 + end + 1;
-                        continue;
-                    }
-                }
+        if chars[i] == '['
+            && let Some(close) = chars[i + 1..].iter().position(|&c| c == ']')
+        {
+            let close = i + 1 + close;
+            if chars.get(close + 1) == Some(&'(')
+                && let Some(end) = chars[close + 2..].iter().position(|&c| c == ')')
+            {
+                out.extend(&chars[i + 1..close]);
+                i = close + 2 + end + 1;
+                continue;
             }
         }
         out.push(chars[i]);
@@ -762,22 +762,21 @@ impl Expander<'_> {
 
         // "St." is Saint before a capitalized name, Street otherwise. A sentence
         // that ends in "St." followed by another one is misread as Saint.
-        if self.lang == NormLang::English {
-            if let Some(len) = self.matches(i, "St.", false) {
-                if self.boundary_after(i + len) {
-                    let before_name = self.at(i + len).is_some_and(char::is_whitespace)
-                        && self.at(i + len + 1).is_some_and(char::is_uppercase);
-                    if before_name {
-                        self.push_word("Saint");
-                    } else {
-                        self.push_word("Street");
-                        if self.at(i + len).is_none() {
-                            self.out.push('.');
-                        }
-                    }
-                    return Some(len);
+        if self.lang == NormLang::English
+            && let Some(len) = self.matches(i, "St.", false)
+            && self.boundary_after(i + len)
+        {
+            let before_name = self.at(i + len).is_some_and(char::is_whitespace)
+                && self.at(i + len + 1).is_some_and(char::is_uppercase);
+            if before_name {
+                self.push_word("Saint");
+            } else {
+                self.push_word("Street");
+                if self.at(i + len).is_none() {
+                    self.out.push('.');
                 }
             }
+            return Some(len);
         }
 
         // "No. 5" / "No.5": only before a digit.
@@ -1040,22 +1039,22 @@ impl Expander<'_> {
         }
 
         // Trailing currency: "5$", "5€", "5 TL".
-        if let Some(currency) = next.and_then(currency_for) {
-            if self.boundary_after(end + 1) {
-                let words = self.money_words(&number, currency);
-                self.push_word(&words);
-                return number.len + 1;
-            }
+        if let Some(currency) = next.and_then(currency_for)
+            && self.boundary_after(end + 1)
+        {
+            let words = self.money_words(&number, currency);
+            self.push_word(&words);
+            return number.len + 1;
         }
         {
             let j = if next == Some(' ') { end + 1 } else { end };
-            if let Some(n) = self.matches(j, "TL", false) {
-                if self.boundary_after(j + n) {
-                    let lira = currency_for('₺').expect("lira is in the currency table");
-                    let words = self.money_words(&number, lira);
-                    self.push_word(&words);
-                    return j + n - i;
-                }
+            if let Some(n) = self.matches(j, "TL", false)
+                && self.boundary_after(j + n)
+            {
+                let lira = currency_for('₺').expect("lira is in the currency table");
+                let words = self.money_words(&number, lira);
+                self.push_word(&words);
+                return j + n - i;
             }
         }
 
@@ -1087,11 +1086,11 @@ impl Expander<'_> {
             // Ordinals: "1st", "22nd".
             if let Some(v) = value {
                 for suffix in ["st", "nd", "rd", "th"] {
-                    if let Some(n) = self.matches(end, suffix, true) {
-                        if self.boundary_after(end + n) {
-                            self.push_word(&en_ordinal(v));
-                            return number.len + n;
-                        }
+                    if let Some(n) = self.matches(end, suffix, true)
+                        && self.boundary_after(end + n)
+                    {
+                        self.push_word(&en_ordinal(v));
+                        return number.len + n;
                     }
                 }
             }

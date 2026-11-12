@@ -146,14 +146,14 @@ impl AccessPolicy {
         };
         // A request with no host at all cannot come from a browser, and a
         // rebinding attack needs one.
-        if let Some(host) = host {
-            if !self.host_allowed(host) {
-                return Err(ServerError::forbidden(format!(
-                    "Host '{host}' is not allowed. vox only answers to localhost and its bind \
+        if let Some(host) = host
+            && !self.host_allowed(host)
+        {
+            return Err(ServerError::forbidden(format!(
+                "Host '{host}' is not allowed. vox only answers to localhost and its bind \
                      address; set VOX_ALLOWED_HOSTS to add a name."
-                ))
-                .with_code("host_not_allowed"));
-            }
+            ))
+            .with_code("host_not_allowed"));
         }
 
         if let Some(origin) = headers.get(header::ORIGIN) {

@@ -134,15 +134,15 @@ pub(crate) fn warn_if_language_unsupported(
     if multilingual {
         return;
     }
-    if let Some(lang) = normalize_language(requested) {
-        if lang != "en" {
-            tracing::warn!(
-                model = %model.display(),
-                language = %lang,
-                "model is English-only; the requested language is ignored. \
-                 Use a multilingual model (e.g. base, small, turbo)"
-            );
-        }
+    if let Some(lang) = normalize_language(requested)
+        && lang != "en"
+    {
+        tracing::warn!(
+            model = %model.display(),
+            language = %lang,
+            "model is English-only; the requested language is ignored. \
+             Use a multilingual model (e.g. base, small, turbo)"
+        );
     }
 }
 

@@ -70,10 +70,10 @@ pub async fn probe(
                 None => continue,
             };
             let family = m["details"]["family"].as_str().map(|s| s.to_lowercase());
-            if let Some(f) = &family {
-                if embedding_families.iter().any(|e| f == e) {
-                    continue;
-                }
+            if let Some(f) = &family
+                && embedding_families.iter().any(|e| f == e)
+            {
+                continue;
             }
             let size_mb = m["size"].as_u64().map(|b| b / (1024 * 1024));
             out.push(OllamaModelSummary {

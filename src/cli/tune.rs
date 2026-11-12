@@ -1046,12 +1046,13 @@ pub async fn run(args: TuneArgs) -> anyhow::Result<()> {
         ),
         Some(sample) => {
             let mut files = inv.stt_installed.clone();
-            if files.is_empty() && args.yes {
-                if let Some(file) = inv.stt_candidates.first() {
-                    let name = models::whisper_download_name(&whisper_name_from_file(file));
-                    models::ensure_model(&name, file, true).await?;
-                    files.push(file.clone());
-                }
+            if files.is_empty()
+                && args.yes
+                && let Some(file) = inv.stt_candidates.first()
+            {
+                let name = models::whisper_download_name(&whisper_name_from_file(file));
+                models::ensure_model(&name, file, true).await?;
+                files.push(file.clone());
             }
             if files.is_empty() {
                 println!(

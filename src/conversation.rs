@@ -496,14 +496,13 @@ impl Conversation {
         }
         let turn = Turn::new(user, sentences, interrupted);
         let tokens = turn.tokens;
-        if turn.carries_recall {
-            if let Some(entry) = turn
+        if turn.carries_recall
+            && let Some(entry) = turn
                 .speaker
                 .as_ref()
                 .and_then(|speaker| self.recall.get_mut(&speaker.id))
-            {
-                entry.in_context = true;
-            }
+        {
+            entry.in_context = true;
         }
         self.turns.push(turn);
         self.total_tokens += tokens;
@@ -625,15 +624,15 @@ impl SessionStore {
         sessions.retain(|_, s| now.saturating_duration_since(s.last_seen) < ttl);
 
         let requested = requested.filter(|id| Self::is_valid_id(id));
-        if let Some(id) = requested {
-            if let Some(entry) = sessions.get_mut(id) {
-                entry.last_seen = now;
-                return SessionHandle {
-                    id: id.to_string(),
-                    conversation: Arc::clone(&entry.conversation),
-                    resumed: true,
-                };
-            }
+        if let Some(id) = requested
+            && let Some(entry) = sessions.get_mut(id)
+        {
+            entry.last_seen = now;
+            return SessionHandle {
+                id: id.to_string(),
+                conversation: Arc::clone(&entry.conversation),
+                resumed: true,
+            };
         }
 
         while sessions.len() >= self.max_sessions {

@@ -174,10 +174,9 @@ async fn handle_ws(
         // VAD event, making hangs indistinguishable from idle.
         if let Ok(ready_json) = serde_json::to_string(&WsEvent::ListenReady {
             diarization_available,
-        }) {
-            if ws_tx.send(Message::Text(ready_json.into())).await.is_err() {
-                return;
-            }
+        }) && ws_tx.send(Message::Text(ready_json.into())).await.is_err()
+        {
+            return;
         }
 
         let mut session: Option<Box<dyn vox::traits::SttSession>> = None;
@@ -241,10 +240,9 @@ async fn handle_ws(
                                         stability: 0.8,
                                         duration_ms: 0,
                                         processing_time_ms: 0,
-                                    }) {
-                                        if ws_tx.send(Message::Text(json.into())).await.is_err() {
-                                            return;
-                                        }
+                                    }) && ws_tx.send(Message::Text(json.into())).await.is_err()
+                                    {
+                                        return;
                                     }
                                 }
                                 Ok(None) => {}
@@ -368,16 +366,14 @@ async fn handle_ws(
                                             // If diarization auto-enrolled a new speaker,
                                             // push a SpeakerUpdate so the sidebar appears
                                             // without the client having to poll.
-                                            if let Some(update) = new_speaker_update {
-                                                if let Ok(json) =
+                                            if let Some(update) = new_speaker_update
+                                                && let Ok(json) =
                                                     serde_json::to_string(&WsEvent::SpeakerUpdate {
                                                         speaker: update,
                                                     })
-                                                {
-                                                    let _ = ws_tx
-                                                        .send(Message::Text(json.into()))
-                                                        .await;
-                                                }
+                                            {
+                                                let _ =
+                                                    ws_tx.send(Message::Text(json.into())).await;
                                             }
 
                                             serde_json::to_string(&WsEvent::SpeechEnd)
@@ -385,10 +381,10 @@ async fn handle_ws(
                                         vox::VadEvent::Silence => continue,
                                     };
 
-                                    if let Ok(json) = json {
-                                        if ws_tx.send(Message::Text(json.into())).await.is_err() {
-                                            return; // client disconnected
-                                        }
+                                    if let Ok(json) = json
+                                        && ws_tx.send(Message::Text(json.into())).await.is_err()
+                                    {
+                                        return; // client disconnected
                                     }
                                 }
                             }
@@ -433,25 +429,20 @@ async fn handle_ws(
                                         // never creating speakers.
                                         if let Some(message) =
                                             enrollment_blocked_notice(&state).await
-                                        {
-                                            if let Ok(json) =
+                                            && let Ok(json) =
                                                 serde_json::to_string(&WsEvent::Error { message })
-                                            {
-                                                let _ =
-                                                    ws_tx.send(Message::Text(json.into())).await;
-                                            }
+                                        {
+                                            let _ = ws_tx.send(Message::Text(json.into())).await;
                                         }
                                         // Send full snapshot so the UI can
                                         // populate the speaker sidebar.
-                                        if let Some(list) = current_speaker_list(&state).await {
-                                            if let Ok(json) =
+                                        if let Some(list) = current_speaker_list(&state).await
+                                            && let Ok(json) =
                                                 serde_json::to_string(&WsEvent::SpeakerList {
                                                     speakers: list,
                                                 })
-                                            {
-                                                let _ =
-                                                    ws_tx.send(Message::Text(json.into())).await;
-                                            }
+                                        {
+                                            let _ = ws_tx.send(Message::Text(json.into())).await;
                                         }
                                     }
                                 }
@@ -468,12 +459,11 @@ async fn handle_ws(
                                         .into(),
                                     ))
                                     .await;
-                            } else if let Some(list) = current_speaker_list(&state).await {
-                                if let Ok(json) =
+                            } else if let Some(list) = current_speaker_list(&state).await
+                                && let Ok(json) =
                                     serde_json::to_string(&WsEvent::SpeakerList { speakers: list })
-                                {
-                                    let _ = ws_tx.send(Message::Text(json.into())).await;
-                                }
+                            {
+                                let _ = ws_tx.send(Message::Text(json.into())).await;
                             }
                         }
                         Ok(WsClientCommand::ForgetSpeaker { id }) => {
@@ -487,12 +477,11 @@ async fn handle_ws(
                                         .into(),
                                     ))
                                     .await;
-                            } else if let Some(list) = current_speaker_list(&state).await {
-                                if let Ok(json) =
+                            } else if let Some(list) = current_speaker_list(&state).await
+                                && let Ok(json) =
                                     serde_json::to_string(&WsEvent::SpeakerList { speakers: list })
-                                {
-                                    let _ = ws_tx.send(Message::Text(json.into())).await;
-                                }
+                            {
+                                let _ = ws_tx.send(Message::Text(json.into())).await;
                             }
                         }
                         Err(e) => {

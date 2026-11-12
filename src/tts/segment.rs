@@ -80,10 +80,10 @@ fn period_is_not_sentence_end(buf: &[char], dot: usize) -> bool {
     // Initials: "J." or the last part of "U.S."
     let last_part = word.rsplit('.').next().unwrap_or("");
     let mut lp = last_part.chars();
-    if let (Some(c), None) = (lp.next(), lp.next()) {
-        if c.is_uppercase() {
-            return true;
-        }
+    if let (Some(c), None) = (lp.next(), lp.next())
+        && c.is_uppercase()
+    {
+        return true;
     }
     // List numbers: "1. First", "Steps: 2. Then".
     if word.len() <= 3 && word.chars().all(|c| c.is_ascii_digit()) {
@@ -411,16 +411,14 @@ fn strip_links(text: &str) -> String {
         } else {
             None
         };
-        if let Some(open) = bracket {
-            if let Some(close) = (open + 1..chars.len()).find(|&k| chars[k] == ']') {
-                if chars.get(close + 1) == Some(&'(') {
-                    if let Some(end) = (close + 2..chars.len()).find(|&k| chars[k] == ')') {
-                        out.extend(&chars[open + 1..close]);
-                        i = end + 1;
-                        continue;
-                    }
-                }
-            }
+        if let Some(open) = bracket
+            && let Some(close) = (open + 1..chars.len()).find(|&k| chars[k] == ']')
+            && chars.get(close + 1) == Some(&'(')
+            && let Some(end) = (close + 2..chars.len()).find(|&k| chars[k] == ')')
+        {
+            out.extend(&chars[open + 1..close]);
+            i = end + 1;
+            continue;
         }
         let at_word_start = i == 0 || !chars[i - 1].is_alphanumeric();
         if at_word_start {

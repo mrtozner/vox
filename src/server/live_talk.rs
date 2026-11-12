@@ -1061,23 +1061,23 @@ struct Session {
 impl Session {
     /// Notice a finished turn task and an expired playback gate.
     fn reap(&mut self) {
-        if self.active.as_ref().is_some_and(|t| t.handle.is_finished()) {
-            if let Some(turn) = self.active.take() {
-                let playback_end = *turn
-                    .shared
-                    .playback_end
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if let Some(playback_end) = playback_end {
-                    // The browser is still playing. Keep the microphone
-                    // gated until it says `playback_done`, or until the
-                    // audio must be over.
-                    if turn.id > self.played_upto {
-                        self.playback = Some(PlaybackGate {
-                            turn_id: turn.id,
-                            until: playback_end + self.playback_grace,
-                        });
-                    }
+        if self.active.as_ref().is_some_and(|t| t.handle.is_finished())
+            && let Some(turn) = self.active.take()
+        {
+            let playback_end = *turn
+                .shared
+                .playback_end
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(playback_end) = playback_end {
+                // The browser is still playing. Keep the microphone
+                // gated until it says `playback_done`, or until the
+                // audio must be over.
+                if turn.id > self.played_upto {
+                    self.playback = Some(PlaybackGate {
+                        turn_id: turn.id,
+                        until: playback_end + self.playback_grace,
+                    });
                 }
             }
         }

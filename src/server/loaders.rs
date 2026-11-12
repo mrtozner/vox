@@ -109,14 +109,14 @@ pub(super) fn load_stt(
     opts: &LoadOptions,
 ) -> SttLoadResult {
     let candidates = stt_candidates(profile, opts);
-    if let Some(requested) = opts.stt_model.as_deref() {
-        if !models_dir.join(&candidates[0]).exists() {
-            tracing::warn!(
-                model = requested,
-                file = %candidates[0],
-                "requested whisper model is not installed, falling back to the best available one"
-            );
-        }
+    if let Some(requested) = opts.stt_model.as_deref()
+        && !models_dir.join(&candidates[0]).exists()
+    {
+        tracing::warn!(
+            model = requested,
+            file = %candidates[0],
+            "requested whisper model is not installed, falling back to the best available one"
+        );
     }
 
     for name in &candidates {

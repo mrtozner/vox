@@ -932,14 +932,14 @@ pub async fn ensure_model(
         // A wrong size usually means a truncated download from an older
         // version or a different model revision. Loading may still work, so
         // warn instead of failing; `vox doctor` reports it as a problem.
-        if let Some(model) = find_model(model_name) {
-            if let Err(e @ VerifyError::Size { .. }) = check_size(&p, model.size_bytes) {
-                eprintln!(
-                    "warning: {} does not match the '{model_name}' registry entry ({e}).\n\
+        if let Some(model) = find_model(model_name)
+            && let Err(e @ VerifyError::Size { .. }) = check_size(&p, model.size_bytes)
+        {
+            eprintln!(
+                "warning: {} does not match the '{model_name}' registry entry ({e}).\n\
                      \x20        If loading fails, run: vox models download {model_name} --force",
-                    p.display()
-                );
-            }
+                p.display()
+            );
         }
         return Ok(p);
     }

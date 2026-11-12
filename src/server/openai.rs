@@ -93,10 +93,10 @@ fn model_objects(state: &ServerState) -> Vec<ModelObject> {
 
     let mut ids: Vec<String> = Vec::new();
     let mut push = |id: Option<String>| {
-        if let Some(id) = id.filter(|id| !id.is_empty()) {
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
+        if let Some(id) = id.filter(|id| !id.is_empty())
+            && !ids.contains(&id)
+        {
+            ids.push(id);
         }
     };
 
@@ -302,10 +302,10 @@ fn select_tts<'a>(
     state: &'a ServerState,
     model: Option<&str>,
 ) -> Option<&'a Arc<dyn vox::traits::TtsBackend>> {
-    if let (Some(model), Some(conv)) = (model, state.conversation_tts.as_ref()) {
-        if conv.backend_name().eq_ignore_ascii_case(model) {
-            return Some(conv);
-        }
+    if let (Some(model), Some(conv)) = (model, state.conversation_tts.as_ref())
+        && conv.backend_name().eq_ignore_ascii_case(model)
+    {
+        return Some(conv);
     }
     state.tts.as_ref().or(state.conversation_tts.as_ref())
 }
@@ -344,14 +344,14 @@ pub async fn speech(
         .with_code("unsupported_format")
         .with_param("response_format"));
     }
-    if let Some(speed) = req.speed {
-        if (speed - 1.0).abs() > 1e-6 {
-            return Err(ServerError::bad_request(
-                "speed is not supported yet: omit it or send 1.0",
-            )
-            .with_code("unsupported_parameter")
-            .with_param("speed"));
-        }
+    if let Some(speed) = req.speed
+        && (speed - 1.0).abs() > 1e-6
+    {
+        return Err(
+            ServerError::bad_request("speed is not supported yet: omit it or send 1.0")
+                .with_code("unsupported_parameter")
+                .with_param("speed"),
+        );
     }
     if req
         .stream_format

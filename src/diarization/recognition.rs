@@ -433,13 +433,13 @@ impl SpeakerRegistry {
     /// trustworthy. Prefer [`SpeakerRegistry::adapt`], which only moves the
     /// reference on a confident, unambiguous match.
     pub fn update_embedding(&mut self, id: &str, observation: &[f32], alpha: f32) {
-        if let Some(speaker) = self.speakers.get_mut(id) {
-            if speaker.embedding.len() == observation.len() {
-                for (stored, &obs) in speaker.embedding.iter_mut().zip(observation.iter()) {
-                    *stored = alpha * *stored + (1.0 - alpha) * obs;
-                }
-                l2_normalize(&mut speaker.embedding);
+        if let Some(speaker) = self.speakers.get_mut(id)
+            && speaker.embedding.len() == observation.len()
+        {
+            for (stored, &obs) in speaker.embedding.iter_mut().zip(observation.iter()) {
+                *stored = alpha * *stored + (1.0 - alpha) * obs;
             }
+            l2_normalize(&mut speaker.embedding);
         }
     }
 

@@ -119,12 +119,12 @@ impl PiperBackend {
             .map_err(|e| VoxError::Tts(format!("failed to load piper model: {e}")))?;
 
         // Set default speaker if specified
-        if let Some(sid) = config.default_speaker {
-            if let Some(err) = model.set_speaker(sid) {
-                return Err(VoxError::Tts(format!(
-                    "failed to set default speaker {sid}: {err}"
-                )));
-            }
+        if let Some(sid) = config.default_speaker
+            && let Some(err) = model.set_speaker(sid)
+        {
+            return Err(VoxError::Tts(format!(
+                "failed to set default speaker {sid}: {err}"
+            )));
         }
 
         // Set length_scale if specified. Start from the model's own settings:
@@ -217,12 +217,12 @@ impl TtsBackend for PiperBackend {
             // The speaker lives on the shared model. Setting it under the
             // lock, on every request, keeps one request's choice from
             // leaking into another.
-            if let Some(sid) = speaker {
-                if let Some(err) = model.set_speaker(sid) {
-                    return Err(VoxError::Tts(format!(
-                        "failed to select piper speaker {sid}: {err}"
-                    )));
-                }
+            if let Some(sid) = speaker
+                && let Some(err) = model.set_speaker(sid)
+            {
+                return Err(VoxError::Tts(format!(
+                    "failed to select piper speaker {sid}: {err}"
+                )));
             }
 
             let audio_stream = synth

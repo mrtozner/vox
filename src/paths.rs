@@ -74,10 +74,10 @@ pub fn models_dir() -> PathBuf {
 /// Resolve the models directory and report which rule selected it.
 pub fn resolve_models_dir() -> ModelsDirResolution {
     let mut starts = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            starts.push(dir.to_path_buf());
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        starts.push(dir.to_path_buf());
     }
     if let Ok(cwd) = std::env::current_dir() {
         starts.push(cwd);
@@ -183,11 +183,11 @@ fn is_vox_manifest(manifest: &Path) -> bool {
         if !in_package {
             continue;
         }
-        if let Some((key, value)) = line.split_once('=') {
-            if key.trim() == "name" {
-                let name = value.trim().trim_matches('"');
-                return VOX_PACKAGE_NAMES.contains(&name);
-            }
+        if let Some((key, value)) = line.split_once('=')
+            && key.trim() == "name"
+        {
+            let name = value.trim().trim_matches('"');
+            return VOX_PACKAGE_NAMES.contains(&name);
         }
     }
     false
