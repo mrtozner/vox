@@ -233,6 +233,7 @@ main { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .live-msg-text .s { transition: color .2s, background .2s; }
 .live-msg-text .s.pending { color: var(--ink-3); }
 .live-msg-text .s.playing { background: var(--speak-soft); border-radius: 3px; box-shadow: 0 0 0 2px var(--speak-soft); }
+.live-msg-text .live-draft { color: var(--ink-3); font-style: italic; }
 .live-msg-text .s.unheard { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--cut); }
 .chat-retry-btn { background: none; border: 1px solid var(--cut); color: var(--cut); border-radius: var(--r-s); font-size: 11px; padding: 2px 10px; cursor: pointer; }
 .chat-thinking { font-size: 12px; color: var(--think); padding: 0 var(--gutter); min-height: 20px; }
@@ -275,7 +276,7 @@ main { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .live-ptt-btn { touch-action: none; user-select: none; -webkit-user-select: none; }
 .live-ptt-btn.active { background: var(--listen); border-color: var(--listen); }
 
-/* Memory panel: markup ships hidden until the server sends `memory` events. */
+/* Memory panel: a side column from 1120px, otherwise an overlay opened with the Memory button. */
 .memory { background: var(--surface); border-left: 1px solid var(--line); display: none; flex-direction: column; gap: 12px; padding: 14px 16px; overflow-y: auto; min-height: 0; }
 .memory.open { display: flex; position: absolute; inset: 0; z-index: 5; border-left: 0; }
 .memory-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -451,7 +452,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
 
 <!-- Live Talk -->
 <section class="tab-content active" id="tab-livetalk" role="tabpanel" aria-labelledby="tabbtn-livetalk">
-    <div class="lt-grid" id="liveGrid">
+    <div class="lt-grid with-memory" id="liveGrid">
         <div class="livetalk-container">
             <div class="settings-row livetalk-settings">
                 <label class="field">Model <select id="liveTalkModel"><option value="">loading...</option></select></label>
@@ -463,7 +464,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
                     </select>
                 </label>
                 <span class="grow"></span>
-                <button class="btn btn-ghost btn-sm" id="memoryToggle" aria-expanded="false" aria-controls="memoryPanel" hidden>Memory</button>
+                <button class="btn btn-ghost btn-sm" id="memoryToggle" aria-expanded="false" aria-controls="memoryPanel">Memory (0)</button>
             </div>
             <div class="stage">
                 <div class="stage-top">
@@ -490,20 +491,20 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
                 <button class="btn live-ptt-btn" id="livePttBtn" hidden aria-label="Push to talk (hold)">Hold to talk</button>
                 <button class="btn btn-ghost" id="liveCancelBtn" disabled>Stop reply</button>
                 <span class="grow"></span>
-                <button class="btn btn-ghost btn-sm" id="liveClearBtn" title="Clears the view only. The model keeps this session's history until you stop.">Clear view</button>
+                <button class="btn btn-ghost btn-sm" id="liveClearBtn" title="Clears the view only. Memory is kept until you forget it.">Clear view</button>
             </div>
         </div>
 
-        <!-- Hidden until the server provides `memory` events and `forget_memory`. -->
-        <aside class="memory" id="memoryPanel" aria-label="Conversation memory" hidden>
+        <!-- Filled from the server's `memory` events (Live Talk protocol v2). -->
+        <aside class="memory" id="memoryPanel" aria-label="Conversation memory">
             <div class="memory-head">
                 <h2>Memory</h2>
                 <button class="btn btn-ghost btn-sm" id="memoryClose">Close</button>
             </div>
-            <p class="memory-sub">What the model is given on the next turn.</p>
+            <p class="memory-sub">What the model is given on the next turn. The server keeps it for this browser tab, also while the mic is off, until you forget it or it expires unused.</p>
             <div class="budget">
                 <div class="budget-nums"><span>History</span><span class="mono" id="memoryTokens">0 tokens</span></div>
-                <div class="budget-bar" role="progressbar" aria-label="History token budget" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" id="memoryBar"><i id="memoryBarFill"></i><u title="Trim target"></u></div>
+                <div class="budget-bar" role="progressbar" aria-label="History token budget" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" id="memoryBar"><i id="memoryBarFill"></i><u id="memoryBarMark" title="Trim target" hidden></u></div>
                 <div class="budget-note" id="memoryNote"></div>
             </div>
             <ul class="memory-list" id="memoryList"></ul>
@@ -522,11 +523,11 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
 <!-- Dashboard -->
 <section class="tab-content" id="tab-dashboard" role="tabpanel" aria-labelledby="tabbtn-dashboard">
     <div class="dashboard">
-        <div class="dash-card"><div class="dash-card-title">Health</div><div class="dash-card-value" id="dashHealth">--</div></div>
+        <div class="dash-card"><div class="dash-card-title">Health</div><div class="dash-card-value" id="dashHealth">--</div><div class="label" id="dashVersion"></div></div>
         <div class="dash-card"><div class="dash-card-title">Uptime</div><div class="dash-card-value" id="dashUptime">--</div></div>
         <div class="dash-card"><div class="dash-card-title">Models</div><div id="dashModels"><span class="label">loading...</span></div></div>
         <div class="dash-card"><div class="dash-card-title">Statistics</div><div id="dashStats"><span class="label">loading...</span></div></div>
-        <div class="dash-card"><div class="dash-card-title">Live Talk latency, this page (median)</div><div id="dashLatency"><span class="label">No turns yet</span></div></div>
+        <div class="dash-card"><div class="dash-card-title">Live Talk latency, this page (median per turn)</div><div id="dashLatency"><span class="label">No turns yet</span></div></div>
     </div>
 </section>
 </main>
@@ -537,6 +538,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
     <span id="statusTts">tts: --</span>
     <span id="statusOllama">ollama: --</span>
     <span id="statusUptime">uptime: --</span>
+    <span id="statusVersion"></span>
 </footer>
 
 <div class="toast-container" id="toastContainer" role="region" aria-live="polite" aria-label="Notifications"></div>
@@ -563,6 +565,8 @@ const S = {
     audioCtx: null, audioInit: null, workletNode: null, mediaStream: null, micSource: null, micAnalyser: null, micGen: 0,
     listenWs: null, chatWs: null,
     voicesLoaded: false, voicesWarned: false, ollamaModelsLoaded: false, voices: [],
+    convVoices: [], convEngine: null, // engine and voices that speak in Live Talk / Converse
+    version: null,
     dashPollId: null, speechActive: false, synthesizing: false, streaming: false, chatBusy: false,
     synthUrl: null,
     uptimeBase: 0, uptimeReceivedAt: 0, statusPollId: null, uptimeTickId: null,
@@ -597,6 +601,13 @@ function escapeHtml(str) {
     const d = document.createElement('div');
     d.textContent = str == null ? '' : String(str);
     return d.innerHTML;
+}
+// Error responses are {error:{message,type,code,param}, message}; older builds sent {error:"..."}.
+async function errorMessage(res, fallback) {
+    const body = await res.json().catch(() => null);
+    const err = body && body.error;
+    const detail = (err && typeof err === 'object' ? err.message : err) || (body && body.message) || '';
+    return String(detail || '') || (fallback || 'Request failed') + ' (HTTP ' + res.status + ')';
 }
 function fmtInt(n) { return (Number(n) || 0).toLocaleString('en-US'); }
 function el(tag, cls, text) {
@@ -1373,6 +1384,10 @@ async function loadVoices() {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         S.voices = data.voices || [];
+        // Conversations (Live Talk, voice chat) can be spoken by another engine
+        // than the Speak tab. Servers without the field use one engine for both.
+        S.convEngine = data.conversation_engine !== undefined ? data.conversation_engine : (data.engine || null);
+        S.convVoices = Array.isArray(data.conversation_voices) ? data.conversation_voices : S.voices;
         S.voicesLoaded = true;
         populateVoiceSelect($('voiceSelect'));
         populateVoiceSelect($('chatVoice'));
@@ -1385,6 +1400,16 @@ async function loadVoices() {
     }
 }
 
+function voiceLabel(v) {
+    const detail = [v.gender, v.accent].filter(Boolean).join(', ');
+    return (v.name || v.id) + (detail ? ' (' + detail + ')' : '');
+}
+// Voice chat speaks with the conversation engine; a voice id of the main
+// engine means nothing to it, so the server default is used instead.
+function conversationVoice(id) {
+    return id && S.convVoices.some((v) => v.id === id) ? id : null;
+}
+
 function populateVoiceSelect(select) {
     const prev = select.value;
     select.textContent = '';
@@ -1395,7 +1420,7 @@ function populateVoiceSelect(select) {
         return;
     }
     S.voices.forEach((v) => {
-        const opt = el('option', null, v.name + ' (' + v.gender + ', ' + v.accent + ')');
+        const opt = el('option', null, voiceLabel(v));
         opt.value = v.id;
         select.appendChild(opt);
     });
@@ -1421,11 +1446,7 @@ async function synthesize() {
             body: JSON.stringify({ text, voice: voice || undefined }),
         });
 
-        if (res.status === 503) {
-            showToast('TTS model not loaded on server', 'error');
-            return;
-        }
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        if (!res.ok) throw new Error(await errorMessage(res, 'request refused'));
 
         const blob = await res.blob();
         Player.flush(); // do not talk over a streamed clip that is still playing
@@ -1592,13 +1613,7 @@ async function sendChat(text, retryMsgEl) {
         });
 
         if (!res.ok) {
-            // The server answers {error:{message,type,code,param}, message};
-            // older builds sent {error:"..."}.
-            const body = await res.json().catch(() => ({}));
-            const err = body && body.error;
-            const detail = (err && typeof err === 'object' ? err.message : err) || body.message || '';
-            const msg = String(detail) || ('Chat failed (HTTP ' + res.status + ')');
-            showToast(msg, 'error');
+            showToast(await errorMessage(res, 'Chat failed'), 'error');
             addRetryBtn(userMsgEl, text);
             return;
         }
@@ -1661,7 +1676,7 @@ function startChatMic() {
     const btn = $('chatMicBtn');
     const input = $('chatInput');
     const model = $('chatModel').value || 'llama3.2';
-    const voice = $('chatVoice').value || null;
+    const voice = conversationVoice($('chatVoice').value);
     btn.classList.add('recording');
     btn.setAttribute('aria-pressed', 'true');
     Player.claim('chat');
@@ -1773,10 +1788,18 @@ function stopChatMic() {
 }
 
 // ─── 11. LIVE TALK TAB ──────────────────────────────────────
+// Speaks Live Talk protocol v2 (LiveTalkWsEvent / LiveTalkClientMsg in src/server/models.rs).
 // State machine: idle → listening → transcribing → thinking → speaking → listening
-// Barge-in paths: (a) server VAD (speech_start while a reply is playing),
+// Turn ids: every event of a turn carries turn_id (1, 2, ... per connection). LT.turnId is
+// the turn on screen. Anything at or below LT.deadUpto was cancelled and is dropped,
+// including the binary frame that follows its audio_chunk header.
+// Barge-in paths: (a) server VAD before the first reply audio (arrives as 'cancelled'),
 //                 (b) client RMS gate while speaking, (c) Stop reply button,
 //                 (d) pressing push-to-talk during a reply.
+// (b)-(d) send cancel{turn_id, heard_sentences}, also after turn_done while the browser is
+// still playing, so the server's memory keeps only what was actually heard.
+const LIVE_SESSION_KEY = 'vox.live.session';   // sessionStorage: memory survives a mic toggle or reload of this tab
+const LIVE_PREF_KEYS = { model: 'vox.live.model', voice: 'vox.live.voice' }; // localStorage
 const LT = {
     ws: null,              // WebSocket
     phase: 'idle',         // session: idle | connecting | active
@@ -1788,13 +1811,20 @@ const LT = {
     cutBars: 0,            // red bars still to draw on the tape after an interruption
     mode: 'vad',           // 'vad' | 'push_to_talk'
     pttHeld: false,        // PTT button currently pressed
-    pendingHeader: null,   // last 'audio_chunk' header awaiting binary frame
-    sentencesInTurn: 0,    // count of sentences since the last turn_done
+    pttDownAt: 0,          // performance.now() of the press
+    pendingHeader: null,   // last 'audio_chunk' header awaiting its binary frame; {drop:true} for a dead turn
+    turnId: 0,             // id of the turn on screen (0 = none on this connection)
+    deadUpto: 0,           // turns up to this id are cancelled: their events and audio are dropped
     currentAssistantEl: null,
     turnActive: false,     // the server is still producing this turn
-    turnCancelled: false,  // we sent cancel or got 'cancelled'; late frames of this turn are dropped
-    turn: null,            // per-turn metrics: { t0, stt, llm, audio, heard, received, cancelled, metaEl }
-    metrics: [],           // { stt, llm, audio } of turns that reached playback, for the dashboard
+    turnCancelled: false,  // the turn on screen was cut; nothing more of it is shown or played
+    turn: null,            // { id, t0, tThinking, stt, llm, tts, audio, heard, received, cancelled, final, reported, draft, metaEl }
+    metrics: [],           // the turn objects of this page, for the dashboard medians
+    sessionId: null,       // server memory to continue; from 'ready', kept in sessionStorage
+    memory: null,          // last 'memory' event
+    forgetPending: false,  // forget_memory sent, waiting for the empty 'memory' event
+    forgetSock: null,      // short-lived socket used to forget while no session is open
+    pref: { model: null, voice: null }, // what the user picked in the selectors
     bargeInEnabled: true,
     // Client-side RMS barge-in during 'speaking'. All limits are in milliseconds
     // so they do not depend on the mic chunk size.
@@ -1837,7 +1867,13 @@ function setLiveState(state) {
         }, ms);
     };
     if (state === 'cancelled') { LT.cutBars = 2; backToListening(900); }
-    else if (state === 'transcribing') backToListening(10000);
+    else if (state === 'transcribing') backToListening(20000);
+}
+
+// Sends one JSON command on the live socket. Returns false when there is no open socket.
+function liveSend(msg) {
+    if (!LT.ws || LT.ws.readyState !== WebSocket.OPEN) return false;
+    try { LT.ws.send(JSON.stringify(msg)); return true; } catch (_) { return false; }
 }
 
 function appendLiveMsg(role, text) {
@@ -1852,10 +1888,14 @@ function appendLiveMsg(role, text) {
     return msg;
 }
 
-// Latency chips. stt comes from the server (transcript.processing_time_ms); the other two are
-// measured in the browser from the moment the transcript arrives: until the first sentence
-// event, and until the first reply audio actually starts playing.
-const CHIP_DEF = [['stt', 'stt', 300, 700], ['llm', 'first sentence', 600, 1500], ['audio', 'first audio', 900, 2000]];
+// Latency chips.
+//   stt          server: time spent transcribing (transcript.processing_time_ms, then turn_metrics.stt_ms)
+//   first token  server: LLM request to its first token (turn_metrics.llm_first_token_ms); until that
+//                arrives, the browser's own measurement from 'thinking' to the first 'token'
+//   first tts    server: synthesis time of the first sentence (turn_metrics.tts_first_audio_ms)
+//   first audio  browser: from the transcript arriving until reply audio actually starts playing
+// turn_metrics is sent when a turn ends by itself; a cancelled turn keeps the browser values.
+const CHIP_DEF = [['stt', 'stt', 300, 700], ['llm', 'first token', 500, 1500], ['tts', 'first tts', 300, 800], ['audio', 'first audio', 900, 2000]];
 function renderChips(turn) {
     if (!turn || !turn.metaEl) return;
     const meta = turn.metaEl;
@@ -1864,7 +1904,7 @@ function renderChips(turn) {
         const v = turn[key];
         const chip = el('span', 'chip' + (v == null ? '' : v <= ok ? ' ok' : v <= warn ? ' warn' : ' slow'));
         chip.appendChild(el('span', 'chip-k', label));
-        chip.appendChild(document.createTextNode(v == null ? '…' : Math.round(v) + ' ms'));
+        chip.appendChild(document.createTextNode(v == null ? (turn.final ? '--' : '…') : Math.round(v) + ' ms'));
         meta.appendChild(chip);
     });
     if (turn.cancelled) {
@@ -1873,19 +1913,22 @@ function renderChips(turn) {
             : 'Interrupted before the reply'));
     }
 }
-function beginTurnMeta(stt) {
+function beginTurnMeta(id, stt) {
     const meta = el('div', 'turn-meta');
     $('liveTalkMessages').appendChild(meta);
     LT.turn = {
-        t0: performance.now(), stt: typeof stt === 'number' ? stt : null,
-        llm: null, audio: null, heard: 0, received: 0, cancelled: false, metaEl: meta,
+        id, t0: performance.now(), tThinking: null,
+        stt: typeof stt === 'number' ? stt : null, llm: null, tts: null, audio: null,
+        heard: 0, received: 0, cancelled: false, final: false, reported: false, draft: '', metaEl: meta,
     };
+    LT.metrics.push(LT.turn);
+    if (LT.metrics.length > 200) LT.metrics.shift();
     renderChips(LT.turn);
     return LT.turn;
 }
 
-// One <span class="s"> per sentence so playback can mark what was actually heard.
-function appendLiveSentence(text, index) {
+// The assistant bubble of the turn on screen, created on first use.
+function ensureLiveAssistant() {
     const area = $('liveTalkMessages');
     if (!LT.currentAssistantEl) {
         LT.currentAssistantEl = appendLiveMsg('assistant', '');
@@ -1893,12 +1936,73 @@ function appendLiveSentence(text, index) {
             area.insertBefore(LT.currentAssistantEl, LT.turn.metaEl);
         }
     }
-    const t = LT.currentAssistantEl.querySelector('.live-msg-text');
+    return LT.currentAssistantEl.querySelector('.live-msg-text');
+}
+
+// One <span class="s"> per sentence so playback can mark what was actually heard.
+function appendLiveSentence(text, index) {
+    const t = ensureLiveAssistant();
+    const draft = t.querySelector('.live-draft');
     const span = el('span', 's pending', text);
     span.dataset.i = String(index);
-    if (t.childNodes.length) t.appendChild(document.createTextNode(' '));
-    t.appendChild(span);
+    if (t.firstChild && t.firstChild !== draft) t.insertBefore(document.createTextNode(' '), draft);
+    t.insertBefore(span, draft);
+    const area = $('liveTalkMessages');
     area.scrollTop = area.scrollHeight;
+}
+
+// Token stream. 'token' events carry the raw LLM text as it is generated; sentences (with
+// audio) follow later. The part not yet covered by a sentence is shown as a dim draft after
+// the sentences. It is display only: hidden from assistive tech, and dropped when the turn
+// ends, because text that never became a sentence was never spoken.
+function renderLiveDraft() {
+    const turn = LT.turn;
+    const text = turn ? turn.draft.replace(/\s+/g, ' ').trim() : '';
+    let draft = LT.currentAssistantEl ? LT.currentAssistantEl.querySelector('.live-draft') : null;
+    if (!text) {
+        if (draft) draft.remove();
+        return;
+    }
+    if (!draft) {
+        const t = ensureLiveAssistant();
+        draft = el('span', 'live-draft');
+        draft.setAttribute('aria-hidden', 'true');
+        t.appendChild(draft);
+    }
+    draft.textContent = (draft.previousSibling ? ' ' : '') + text;
+    const area = $('liveTalkMessages');
+    area.scrollTop = area.scrollHeight;
+}
+// A sentence arrived: remove it from the front of the draft. The sentence text can differ
+// from the raw tokens (normalization), so fall back to matching its ending, then to clearing.
+function consumeLiveDraft(sentence) {
+    const turn = LT.turn;
+    if (!turn || !turn.draft) return;
+    const norm = (s) => String(s).replace(/\s+/g, ' ').trim();
+    const d = norm(turn.draft);
+    const s = norm(sentence);
+    let cut = -1;
+    let i = s ? d.indexOf(s) : -1;
+    if (i >= 0) cut = i + s.length;
+    else {
+        const tail = s.slice(-12);
+        i = tail.length >= 4 ? d.indexOf(tail) : -1;
+        if (i >= 0) cut = i + tail.length;
+    }
+    turn.draft = cut >= 0 ? d.slice(cut) : '';
+    renderLiveDraft();
+}
+function dropLiveDraft() {
+    if (LT.turn) LT.turn.draft = '';
+    const bubble = LT.currentAssistantEl;
+    if (!bubble) return;
+    const draft = bubble.querySelector('.live-draft');
+    if (draft) draft.remove();
+    // A bubble that only ever held a draft has nothing that was spoken.
+    if (!bubble.querySelector('.s')) {
+        bubble.remove();
+        LT.currentAssistantEl = null;
+    }
 }
 
 function markSentence(index, cls) {
@@ -1916,6 +2020,7 @@ function markSentence(index, cls) {
 
 function markLastAssistantCancelled() {
     const turn = LT.turn;
+    dropLiveDraft();
     if (LT.currentAssistantEl) {
         LT.currentAssistantEl.classList.add('cancelled');
         LT.currentAssistantEl.querySelectorAll('.s').forEach((s) => {
@@ -1923,7 +2028,7 @@ function markLastAssistantCancelled() {
             if (s.classList.contains('pending')) { s.classList.remove('pending'); s.classList.add('unheard'); }
         });
     }
-    if (turn && !turn.cancelled) { turn.cancelled = true; renderChips(turn); }
+    if (turn && !turn.cancelled) { turn.cancelled = true; turn.final = true; renderChips(turn); }
 }
 
 function updateLiveMeter(chunk) {
@@ -1974,20 +2079,23 @@ function clientBargeInCheck(chunk) {
     }
 }
 
-// Interrupt the reply. While the server is still producing the turn it is told
-// to cancel. Once the turn is finished on the server and only queued audio is
-// left, playback is stopped locally and nothing is sent: a cancel with no
-// active turn would only reset the server's VAD.
+// The turn on screen is over for this client: nothing more of it is shown or played.
+function killLiveTurn() {
+    LT.deadUpto = Math.max(LT.deadUpto, LT.turnId);
+    LT.turnCancelled = true;
+    LT.turnActive = false;
+}
+
+// Interrupt the reply. The server is told which turn and how many of its sentences started
+// playing here. That also holds once the turn is finished on the server and only queued
+// audio is left: the server then cuts the stored turn down to what was heard and listens to
+// the microphone again (including the last ~400 ms it had held back).
 function sendLiveCancel(_reason) {
-    if (!LT.active) return;
-    if (LT.turnActive && !LT.turnCancelled) {
-        LT.turnCancelled = true;
-        if (LT.ws && LT.ws.readyState === WebSocket.OPEN) {
-            try { LT.ws.send(JSON.stringify({ type: 'cancel' })); } catch (_) { /* ignore */ }
-        }
-    } else if (!Player.busy()) {
-        return;
-    }
+    if (!LT.active || LT.turnCancelled) return;
+    const playing = Player.owner === 'live' && Player.busy();
+    if (!LT.turnActive && !playing) return;
+    liveSend({ type: 'cancel', turn_id: LT.turnId, heard_sentences: LT.turn ? LT.turn.heard : 0 });
+    killLiveTurn();
     cancelLivePlayback();
     markLastAssistantCancelled();
     setLiveState('cancelled');
@@ -1998,30 +2106,39 @@ function cancelLivePlayback() {
     LT.pendingHeader = null;
 }
 
+// The whole reply was played: tell the server (it listens to the microphone again and
+// keeps the turn in memory as heard) and go back to listening.
+function finishLivePlayback() {
+    markSentence(-1, 'done');
+    const turn = LT.turn;
+    if (turn && !turn.reported) {
+        turn.reported = true;
+        liveSend({ type: 'playback_done', turn_id: turn.id, heard_sentences: turn.heard });
+    }
+    setLiveState('listening');
+}
+
 // The playback queue ran dry. If the server already said turn_done and we
-// weren't cancelled, return to listening; otherwise more audio is on its way.
+// weren't cancelled, the turn is over; otherwise more audio is on its way.
 function onLivePlaybackDrained() {
     if (!LT.turnActive && !LT.turnCancelled && LT.active && (LT.state === 'speaking' || LT.state === 'thinking')) {
-        markSentence(-1, 'done');
-        setLiveState('listening');
+        finishLivePlayback();
     }
 }
 
 function decodeAndEnqueue(arrayBuffer, headerInfo) {
-    // Audio of a turn we already cancelled is dropped, never queued.
-    if (LT.turnCancelled || !LT.active) return;
+    // A binary frame without a live header, or of a turn that is not the one on
+    // screen, is dropped and never queued.
+    if (!LT.active || !headerInfo || headerInfo.drop) return;
+    if (LT.turnCancelled || headerInfo.turn_id !== LT.turnId || headerInfo.turn_id <= LT.deadUpto) return;
     const turn = LT.turn;
-    const index = headerInfo && typeof headerInfo.sentence_index === 'number' ? headerInfo.sentence_index : -1;
+    const index = typeof headerInfo.sentence_index === 'number' ? headerInfo.sentence_index : -1;
     Player.enqueue(arrayBuffer, {
         onstart: () => {
             setLiveState('speaking');
             if (turn) {
                 if (index >= 0) turn.heard = Math.max(turn.heard, index + 1);
-                if (turn.audio == null) {
-                    turn.audio = performance.now() - turn.t0;
-                    LT.metrics.push({ stt: turn.stt, llm: turn.llm, audio: turn.audio });
-                    if (LT.metrics.length > 200) LT.metrics.shift();
-                }
+                if (turn.audio == null) turn.audio = performance.now() - turn.t0;
                 renderChips(turn);
             }
             markSentence(index, 'playing');
@@ -2030,83 +2147,153 @@ function decodeAndEnqueue(arrayBuffer, headerInfo) {
     });
 }
 
+// The server ended the turn on screen without a turn_done (non-fatal error).
+function endLiveTurn() {
+    LT.turnActive = false;
+    dropLiveDraft();
+    if (LT.turn) { LT.turn.final = true; renderChips(LT.turn); }
+    // If queued audio is still playing, stay in speaking until the queue
+    // drains; onLivePlaybackDrained() finishes the turn.
+    if (!(Player.owner === 'live' && Player.busy()) && !LT.turnCancelled && LT.active) finishLivePlayback();
+}
+
 function handleLiveEvent(data) {
+    const tid = typeof data.turn_id === 'number' ? data.turn_id : null;
+    // Late events of a cancelled or superseded turn. A dropped audio_chunk header
+    // takes its binary frame with it.
+    if (tid !== null && data.type !== 'cancelled' && (tid <= LT.deadUpto || tid < LT.turnId)) {
+        if (data.type === 'audio_chunk') LT.pendingHeader = { drop: true };
+        return;
+    }
     switch (data.type) {
         case 'ready':
             LT.ready = true;
             if (data.model) $('trackModel').textContent = data.model;
+            if (typeof data.session_id === 'string' && data.session_id) {
+                LT.sessionId = data.session_id;
+                try { sessionStorage.setItem(LIVE_SESSION_KEY, data.session_id); } catch (_) { /* kept in LT only */ }
+            }
             if (LT.active) setLiveState('listening');
             break;
         case 'speech_start':
-            // Server VAD detected speech. If a reply is in progress this is
-            // a barge-in: stop it immediately.
+            // The server heard speech. It only listens while no reply audio should be
+            // playing, so if this browser is still playing one, that reply is cut.
             if (LT.state === 'speaking' || LT.state === 'thinking') {
                 sendLiveCancel('user_barge_in_server');
             } else if (LT.active) {
                 setLiveState('listening');
             }
             break;
-        case 'transcript':
-            // A new turn starts: whatever is left of the previous reply must not overlap it.
+        case 'speech_end':
+            // The utterance is complete and is being transcribed. In push-to-talk the
+            // button release shows this step itself (see pttEnd).
+            if (LT.active && LT.mode === 'vad' && (LT.state === 'listening' || LT.state === 'cancelled')) {
+                setLiveState('transcribing');
+            }
+            break;
+        case 'transcript': {
+            // A new turn starts. If the previous reply is still playing it was cut
+            // short by this one: say how much of it was heard, then drop the rest.
+            if (LT.turn && !LT.turnCancelled && Player.owner === 'live' && Player.busy()) {
+                liveSend({ type: 'cancel', turn_id: LT.turn.id, heard_sentences: LT.turn.heard });
+                markLastAssistantCancelled();
+            }
             cancelLivePlayback();
+            dropLiveDraft();
             markSentence(-1, 'done');
             if (data.text && data.text.trim()) {
                 appendLiveMsg('user', data.text);
             }
-            beginTurnMeta(data.processing_time_ms);
+            LT.turnId = tid !== null ? tid : LT.turnId + 1;
+            beginTurnMeta(LT.turnId, data.processing_time_ms);
             LT.currentAssistantEl = null;
             LT.turnActive = true;
             LT.turnCancelled = false;
-            LT.sentencesInTurn = 0;
             setLiveState('thinking');
             break;
+        }
         case 'thinking':
+            if (tid !== null && tid !== LT.turnId) break;
+            if (LT.turn) LT.turn.tThinking = performance.now();
             if (!LT.turnCancelled) setLiveState('thinking');
             break;
+        case 'token': {
+            const turn = LT.turn;
+            if (!turn || LT.turnCancelled || (tid !== null && tid !== LT.turnId)) break;
+            if (turn.llm == null) {
+                turn.llm = performance.now() - (turn.tThinking || turn.t0);
+                renderChips(turn);
+            }
+            if (typeof data.text === 'string') {
+                turn.draft += data.text;
+                renderLiveDraft();
+            }
+            break;
+        }
         case 'sentence':
             // Text-only; audio arrives via a subsequent audio_chunk header
             // + binary frame pair.
-            if (LT.turnCancelled) break;
-            if (LT.turn) {
-                LT.turn.received = data.index + 1;
-                if (LT.turn.llm == null) { LT.turn.llm = performance.now() - LT.turn.t0; renderChips(LT.turn); }
-            }
+            if (LT.turnCancelled || (tid !== null && tid !== LT.turnId)) break;
+            if (LT.turn) LT.turn.received = Math.max(LT.turn.received, data.index + 1);
             appendLiveSentence(data.text, data.index);
-            LT.sentencesInTurn = data.index + 1;
+            consumeLiveDraft(data.text);
             break;
         case 'audio_chunk':
             // Header: the NEXT binary frame is the WAV payload for this
             // sentence. We stash it so ws.onmessage can pair them.
             LT.pendingHeader = data;
             break;
+        case 'turn_metrics': {
+            const turn = LT.turn;
+            if (!turn || tid !== turn.id) break;
+            if (typeof data.stt_ms === 'number') turn.stt = data.stt_ms;
+            if (typeof data.llm_first_token_ms === 'number') turn.llm = data.llm_first_token_ms;
+            if (typeof data.tts_first_audio_ms === 'number') turn.tts = data.tts_first_audio_ms;
+            renderChips(turn);
+            break;
+        }
         case 'turn_done':
-            LT.turnActive = false;
-            // If queued audio is still playing, stay in speaking until the
-            // queue drains; onLivePlaybackDrained() returns to listening.
-            if (!Player.busy() && !LT.turnCancelled && LT.active) {
-                markSentence(-1, 'done');
-                setLiveState('listening');
+            if (tid !== null && tid !== LT.turnId) {
+                // A turn in which nothing was transcribed: it never reached the screen.
+                if (LT.active && LT.state === 'transcribing') setLiveState('listening');
+                break;
             }
+            endLiveTurn();
             break;
         case 'cancelled':
-            LT.turnActive = false;
-            LT.turnCancelled = true;
+            // turn_id 0: a cancel that arrived before any turn existed.
+            if (!tid || tid < LT.turnId) break;
+            if (tid > LT.turnId) {
+                // Cut before its transcript arrived: the user kept talking. Nothing of
+                // it is on screen; make sure nothing of it gets there.
+                LT.deadUpto = Math.max(LT.deadUpto, tid);
+                if (LT.active && LT.state === 'transcribing') setLiveState('listening');
+                break;
+            }
+            if (LT.turnCancelled) break; // the answer to our own cancel
+            killLiveTurn();
             cancelLivePlayback();
             markLastAssistantCancelled();
             // setLiveState returns to listening after a beat so the user can speak again.
             setLiveState('cancelled');
             break;
+        case 'memory':
+            renderMemory(data);
+            break;
         case 'error':
             if (data.fatal) {
                 showToast(data.message || 'Live Talk error', 'error');
                 stopLiveTalk();
-            } else {
-                showToast(data.message || 'Live Talk warning', 'warning');
+                break;
             }
+            // Non-fatal: the turn it names is over, the session goes on.
+            showToast(data.message || 'Live Talk warning', 'warning');
+            if (tid === null) break;
+            if (tid === LT.turnId) endLiveTurn();
+            else if (LT.active && LT.state === 'transcribing') setLiveState('listening');
             break;
         case 'partial':
-        case 'token':
-            // Defined on the wire but not emitted by the server yet; ignore.
+            // Defined on the wire but not emitted by the server; ignore.
             break;
     }
 }
@@ -2125,6 +2312,17 @@ function resetPttButton() {
     ptt.textContent = 'Hold to talk';
 }
 
+// The config the selectors describe. `mode` is always included: the server
+// reads a config without it as a switch back to automatic turn taking.
+function liveConfigMsg() {
+    const cfg = { type: 'config', mode: LT.mode };
+    const model = $('liveTalkModel').value;
+    const voice = $('liveTalkVoice').value;
+    if (model) cfg.model = model;
+    if (voice) cfg.voice = voice;
+    return cfg;
+}
+
 function startLiveTalk() {
     if (LT.phase !== 'idle') return;
     LT.phase = 'connecting';
@@ -2132,9 +2330,11 @@ function startLiveTalk() {
     setLiveButton(true);
     $('liveStateHint').textContent = 'Connecting...';
 
-    const model = $('liveTalkModel').value || null;
-    const voice = $('liveTalkVoice').value || null;
     LT.mode = $('liveMode').value === 'push_to_talk' ? 'push_to_talk' : 'vad';
+    // Turn ids start again at 1 on every connection.
+    LT.turnId = 0;
+    LT.deadUpto = 0;
+    LT.pendingHeader = null;
 
     // Created inside the click so the browser allows playback, and early so
     // the first TTS chunk does not pay context start-up latency.
@@ -2161,17 +2361,16 @@ function startLiveTalk() {
     ws.onopen = async () => {
         if (gen !== LT.gen) return;
         try {
-            const cfg = { type: 'config' };
-            if (model) cfg.model = model;
-            if (voice) cfg.voice = voice;
-            cfg.mode = LT.mode;
+            // The first message. session_id continues the memory of this tab's
+            // earlier connection; the server only reads it here.
+            const cfg = liveConfigMsg();
+            if (LT.sessionId) cfg.session_id = LT.sessionId;
             ws.send(JSON.stringify(cfg));
         } catch (_) { /* ignore */ }
 
         const ok = await MicManager.acquire('live', (chunk) => {
-            // Always send audio: the server only runs VAD / PTT segmentation
-            // on its end. This includes during 'speaking' so server-side
-            // VAD can detect user barge-in.
+            // Always send audio: the server decides what the VAD may hear
+            // (it holds the microphone back while reply audio plays).
             if (ws.readyState === WebSocket.OPEN) {
                 try { ws.send(chunk.buffer); } catch (_) {}
             }
@@ -2185,6 +2384,7 @@ function startLiveTalk() {
         $('liveTabDot').hidden = false;
         $('livePttBtn').hidden = LT.mode !== 'push_to_talk';
         if (LT.ready) setLiveState('listening');
+        renderMemory(null);
     };
 
     ws.onerror = () => {
@@ -2200,18 +2400,25 @@ function startLiveTalk() {
 }
 
 function stopLiveTalk() {
-    const interrupted = LT.turnActive || (Player.owner === 'live' && Player.busy());
+    const interrupted = !LT.turnCancelled && (LT.turnActive || (Player.owner === 'live' && Player.busy()));
+    // Leaving in the middle of a reply: memory should keep only what was heard.
+    if (interrupted && LT.turnId) {
+        liveSend({ type: 'cancel', turn_id: LT.turnId, heard_sentences: LT.turn ? LT.turn.heard : 0 });
+    }
     LT.gen++;
     LT.phase = 'idle';
     LT.active = false;
     LT.ready = false;
     cancelLivePlayback();
     if (interrupted) markLastAssistantCancelled();
+    else dropLiveDraft();
     LT.turnActive = false;
     LT.turnCancelled = false;
-    LT.sentencesInTurn = 0;
+    LT.turnId = 0;
+    LT.deadUpto = 0;
     LT.turn = null;
     LT.currentAssistantEl = null;
+    LT.forgetPending = false;
     LT.micRmsHistory.length = 0;
     MicManager.release('live');
     if (LT.ws) {
@@ -2224,6 +2431,7 @@ function stopLiveTalk() {
     $('livePttBtn').hidden = true;
     setLiveState('idle');
     $('liveMeterFill').style.width = '0%';
+    renderMemory(null);
 }
 
 function toggleLiveTalk() {
@@ -2232,12 +2440,10 @@ function toggleLiveTalk() {
 }
 
 function sendLivePtt(kind) {
-    if (!LT.ws || LT.ws.readyState !== WebSocket.OPEN) return;
-    try {
-        LT.ws.send(JSON.stringify({ type: kind === 'start' ? 'ptt_start' : 'ptt_end' }));
-    } catch (_) {}
+    liveSend({ type: kind === 'start' ? 'ptt_start' : 'ptt_end' });
 }
 
+// ─── 11a. LIVE TALK SELECTORS ───────────────────────────────
 function mirrorOptions(src, dst) {
     const prev = dst.value;
     dst.textContent = '';
@@ -2245,16 +2451,153 @@ function mirrorOptions(src, dst) {
     if (prev && [...dst.options].some((o) => o.value === prev)) dst.value = prev;
     else dst.value = src.value;
 }
+function selectIfPresent(select, value) {
+    if (value != null && [...select.options].some((o) => o.value === value)) select.value = value;
+}
+function readLivePref(name) {
+    try { return localStorage.getItem(LIVE_PREF_KEYS[name]); } catch (_) { return null; }
+}
+function saveLivePref(name, value) {
+    LT.pref[name] = value;
+    try { localStorage.setItem(LIVE_PREF_KEYS[name], value); } catch (_) { /* kept for this page only */ }
+}
+
+// Live Talk speaks with the conversation engine (/v1/voices: conversation_engine,
+// conversation_voices), which can be a different backend from the Speak tab's.
+function populateConversationVoices(select) {
+    select.textContent = '';
+    const def = el('option', null, !S.voicesLoaded ? 'Server default'
+        : S.convEngine ? 'Default (' + S.convEngine + ')' : 'No speech engine loaded');
+    def.value = '';
+    select.appendChild(def);
+    S.convVoices.forEach((v) => {
+        const opt = el('option', null, voiceLabel(v));
+        opt.value = v.id;
+        select.appendChild(opt);
+    });
+}
 
 async function loadLiveTalkSelectors() {
-    // Live Talk shares the same ollama + voice catalogues as the Chat tab.
-    // The /v1/ollama-models and /v1/voices endpoints are already used by
-    // loadOllamaModels() / loadVoices(); we just mirror their results and
-    // keep whatever the user had picked here.
+    // Models come from the same catalogue as the Chat tab. Whatever the user
+    // picked here (this visit or an earlier one) is kept across reloads of the lists.
     if (!S.voicesLoaded) await loadVoices();
     if (!S.ollamaModelsLoaded) await loadOllamaModels();
-    mirrorOptions($('chatModel'), $('liveTalkModel'));
-    mirrorOptions($('chatVoice'), $('liveTalkVoice'));
+    const model = $('liveTalkModel');
+    const voice = $('liveTalkVoice');
+    mirrorOptions($('chatModel'), model);
+    selectIfPresent(model, LT.pref.model);
+    populateConversationVoices(voice);
+    selectIfPresent(voice, LT.pref.voice);
+}
+
+// ─── 11b. MEMORY PANEL ──────────────────────────────────────
+// Shows the server's 'memory' event: exactly what the model is given on the next turn.
+// Called with null to re-render the last snapshot (connection state changed).
+function renderMemory(data) {
+    if (data) LT.memory = data;
+    const mem = LT.memory;
+    const turns = mem && Array.isArray(mem.turns) ? mem.turns : [];
+    const total = mem ? Number(mem.total_tokens) || 0 : 0;
+    const budget = mem ? Number(mem.budget_tokens) || 0 : 0;
+    const low = mem ? Number(mem.low_watermark_tokens) || 0 : 0;
+    const dropped = mem ? Number(mem.dropped_turns) || 0 : 0;
+
+    $('memoryTokens').textContent = budget ? fmtInt(total) + ' / ' + fmtInt(budget) + ' tokens' : fmtInt(total) + ' tokens';
+    $('memoryBarFill').style.width = (budget ? Math.min(100, total / budget * 100) : 0) + '%';
+    const bar = $('memoryBar');
+    bar.setAttribute('aria-valuenow', String(total));
+    bar.setAttribute('aria-valuemax', String(budget));
+    const mark = $('memoryBarMark');
+    mark.hidden = !(budget && low);
+    if (budget && low) mark.style.left = Math.min(100, low / budget * 100) + '%';
+    $('memoryNote').textContent = dropped
+        ? fmtInt(dropped) + ' older turn' + (dropped === 1 ? ' was' : 's were') + ' dropped to stay inside the budget.'
+        : budget && low ? 'When full, the oldest turns drop until history is back to ' + fmtInt(low) + ' tokens.' : '';
+    $('memoryToggle').textContent = 'Memory (' + turns.length + ')';
+    $('memoryForgetBtn').disabled = turns.length === 0;
+    if (turns.length === 0) $('memoryForgetConfirm').hidden = true;
+
+    if (data && LT.forgetPending && turns.length === 0) {
+        LT.forgetPending = false;
+        showToast('Conversation forgotten. The next turn starts fresh.');
+    }
+
+    const list = $('memoryList');
+    list.textContent = '';
+    if (turns.length === 0) {
+        list.appendChild(el('li', 'memory-empty', LT.active
+            ? 'Nothing remembered yet. Each turn appears here once it is recorded.'
+            : mem ? 'Nothing remembered.'
+                : 'Press the mic to start. Each turn the model will be given appears here.'));
+        return;
+    }
+    turns.forEach((t) => {
+        const li = document.createElement('li');
+        li.appendChild(el('div', 'mem-u', t.user));
+        const a = el('div', 'mem-a');
+        if (t.assistant) a.textContent = t.assistant;
+        else a.appendChild(el('em', null, 'No reply was heard.'));
+        li.appendChild(a);
+        const foot = el('div', 'mem-foot');
+        if (t.interrupted) foot.appendChild(el('span', 'tag-cut', 'Interrupted · kept what was heard'));
+        foot.appendChild(el('span', 'mono', fmtInt(t.tokens) + ' tokens'));
+        li.appendChild(foot);
+        list.appendChild(li);
+    });
+}
+
+// "Forget this conversation": the server clears its memory and answers with an empty
+// 'memory' event. With a session open that goes over its socket (a running reply is
+// stopped first, so it cannot be recorded afterwards). With the mic off, the stored
+// session is reached through a short-lived socket that sends no audio.
+function forgetLiveMemory() {
+    $('memoryForgetConfirm').hidden = true;
+    if (LT.ws && LT.ws.readyState === WebSocket.OPEN) {
+        sendLiveCancel('client_request');
+        LT.forgetPending = liveSend({ type: 'forget_memory' });
+        return;
+    }
+    if (!LT.sessionId) {
+        LT.memory = null;
+        renderMemory(null);
+        return;
+    }
+    if (LT.forgetSock) return;
+    const ws = new WebSocket(wsUrl('/v1/live-talk'));
+    LT.forgetSock = ws;
+    let done = false;
+    const finish = (ok) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        LT.forgetSock = null;
+        try { ws.close(); } catch (_) {}
+        if (ok) showToast('Conversation forgotten. The next turn starts fresh.');
+        else showToast('Could not reach the server. The conversation was not forgotten.', 'error');
+    };
+    const timer = setTimeout(() => finish(false), 5000);
+    let asked = false;
+    ws.onopen = () => {
+        try {
+            ws.send(JSON.stringify({ type: 'config', mode: 'push_to_talk', session_id: LT.sessionId }));
+            ws.send(JSON.stringify({ type: 'forget_memory' }));
+            asked = true;
+        } catch (_) { finish(false); }
+    };
+    ws.onmessage = (e) => {
+        if (typeof e.data !== 'string') return;
+        let data;
+        try { data = JSON.parse(e.data); } catch (_) { return; }
+        if (data.type === 'memory' && asked && Array.isArray(data.turns) && data.turns.length === 0) {
+            // Only show it if no new session was started in the meantime.
+            if (!LT.ws) renderMemory(data);
+            finish(true);
+        } else if (data.type === 'error' && data.fatal) {
+            finish(false);
+        }
+    };
+    ws.onerror = () => finish(false);
+    ws.onclose = () => finish(false);
 }
 
 // ─── 12. DASHBOARD ──────────────────────────────────────────
@@ -2291,6 +2634,11 @@ async function fetchHealth() {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         applyHealth(typeof data.status === 'string' ? data.status : 'error');
+        if (typeof data.version === 'string' && data.version && data.version !== S.version) {
+            S.version = data.version;
+            $('dashVersion').textContent = 'vox ' + data.version;
+            $('statusVersion').textContent = 'vox ' + data.version;
+        }
     } catch (_) {
         applyHealth('error');
     }
@@ -2369,8 +2717,16 @@ async function refreshDashboard() {
     }
 
     if (stats) {
-        $('dashStats').innerHTML = ['requests', 'transcriptions', 'syntheses'].map((k) =>
-            '<div class="dash-row"><span class="label">' + k + '</span><span>' + fmtInt(stats[k]) + '</span></div>').join('');
+        const row = (label, value) => '<div class="dash-row"><span class="label">' + label + '</span><span>' + value + '</span></div>';
+        const lat = stats.latency || {};
+        const avg = (v) => (typeof v === 'number' ? fmtInt(v) + ' ms' : '--');
+        let html = ['requests', 'transcriptions', 'syntheses'].map((k) => row(k, fmtInt(stats[k]))).join('');
+        if (stats.chats !== undefined) html += row('chats', fmtInt(stats.chats));
+        if (stats.latency) {
+            html += row('avg transcribe', avg(lat.transcribe_avg_ms)) + row('avg synthesize', avg(lat.synthesize_avg_ms)) + row('avg chat', avg(lat.chat_avg_ms));
+        }
+        if (stats.ws_active !== undefined) html += row('open sockets', fmtInt(stats.ws_active));
+        $('dashStats').innerHTML = html;
         $('dashUptime').textContent = formatUptime(stats.uptime_secs);
         updateStatusBar(null, stats);
     }
@@ -2514,7 +2870,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $('liveClearBtn').addEventListener('click', () => {
         const area = $('liveTalkMessages');
         area.textContent = '';
-        area.appendChild(el('div', 'empty-hint', 'View cleared. The model still has this session’s history until you stop.'));
+        area.appendChild(el('div', 'empty-hint', 'View cleared. Memory is unchanged; use Forget to erase it.'));
         LT.currentAssistantEl = null;
         if (LT.turn) LT.turn.metaEl = null;
     });
@@ -2522,12 +2878,32 @@ document.addEventListener('DOMContentLoaded', () => {
         LT.mode = e.target.value === 'push_to_talk' ? 'push_to_talk' : 'vad';
         if (LT.pttHeld) { sendLivePtt('end'); resetPttButton(); }
         $('livePttBtn').hidden = !(LT.active && LT.mode === 'push_to_talk');
-        // If already connected, send a config update (server may choose to
-        // honor or ignore mid-session mode swap).
-        if (LT.ws && LT.ws.readyState === WebSocket.OPEN) {
-            try { LT.ws.send(JSON.stringify({ type: 'config', mode: LT.mode })); } catch (_) {}
-        }
+        // Applies to the open session from the next turn on.
+        liveSend(liveConfigMsg());
     });
+    // Model and voice: remembered per browser, applied to an open session from the next turn on.
+    LT.pref.model = readLivePref('model');
+    LT.pref.voice = readLivePref('voice');
+    $('liveTalkModel').addEventListener('change', (e) => { saveLivePref('model', e.target.value); liveSend(liveConfigMsg()); });
+    $('liveTalkVoice').addEventListener('change', (e) => { saveLivePref('voice', e.target.value); liveSend(liveConfigMsg()); });
+
+    // Memory panel. The session id lives in sessionStorage so a reload or a mic
+    // toggle in this tab continues the same conversation.
+    try { LT.sessionId = sessionStorage.getItem(LIVE_SESSION_KEY) || null; } catch (_) { LT.sessionId = null; }
+    const mem = $('memoryPanel');
+    const memToggle = $('memoryToggle');
+    const setMemOpen = (open) => {
+        mem.classList.toggle('open', open);
+        memToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) $('memoryClose').focus(); else memToggle.focus();
+    };
+    memToggle.addEventListener('click', () => setMemOpen(!mem.classList.contains('open')));
+    $('memoryClose').addEventListener('click', () => setMemOpen(false));
+    mem.addEventListener('keydown', (e) => { if (e.key === 'Escape' && mem.classList.contains('open')) setMemOpen(false); });
+    $('memoryForgetBtn').addEventListener('click', () => { $('memoryForgetConfirm').hidden = false; $('memoryForgetYes').focus(); });
+    $('memoryForgetNo').addEventListener('click', () => { $('memoryForgetConfirm').hidden = true; $('memoryForgetBtn').focus(); });
+    $('memoryForgetYes').addEventListener('click', () => { forgetLiveMemory(); $('memoryForgetBtn').focus(); });
+    renderMemory(null);
 
     // Push to talk: pointer (mouse, touch, pen) and keyboard (Space / Enter).
     const ptt = $('livePttBtn');
@@ -2537,6 +2913,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Pressing to talk during a reply interrupts it.
         if (LT.state === 'speaking' || LT.state === 'thinking') sendLiveCancel('client_request');
         LT.pttHeld = true;
+        LT.pttDownAt = performance.now();
         ptt.classList.add('active');
         ptt.textContent = 'Release to send';
         sendLivePtt('start');
@@ -2546,8 +2923,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!LT.pttHeld) return;
         resetPttButton();
         sendLivePtt('end');
-        // The server has no "end of speech" event here yet; show the step locally.
-        if (LT.active && (LT.state === 'listening' || LT.state === 'cancelled')) setLiveState('transcribing');
+        // Show the transcribing step here rather than on the server's speech_end: a
+        // tap too short to carry audio starts no turn, so nothing would end the step.
+        if (LT.active && performance.now() - LT.pttDownAt >= 250 && (LT.state === 'listening' || LT.state === 'cancelled')) setLiveState('transcribing');
     };
     ptt.addEventListener('pointerdown', (e) => {
         if (e.button !== undefined && e.button > 0) return;
