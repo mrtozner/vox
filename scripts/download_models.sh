@@ -83,8 +83,8 @@ fetch "Kokoro v1.0 (310 MB)" "kokoro-v1.0.onnx" \
     "$KOKORO/kokoro-v1.0.onnx"
 
 fetch "Kokoro voices (27 MB)" "voices.bin" \
-    bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d \
-    "$KOKORO/voices-v1.0.bin"
+    988549ccf1d68a80a31de1b9d00ac59d5dceb69743cbc607d1de17c7c4cdccf4 \
+    "https://github.com/mzdk100/kokoro/releases/download/V1.0/voices.bin"
 
 fetch "Piper en_US lessac (60 MB)" "piper/en_US-lessac-medium.onnx" \
     5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f \

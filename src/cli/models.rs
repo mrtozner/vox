@@ -215,9 +215,11 @@ pub const MODELS: &[ModelInfo] = &[
     ModelInfo {
         name: "kokoro-voices",
         filename: "voices.bin",
-        url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
-        size_bytes: 28_214_398,
-        sha256: "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+        // The bincode voices file kokoro-tts reads. The same-named file in
+        // thewh1teagle/kokoro-onnx is a NumPy archive and does not load.
+        url: "https://github.com/mzdk100/kokoro/releases/download/V1.0/voices.bin",
+        size_bytes: 28_311_781,
+        sha256: "988549ccf1d68a80a31de1b9d00ac59d5dceb69743cbc607d1de17c7c4cdccf4",
         kind: "TTS",
     },
     // Sherpa-ONNX SenseVoice (batch STT)

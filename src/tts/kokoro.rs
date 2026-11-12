@@ -1140,6 +1140,23 @@ mod tests {
         assert_eq!(packs["bm_george"], 3);
     }
 
+    /// Needs the real voices file: `VOX_TEST_KOKORO_VOICES=/path/to/voices.bin`.
+    #[test]
+    #[ignore]
+    fn pack_lens_are_read_from_the_real_voices_file() {
+        let path = std::env::var("VOX_TEST_KOKORO_VOICES").expect("set VOX_TEST_KOKORO_VOICES");
+        let bytes = std::fs::read(path).unwrap();
+        let packs = parse_pack_lens(&bytes).unwrap();
+        assert_eq!(packs["af_heart"], 510);
+        for voice in KokoroBackend::voice_list() {
+            assert!(
+                packs.contains_key(&voice.id),
+                "{} missing from the voices file",
+                voice.id
+            );
+        }
+    }
+
     #[test]
     fn pack_len_parser_rejects_garbage() {
         let bytes = encode_voices(&[("af_heart", 510, 256)]);
