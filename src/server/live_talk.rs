@@ -24,6 +24,11 @@ use super::models::{
 /// Shared WebSocket sender for interleaved events from main loop and worker tasks.
 type WsSink = Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>;
 
+/// Per-connection conversation memory, shared with the detached turn task.
+/// A `std` mutex is fine: it is never held across an `.await`.
+#[cfg(feature = "silero")]
+type SharedConversation = Arc<std::sync::Mutex<vox::conversation::Conversation>>;
+
 /// Active turn handle. Held in `Option` so barge-in can `take()` and cancel cleanly.
 #[cfg(feature = "silero")]
 struct ActiveTurn {
@@ -186,6 +191,9 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
     }
 
     let http_client = state.http_client.clone();
+    let conversation: SharedConversation = Arc::new(std::sync::Mutex::new(
+        vox::conversation::Conversation::for_num_ctx(vox::conversation::ollama_num_ctx()),
+    ));
 
     let mut active_turn: Option<ActiveTurn> = None;
     let mut audio_residual: Vec<f32> = Vec::with_capacity(frame_size * 2);
@@ -211,6 +219,7 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
             &host,
             &model,
             &system_prompt,
+            &conversation,
             voice.as_deref(),
         )
         .await
@@ -262,6 +271,7 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
                     &host,
                     &model,
                     &system_prompt,
+                    &conversation,
                     voice.as_deref(),
                 )
                 .await
@@ -350,6 +360,7 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
                                 &host,
                                 &model,
                                 &system_prompt,
+                                &conversation,
                                 voice.as_deref(),
                             );
                         }
@@ -400,6 +411,7 @@ async fn handle_live_frames(
     host: &str,
     model: &str,
     system_prompt: &str,
+    conversation: &SharedConversation,
     voice: Option<&str>,
 ) -> Result<(), ()> {
     if matches!(mode, LiveTalkMode::PushToTalk) {
@@ -446,6 +458,7 @@ async fn handle_live_frames(
                                 host,
                                 model,
                                 system_prompt,
+                                conversation,
                                 voice,
                             );
                         }
@@ -482,6 +495,7 @@ fn dispatch_turn(
     host: &str,
     model: &str,
     system_prompt: &str,
+    conversation: &SharedConversation,
     voice: Option<&str>,
 ) {
     let cancel = CancellationToken::new();
@@ -493,6 +507,7 @@ fn dispatch_turn(
     let host_for_task = host.to_string();
     let model_for_task = model.to_string();
     let system_prompt_for_task = system_prompt.to_string();
+    let conversation_for_task = Arc::clone(conversation);
     let voice_for_task = voice.map(|v| v.to_string());
 
     let handle = tokio::spawn(async move {
@@ -506,6 +521,7 @@ fn dispatch_turn(
             host_for_task,
             model_for_task,
             system_prompt_for_task,
+            conversation_for_task,
             voice_for_task,
         )
         .await;
@@ -528,6 +544,7 @@ async fn run_turn_cancellable(
     host: String,
     model: String,
     system_prompt: String,
+    conversation: SharedConversation,
     voice: Option<String>,
 ) {
     if cancel.is_cancelled() {
@@ -573,6 +590,14 @@ async fn run_turn_cancellable(
     }
 
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // Sentences whose audio was actually sent to the client. On barge-in only
+    // these go into history, so the model never assumes unheard content.
+    let spoken: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let spoken_cb = Arc::clone(&spoken);
+    let messages = conversation
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .messages_for(Some(&system_prompt), &stt_result.text);
     let tts_cb = Arc::clone(&tts);
     let ws_cb = Arc::clone(&ws_tx);
     let voice_cb = voice.clone();
@@ -585,6 +610,7 @@ async fn run_turn_cancellable(
         let voice = voice_cb.clone();
         let counter = Arc::clone(&counter_cb);
         let cancel = cancel_cb.clone();
+        let spoken = Arc::clone(&spoken_cb);
         let text = sentence.to_string();
         async move {
             if text.trim().is_empty() {
@@ -641,22 +667,40 @@ async fn run_turn_cancellable(
                     return Err(vox::VoxError::Pipeline("client disconnected".into()));
                 }
             }
+            spoken.lock().unwrap_or_else(|e| e.into_inner()).push(text);
             Ok(())
         }
     };
 
-    let stop = vox::streaming_chat::stream_chat_with_tts_cancellable(
+    let stop = vox::streaming_chat::stream_chat_messages_cancellable(
         &http_client,
         &host,
         &model,
-        &stt_result.text,
-        Arc::clone(&tts),
-        Some(system_prompt),
-        voice,
+        &messages,
         cancel.clone(),
         on_sentence,
     )
     .await;
+
+    // Record the turn. Finished: the full spoken reply. Cancelled (barge-in):
+    // only what was sent, plus an interruption marker. Errors are not recorded.
+    let interrupted = match &stop {
+        Ok(vox::streaming_chat::StopReason::Finished) => Some(false),
+        Ok(vox::streaming_chat::StopReason::Cancelled) => Some(true),
+        Err(_) => None,
+    };
+    if let Some(interrupted) = interrupted {
+        let spoken = std::mem::take(&mut *spoken.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut conv = conversation.lock().unwrap_or_else(|e| e.into_inner());
+        let dropped = conv.commit(&stt_result.text, &spoken, interrupted);
+        debug!(
+            turns = conv.len(),
+            history_tokens = conv.history_tokens(),
+            dropped,
+            interrupted,
+            "live_talk: conversation updated"
+        );
+    }
 
     match stop {
         Ok(vox::streaming_chat::StopReason::Finished) => {

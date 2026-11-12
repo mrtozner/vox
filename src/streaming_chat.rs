@@ -20,12 +20,29 @@ use serde::Deserialize;
 #[cfg(any(feature = "cli", feature = "server"))]
 use serde_json;
 
-/// Ollama streaming response chunk.
+/// Ollama `/api/chat` streaming response chunk.
 #[cfg(any(feature = "cli", feature = "server"))]
 #[derive(Deserialize)]
-struct OllamaChunk {
-    response: String,
+struct OllamaChatChunk {
+    #[serde(default)]
+    message: Option<OllamaChatDelta>,
+    #[serde(default)]
     done: bool,
+    /// Prompt tokens actually evaluated (excludes KV-cache hits). Only on the
+    /// final chunk; small values across turns mean the prefix cache works.
+    #[serde(default)]
+    prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    eval_count: Option<u64>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[cfg(any(feature = "cli", feature = "server"))]
+#[derive(Deserialize)]
+struct OllamaChatDelta {
+    #[serde(default)]
+    content: String,
 }
 
 /// Buffers tokens into complete sentences for streaming TTS.
@@ -206,23 +223,45 @@ pub async fn stream_chat_with_tts_cancellable<F, Fut>(
     system_prompt: Option<String>,
     _voice: Option<String>,
     cancel: tokio_util::sync::CancellationToken,
+    on_sentence: F,
+) -> Result<StopReason, VoxError>
+where
+    F: FnMut(&str) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<(), VoxError>> + Send,
+{
+    let messages = crate::conversation::Conversation::with_budget(0)
+        .messages_for(system_prompt.as_deref(), prompt);
+    stream_chat_messages_cancellable(client, host, model, &messages, cancel, on_sentence).await
+}
+
+/// Stream an Ollama `/api/chat` reply for a full message list (system,
+/// history, new user message), calling `on_sentence` per complete sentence.
+///
+/// Uses the shared `num_ctx`/`keep_alive` settings from
+/// [`crate::conversation`] so every vox request hits the same loaded model
+/// and can reuse its KV cache for an unchanged message prefix.
+#[cfg(any(feature = "cli", feature = "server"))]
+pub async fn stream_chat_messages_cancellable<F, Fut>(
+    client: &reqwest::Client,
+    host: &str,
+    model: &str,
+    messages: &[crate::conversation::ChatMessage],
+    cancel: tokio_util::sync::CancellationToken,
     mut on_sentence: F,
 ) -> Result<StopReason, VoxError>
 where
     F: FnMut(&str) -> Fut + Send,
     Fut: std::future::Future<Output = Result<(), VoxError>> + Send,
 {
-    let url = format!("http://{}/api/generate", host);
+    let url = format!("http://{}/api/chat", host);
 
-    let mut body = serde_json::json!({
+    let body = serde_json::json!({
         "model": model,
-        "prompt": prompt,
+        "messages": messages,
         "stream": true,
+        "keep_alive": crate::conversation::OLLAMA_KEEP_ALIVE,
+        "options": crate::conversation::ollama_options(),
     });
-
-    if let Some(sys) = system_prompt {
-        body["system"] = serde_json::json!(sys);
-    }
 
     let response = tokio::select! {
         _ = cancel.cancelled() => return Ok(StopReason::Cancelled),
@@ -266,7 +305,7 @@ where
                 if line.is_empty() || line.iter().all(|b| b.is_ascii_whitespace()) {
                     continue;
                 }
-                let ollama_chunk: OllamaChunk = match serde_json::from_slice(line) {
+                let ollama_chunk: OllamaChatChunk = match serde_json::from_slice(line) {
                     Ok(c) => c,
                     Err(_) => {
                         if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(line) {
@@ -283,12 +322,20 @@ where
                     }
                 };
 
-                if !ollama_chunk.response.is_empty() {
-                    print!("{}", ollama_chunk.response);
+                if let Some(err) = ollama_chunk.error {
+                    return Err(VoxError::Pipeline(format!("Ollama error: {}", err)));
+                }
+                let content = ollama_chunk
+                    .message
+                    .as_ref()
+                    .map(|m| m.content.as_str())
+                    .unwrap_or("");
+                if !content.is_empty() {
+                    print!("{}", content);
                     use std::io::Write;
                     std::io::stdout().flush().ok();
 
-                    let sentences = buffer.push(&ollama_chunk.response);
+                    let sentences = buffer.push(content);
 
                     for sentence in sentences {
                         if cancel.is_cancelled() {
@@ -303,6 +350,13 @@ where
                 }
 
                 if ollama_chunk.done {
+                    tracing::info!(
+                        model,
+                        messages = messages.len(),
+                        prompt_eval_count = ?ollama_chunk.prompt_eval_count,
+                        eval_count = ?ollama_chunk.eval_count,
+                        "llm turn finished"
+                    );
                     done = true;
                     break 'outer;
                 }

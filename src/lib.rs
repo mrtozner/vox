@@ -45,6 +45,8 @@ pub mod intelligence;
 
 // Tier 1 quality optimizations
 #[cfg(any(feature = "cli", feature = "server"))]
+pub mod conversation;
+#[cfg(any(feature = "cli", feature = "server"))]
 pub mod prompts;
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod streaming_chat;

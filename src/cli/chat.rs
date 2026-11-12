@@ -12,6 +12,8 @@ struct OllamaRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
+    keep_alive: &'static str,
+    options: serde_json::Value,
 }
 
 /// Ollama generate response.
@@ -36,6 +38,8 @@ async fn ask_ollama(
         prompt: prompt.to_string(),
         stream: false,
         system: system_prompt.map(|s| s.to_string()),
+        keep_alive: vox::conversation::OLLAMA_KEEP_ALIVE,
+        options: vox::conversation::ollama_options(),
     };
 
     let resp = client.post(&url).json(&body).send().await.map_err(|e| {

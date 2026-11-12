@@ -247,6 +247,8 @@ struct OllamaRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
     stream: bool,
+    keep_alive: &'static str,
+    options: serde_json::Value,
 }
 
 /// Ollama generate response (internal).
@@ -280,6 +282,8 @@ pub async fn chat(
         prompt: req.text,
         system: Some(system_prompt),
         stream: false,
+        keep_alive: vox::conversation::OLLAMA_KEEP_ALIVE,
+        options: vox::conversation::ollama_options(),
     };
 
     let client = reqwest::Client::builder()
