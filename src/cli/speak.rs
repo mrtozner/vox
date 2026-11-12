@@ -26,11 +26,45 @@ pub async fn run(
              Rebuild with:\n\
              \n  cargo build --features cli,chatterbox --release\n"
         ),
-        other => anyhow::bail!(
-            "Unknown TTS backend: '{other}'.\n\n\
-             Available backends: kokoro, piper, chatterbox"
-        ),
+        other => anyhow::bail!(unknown_backend_message(other)),
     }
+}
+
+/// Every backend `vox speak --backend` knows, and whether this binary was
+/// built with it. Qwen3 and Pocket are reachable from the server and the
+/// library, not from `vox speak`.
+const BACKENDS: &[(&str, bool)] = &[
+    ("kokoro", cfg!(feature = "kokoro")),
+    ("piper", cfg!(feature = "piper")),
+    ("chatterbox", cfg!(feature = "chatterbox")),
+];
+
+/// Error text for an unknown `--backend`: says which backends this binary
+/// can actually run instead of listing all of them unconditionally.
+fn unknown_backend_message(requested: &str) -> String {
+    let names = |built: bool| -> Vec<&str> {
+        BACKENDS
+            .iter()
+            .filter(|(_, b)| *b == built)
+            .map(|(name, _)| *name)
+            .collect()
+    };
+    let available = names(true);
+    let missing = names(false);
+
+    let mut msg = format!("Unknown TTS backend: '{requested}'.\n\n");
+    if available.is_empty() {
+        msg.push_str("This build has no TTS backend.");
+    } else {
+        msg.push_str(&format!("Backends in this build: {}", available.join(", ")));
+    }
+    if !missing.is_empty() {
+        msg.push_str(&format!(
+            "\nNot in this build: {} (rebuild with --features cli,<backend>)",
+            missing.join(", ")
+        ));
+    }
+    msg
 }
 
 /// Stream audio sentence-by-sentence using any TTS backend.
@@ -217,4 +251,40 @@ async fn run_piper(text: &str, voice: &str, yes: bool, stream: bool) -> anyhow::
     println!("Done.");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_backend_lists_only_what_this_build_has() {
+        let msg = unknown_backend_message("qwen3");
+        assert!(msg.starts_with("Unknown TTS backend: 'qwen3'."), "{msg}");
+
+        let (available, missing) = match msg.split_once("\nNot in this build: ") {
+            Some((head, tail)) => (head, tail),
+            None => (msg.as_str(), ""),
+        };
+        for (name, built) in BACKENDS {
+            assert_eq!(
+                available.contains(name),
+                *built,
+                "{name} in the available list: {msg}"
+            );
+            assert_eq!(
+                missing.contains(name),
+                !*built,
+                "{name} in the missing list: {msg}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_backend_is_an_error_before_any_model_is_touched() {
+        let err = run("hello", "af_heart", "espeak", false, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Unknown TTS backend: 'espeak'"));
+    }
 }

@@ -237,8 +237,8 @@ pub async fn run(
     anyhow::bail!(
         "Chat needs a TTS backend, and this build has none.\n\n\
          Install with Piper (recommended) or Kokoro:\n\
-         \n  cargo install vox-voice --features cli,piper\
-         \n  cargo install vox-voice --features cli,kokoro\n"
+         \n  cargo install --locked --git https://github.com/mrtozner/vox vox-voice --features cli,piper\
+         \n  cargo install --locked --git https://github.com/mrtozner/vox vox-voice --features cli,kokoro\n"
     );
 }
 
