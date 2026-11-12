@@ -1594,6 +1594,37 @@ async fn reconnecting_with_the_session_id_keeps_memory_until_forget() {
 }
 
 #[tokio::test]
+async fn an_open_connection_keeps_its_session_past_the_ttl() {
+    let mut rig = Rig::new(vec![reply(&["First reply."])]).await;
+    rig.sessions = Arc::new(SessionStore::new(Duration::from_millis(400), 16));
+
+    let mut client = rig.live(vad_config());
+    let session_id = client.expect("ready").await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client.turn_at(MERT_LEVEL).await;
+
+    // The connection stays open, microphone streaming, for longer than the
+    // time-to-live.
+    for _ in 0..16 {
+        client.send_audio(&[0.0; FRAME]);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Another connection attaches, which is when idle sessions are dropped.
+    let mut other = rig.live(vad_config());
+    other.expect("ready").await;
+
+    // The microphone is toggled: the conversation is still there.
+    drop(client);
+    settle().await;
+    let mut client = rig.live(json!({"type": "config", "session_id": session_id}));
+    client.expect("ready").await;
+    let memory = client.expect("memory").await;
+    assert_eq!(memory["turns"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn a_connection_without_session_id_gets_its_own_memory() {
     let rig = Rig::new(vec![reply(&["First reply."])]).await;
     let mut first = rig.live(vad_config());

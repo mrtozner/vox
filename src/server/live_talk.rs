@@ -1928,6 +1928,11 @@ where
         let Some(Ok(msg)) = stream.next().await else {
             break;
         };
+        // An open connection is not idle: keep the session's time-to-live
+        // from running out under a conversation that is still going on
+        // (another connection attaching would drop it from the store, and
+        // the next reconnect would find an empty memory).
+        deps.sessions.touch(&session_handle.id);
         match msg {
             Message::Binary(data) => {
                 let samples = super::ws::bytes_to_f32_samples(&data);
