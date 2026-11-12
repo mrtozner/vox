@@ -29,6 +29,7 @@
 pub mod audio;
 pub mod engine;
 pub mod error;
+pub mod paths;
 pub mod stt;
 pub mod traits;
 pub mod tts;

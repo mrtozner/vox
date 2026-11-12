@@ -91,6 +91,7 @@ diarization = ["dep:ort", "dep:ndarray", "dep:sqlx", "dep:sha2"]
 cli = [
     "dep:clap", "dep:dirs", "dep:indicatif", "dep:reqwest",
     "dep:tracing-subscriber", "dep:tokio-util", "dep:toml",
+    "dep:sha2",
     "whisper", "silero",
 ]
 server = [

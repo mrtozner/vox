@@ -29,12 +29,18 @@ struct Cli {
 enum Commands {
     /// Listen to microphone and transcribe speech in real time
     Listen {
-        /// Whisper model size (tiny.en, base.en, small.en)
-        #[arg(long, default_value = "tiny.en")]
-        model: String,
+        /// Whisper model (tiny.en, base.en, small.en are English-only;
+        /// tiny, base, small, medium, turbo are multilingual).
+        /// Default: tiny.en, or base when --language is not English
+        #[arg(long)]
+        model: Option<String>,
         /// STT backend to use (whisper, distil-whisper, sherpa, or sherpa-streaming)
         #[arg(long, default_value = "whisper")]
         stt_backend: String,
+        /// Spoken language as a Whisper code (en, tr, de, ...) or "auto"
+        /// to detect it. Needs a multilingual model
+        #[arg(long)]
+        language: Option<String>,
         /// Auto-download missing models without prompting
         #[arg(long, short = 'y')]
         yes: bool,
@@ -99,6 +105,37 @@ enum Commands {
         /// Enable model caching (reduces cold start latency)
         #[arg(long)]
         cache_models: bool,
+        /// Download the default models that are missing before starting
+        #[arg(long, short = 'y', visible_alias = "yes")]
+        download: bool,
+        /// Spoken language as a Whisper code (en, tr, de, ...) or "auto".
+        /// Selects a multilingual STT model and a matching Piper voice
+        /// [env: VOX_LANGUAGE]
+        #[arg(long)]
+        language: Option<String>,
+        /// Whisper model to load (base, small.en, turbo-q5, ...).
+        /// Default: best installed model for this machine [env: VOX_STT_MODEL]
+        #[arg(long)]
+        stt_model: Option<String>,
+        /// Piper voice for Live Talk/Converse (en, tr, de, or a voice file
+        /// name like tr_TR-dfki-medium) [env: VOX_PIPER_VOICE]
+        #[arg(long)]
+        piper_voice: Option<String>,
+    },
+    /// Check the installation: models directory, missing or corrupt models, and why
+    Doctor {
+        /// Also verify the SHA-256 of every installed model (slow)
+        #[arg(long)]
+        verify: bool,
+        /// Check the models needed for this language (en, tr, de, ..., auto)
+        #[arg(long)]
+        language: Option<String>,
+        /// Check for this Whisper model instead of the recommended one
+        #[arg(long)]
+        stt_model: Option<String>,
+        /// Check for this Piper voice instead of the language default
+        #[arg(long)]
+        piper_voice: Option<String>,
     },
     /// Manage voice models (download, list, find paths)
     Models {
@@ -151,9 +188,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Listen {
             model,
             stt_backend,
+            language,
             yes,
         } => {
-            cli::listen::run(&model, &stt_backend, yes).await?;
+            cli::listen::run(model.as_deref(), &stt_backend, language.as_deref(), yes).await?;
         }
         Commands::Speak {
             text,
@@ -188,8 +226,36 @@ async fn main() -> anyhow::Result<()> {
             host,
             port,
             cache_models,
+            download,
+            language,
+            stt_model,
+            piper_voice,
         } => {
-            cli::serve::run(&host, port, cache_models).await?;
+            cli::serve::run(cli::serve::ServeArgs {
+                host,
+                port,
+                cache_models,
+                download,
+                language,
+                stt_model,
+                piper_voice,
+            })
+            .await?;
+        }
+        Commands::Doctor {
+            verify,
+            language,
+            stt_model,
+            piper_voice,
+        } => {
+            cli::models::doctor(
+                &cli::models::BundleOptions {
+                    language,
+                    stt_model,
+                    piper_voice,
+                },
+                verify,
+            )?;
         }
         Commands::Models { action } => match action {
             ModelAction::List => {
@@ -205,4 +271,105 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Commands {
+        Cli::try_parse_from(args)
+            .unwrap_or_else(|e| panic!("{args:?} failed to parse: {e}"))
+            .command
+    }
+
+    #[test]
+    fn listen_accepts_language_flag() {
+        match parse(&["vox", "listen", "--language", "tr"]) {
+            Commands::Listen {
+                model, language, ..
+            } => {
+                assert_eq!(language.as_deref(), Some("tr"));
+                assert_eq!(model, None, "model default is resolved from the language");
+            }
+            _ => panic!("expected listen"),
+        }
+        match parse(&["vox", "listen"]) {
+            Commands::Listen { language, .. } => assert_eq!(language, None),
+            _ => panic!("expected listen"),
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn serve_accepts_download_language_and_voice_flags() {
+        match parse(&[
+            "vox",
+            "serve",
+            "-y",
+            "--language",
+            "tr",
+            "--stt-model",
+            "small",
+            "--piper-voice",
+            "tr",
+        ]) {
+            Commands::Serve {
+                download,
+                language,
+                stt_model,
+                piper_voice,
+                ..
+            } => {
+                assert!(download);
+                assert_eq!(language.as_deref(), Some("tr"));
+                assert_eq!(stt_model.as_deref(), Some("small"));
+                assert_eq!(piper_voice.as_deref(), Some("tr"));
+            }
+            _ => panic!("expected serve"),
+        }
+        for flag in ["--download", "--yes"] {
+            match parse(&["vox", "serve", flag]) {
+                Commands::Serve { download, .. } => assert!(download, "{flag}"),
+                _ => panic!("expected serve"),
+            }
+        }
+        match parse(&["vox", "serve"]) {
+            Commands::Serve {
+                download, language, ..
+            } => {
+                assert!(!download);
+                assert_eq!(language, None);
+            }
+            _ => panic!("expected serve"),
+        }
+    }
+
+    #[test]
+    fn doctor_parses_with_and_without_flags() {
+        match parse(&["vox", "doctor"]) {
+            Commands::Doctor {
+                verify, language, ..
+            } => {
+                assert!(!verify);
+                assert_eq!(language, None);
+            }
+            _ => panic!("expected doctor"),
+        }
+        match parse(&["vox", "doctor", "--verify", "--language", "tr"]) {
+            Commands::Doctor {
+                verify, language, ..
+            } => {
+                assert!(verify);
+                assert_eq!(language.as_deref(), Some("tr"));
+            }
+            _ => panic!("expected doctor"),
+        }
+    }
+
+    #[test]
+    fn cli_definition_is_consistent() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
 }

@@ -2,21 +2,18 @@
 
 use std::path::PathBuf;
 
-/// Return the default model directory, matching the Rust CLI's `models_dir()`.
+/// Return the default model directory.
 ///
-/// Uses `dirs::data_dir()` on each platform:
-/// - macOS: `~/Library/Application Support/vox/models`
-/// - Linux: `~/.local/share/vox/models`
-/// - Windows: `{FOLDERPATH}/vox/models`
+/// Delegates to [`vox::paths::models_dir`], so the Python bindings, the
+/// `vox` CLI and `vox serve` always agree on where models live:
 ///
-/// Falls back to `~/.vox/models` if the platform data dir is unavailable.
+/// 1. `VOX_MODELS_DIR` environment variable.
+/// 2. `models/` next to vox's `Cargo.toml` when running from a source
+///    checkout.
+/// 3. The per-user data directory:
+///    - macOS: `~/Library/Application Support/vox/models`
+///    - Linux: `$XDG_DATA_HOME/vox/models` or `~/.local/share/vox/models`
+///    - Windows: `%LOCALAPPDATA%\vox\models`
 pub(crate) fn default_model_dir() -> PathBuf {
-    dirs::data_dir()
-        .map(|d| d.join("vox").join("models"))
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".vox")
-                .join("models")
-        })
+    vox::paths::models_dir()
 }

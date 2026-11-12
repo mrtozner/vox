@@ -9,6 +9,10 @@ use std::sync::Arc;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+use super::whisper::{
+    default_n_threads, language_param, reported_language, validate_language,
+    warn_if_language_unsupported,
+};
 use crate::error::VoxError;
 use crate::traits::SttBackend;
 use crate::types::{SttResult, Utterance};
@@ -31,11 +35,13 @@ pub enum DistilWhisperModel {
 pub struct DistilWhisperConfig {
     /// Path to the Distil-Whisper GGML model file.
     pub model_path: PathBuf,
-    /// Language code (e.g. "en"). None = auto-detect.
+    /// Spoken language as a Whisper code (e.g. `"en"`). `None` or
+    /// `Some("auto")` = auto-detect on multilingual models. The published
+    /// Distil-Whisper GGML models are English-only and ignore this.
     pub language: Option<String>,
     /// Whether to translate to English.
     pub translate: bool,
-    /// Number of CPU threads (default: 4).
+    /// Number of CPU threads (default: derived from the machine's cores).
     pub n_threads: i32,
 }
 
@@ -69,7 +75,7 @@ impl DistilWhisperBackend {
                 model_path: path,
                 language: None,
                 translate: false,
-                n_threads: 4,
+                n_threads: default_n_threads(),
             },
         })
     }
@@ -79,6 +85,7 @@ impl DistilWhisperBackend {
         if !config.model_path.exists() {
             return Err(VoxError::ModelNotFound(config.model_path.clone()));
         }
+        validate_language(config.language.as_deref())?;
         let ctx = WhisperContext::new_with_params(
             config
                 .model_path
@@ -87,6 +94,11 @@ impl DistilWhisperBackend {
             WhisperContextParameters::default(),
         )
         .map_err(|e| VoxError::Stt(format!("failed to load distil-whisper model: {e}")))?;
+        warn_if_language_unsupported(
+            config.language.as_deref(),
+            ctx.is_multilingual(),
+            &config.model_path,
+        );
 
         Ok(Self {
             ctx: Arc::new(ctx),
@@ -118,7 +130,7 @@ impl SttBackend for DistilWhisperBackend {
         let ctx = self.ctx.clone();
         let samples = audio.audio.samples.clone();
         let duration_ms = audio.duration_ms;
-        let language = self.config.language.clone();
+        let language = language_param(self.config.language.as_deref(), ctx.is_multilingual());
         let translate = self.config.translate;
         let n_threads = self.config.n_threads;
         #[cfg(feature = "diarization")]
@@ -149,9 +161,7 @@ impl SttBackend for DistilWhisperBackend {
             // Live Talk TTS playback.
             params.set_no_speech_thold(0.6);
 
-            if let Some(ref lang) = language {
-                params.set_language(Some(lang));
-            }
+            params.set_language(Some(&language));
 
             // Run inference
             state
@@ -183,7 +193,7 @@ impl SttBackend for DistilWhisperBackend {
 
             Ok::<SttResult, VoxError>(SttResult {
                 text: text.trim().to_string(),
-                language: language.clone(),
+                language: reported_language(&language, state.full_lang_id_from_state()),
                 duration_ms,
                 processing_time_ms,
                 #[cfg(feature = "diarization")]
