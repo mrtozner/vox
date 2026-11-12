@@ -28,6 +28,27 @@ pub fn build_system_prompt(mode: VoicePromptMode) -> String {
     }
 }
 
+/// Build a system prompt that also fixes the reply language.
+///
+/// `language` is a language code or name as given to `--language` (for
+/// example `"tr"` or `"german"`). `None`, an empty string, `"auto"` and
+/// English leave the base prompt unchanged, so the default prompt stays
+/// byte-identical and its cached prefix stays valid.
+pub fn build_system_prompt_for_language(mode: VoicePromptMode, language: Option<&str>) -> String {
+    let base = build_system_prompt(mode);
+    let Some(lang) = language.map(str::trim).filter(|l| !l.is_empty()) else {
+        return base;
+    };
+    let lower = lang.to_lowercase();
+    if lower == "auto" || lower == "english" || lower == "en" || lower.starts_with("en-") {
+        return base;
+    }
+    format!(
+        "{base}\n\nThe user speaks the language with code or name \"{lang}\". \
+         Always reply in that language."
+    )
+}
+
 /// Build a system prompt with environment facts injected.
 ///
 /// Used when the server/CLI has an environment-aware `CapabilityRegistry`
@@ -52,19 +73,20 @@ as appropriate for the user's questions.";
 
 /// Voice-optimized system prompt for TTS output.
 ///
-/// Based on 2026 TTS best practices:
 /// - Short sentences (max 15-20 words)
 /// - Conversational tone with contractions
-/// - No markdown formatting
-/// - Natural speech patterns
+/// - No markdown, emoji, links or code: the reply is read aloud
+/// - Start with a short opening clause so speech can begin early
 /// - Spell out acronyms
 const VOICE_PROMPT: &str = "\
-You are a voice assistant. Keep responses conversational.
+You are a voice assistant. Your reply is read aloud. Keep responses conversational.
 
 Rules for natural speech:
 - Use short, clear sentences. Max twenty words per sentence.
+- Start with a short first sentence.
 - Speak naturally. Use contractions like you're, it's, don't.
 - Avoid markdown. No asterisks, hashes, or code blocks.
+- No emoji, no links, no tables.
 - List items as first, second, third. Not bullet points.
 - Spell out acronyms. Say A-P-I, not API.
 - Keep technical explanations simple.
@@ -88,6 +110,33 @@ mod tests {
         assert!(prompt.contains("short"));
         assert!(prompt.contains("conversational"));
         assert!(!prompt.contains("markdown formatting is allowed"));
+    }
+
+    #[test]
+    fn language_prompt_is_unchanged_for_default_and_english() {
+        let base = build_system_prompt(VoicePromptMode::Voice);
+        for lang in [
+            None,
+            Some(""),
+            Some("auto"),
+            Some("en"),
+            Some("en-US"),
+            Some("English"),
+        ] {
+            assert_eq!(
+                build_system_prompt_for_language(VoicePromptMode::Voice, lang),
+                base
+            );
+        }
+    }
+
+    #[test]
+    fn language_prompt_names_the_language() {
+        let base = build_system_prompt(VoicePromptMode::Voice);
+        let prompt = build_system_prompt_for_language(VoicePromptMode::Voice, Some("tr"));
+        assert!(prompt.starts_with(&base));
+        assert!(prompt.contains("\"tr\""));
+        assert!(prompt.contains("reply in that language"));
     }
 
     #[test]

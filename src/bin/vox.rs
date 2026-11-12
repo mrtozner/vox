@@ -73,9 +73,12 @@ enum Commands {
         /// Use voice-optimized prompts for better TTS output
         #[arg(long)]
         voice_mode: bool,
-        /// Enable speaker identification (show who's talking)
-        #[arg(long)]
+        /// Not supported in chat yet (speaker identification lives in Live Talk)
+        #[arg(long, hide = true)]
         diarize: bool,
+        /// Spoken language code, e.g. en, de, tr (default: auto-detect)
+        #[arg(long)]
+        language: Option<String>,
     },
     /// Test audio I/O (record and playback)
     Test,
@@ -171,8 +174,18 @@ async fn main() -> anyhow::Result<()> {
             yes,
             voice_mode,
             diarize,
+            language,
         } => {
-            cli::chat::run(&model, &llm, &ollama_host, yes, voice_mode, diarize).await?;
+            cli::chat::run(
+                &model,
+                &llm,
+                &ollama_host,
+                yes,
+                voice_mode,
+                diarize,
+                language.as_deref(),
+            )
+            .await?;
         }
         Commands::Test => {
             cli::test::run().await?;

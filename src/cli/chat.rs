@@ -1,66 +1,80 @@
 //! Handler for `vox chat` -- voice conversation with an LLM via Ollama.
+//!
+//! Each utterance becomes one turn of a [`vox::streaming_chat::ChatSession`]:
+//! the reply is streamed from Ollama's `/api/chat`, printed token by token,
+//! and spoken segment by segment while the rest is still being generated. The
+//! session keeps the conversation, so later turns see earlier ones.
+//!
+//! TTS is Piper when the build has the `piper` feature, otherwise Kokoro.
 
-#[cfg(feature = "piper")]
+#[cfg(any(feature = "piper", feature = "kokoro"))]
 use super::models::{ensure_model, model_filename, whisper_download_name};
 
-/// Ollama generate request.
-#[cfg(feature = "piper")]
-#[derive(serde::Serialize)]
-struct OllamaRequest {
-    model: String,
-    prompt: String,
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
-    keep_alive: &'static str,
-    options: serde_json::Value,
-}
-
-/// Ollama generate response.
-#[cfg(feature = "piper")]
-#[derive(serde::Deserialize)]
-struct OllamaResponse {
-    response: String,
-}
-
-/// Call the Ollama HTTP API.
-#[cfg(feature = "piper")]
-async fn ask_ollama(
-    client: &reqwest::Client,
-    host: &str,
-    model: &str,
-    prompt: &str,
-    system_prompt: Option<&str>,
-) -> anyhow::Result<String> {
-    let url = format!("http://{host}/api/generate");
-    let body = OllamaRequest {
-        model: model.to_string(),
-        prompt: prompt.to_string(),
-        stream: false,
-        system: system_prompt.map(|s| s.to_string()),
-        keep_alive: vox::conversation::OLLAMA_KEEP_ALIVE,
-        options: vox::conversation::ollama_options(),
-    };
-
-    let resp = client.post(&url).json(&body).send().await.map_err(|e| {
-        anyhow::anyhow!(
-            "Ollama request failed: {e}\n\n\
-                 Is Ollama running? Start it with: ollama serve"
-        )
-    })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Ollama returned HTTP {status}: {body}");
+/// Turn the `--language` value into a language code, or `None` for
+/// auto-detect.
+#[cfg(any(feature = "piper", feature = "kokoro"))]
+fn normalize_language(language: Option<&str>) -> Option<String> {
+    let lang = language?.trim().to_lowercase();
+    if lang.is_empty() || lang == "auto" {
+        None
+    } else {
+        Some(lang)
     }
+}
 
-    let ollama_resp: OllamaResponse = resp.json().await?;
-    Ok(ollama_resp.response)
+#[cfg(any(feature = "piper", feature = "kokoro"))]
+fn is_english(language: &str) -> bool {
+    language == "en" || language == "english" || language.starts_with("en-")
+}
+
+/// Pick the Whisper model for the requested language.
+///
+/// English-only models (`*.en`) cannot transcribe other languages, so a
+/// non-English `--language` switches to the multilingual model of the same
+/// size. Returns the model name and whether it was switched.
+#[cfg(any(feature = "piper", feature = "kokoro"))]
+fn whisper_model_for_language(model: &str, language: Option<&str>) -> (String, bool) {
+    match (model.strip_suffix(".en"), language) {
+        (Some(multilingual), Some(lang)) if !is_english(lang) => (multilingual.to_string(), true),
+        _ => (model.to_string(), false),
+    }
+}
+
+/// Load Piper with the voice for `language` (English when unset or unknown).
+#[cfg(feature = "piper")]
+async fn load_tts(language: Option<&str>, yes: bool) -> anyhow::Result<vox::PiperBackend> {
+    use super::models::{ensure_piper_voice, piper_voice_alias};
+
+    let wanted = language.unwrap_or("en-us");
+    let piper_voice = piper_voice_alias(wanted);
+    if piper_voice == "piper-en-us" && !is_english(wanted) {
+        println!(
+            "⚠ No Piper voice for language '{wanted}'; replies are spoken with the English voice."
+        );
+    }
+    let piper_config = ensure_piper_voice(&piper_voice, yes).await?;
+    println!("Loading Piper TTS ({piper_voice})...");
+    Ok(vox::PiperBackend::new(&piper_config)?)
+}
+
+/// Load Kokoro: the fallback for builds without the `piper` feature.
+#[cfg(all(feature = "kokoro", not(feature = "piper")))]
+async fn load_tts(language: Option<&str>, yes: bool) -> anyhow::Result<vox::KokoroBackend> {
+    if let Some(lang) = language.filter(|l| !is_english(l)) {
+        println!(
+            "⚠ This build has no Piper TTS; Kokoro speaks replies with its default English voice \
+             (requested language: '{lang}')."
+        );
+        println!("  For other languages rebuild with: --features cli,piper");
+    }
+    let model_path = ensure_model("kokoro", "kokoro-v1.0.onnx", yes).await?;
+    let voices_path = ensure_model("kokoro-voices", "voices.bin", yes).await?;
+    println!("Loading Kokoro TTS...");
+    Ok(vox::KokoroBackend::new(&model_path, &voices_path).await?)
 }
 
 /// Run the chat command.
-#[cfg(feature = "piper")]
+#[cfg(any(feature = "piper", feature = "kokoro"))]
 pub async fn run(
     whisper_model: &str,
     ollama_model: &str,
@@ -68,86 +82,46 @@ pub async fn run(
     yes: bool,
     voice_mode: bool,
     diarize: bool,
+    language: Option<&str>,
 ) -> anyhow::Result<()> {
-    use super::models::{ensure_piper_voice, piper_voice_alias};
+    use std::io::Write;
+    use std::sync::Arc;
+    use vox::streaming_chat::{ChatSession, StopReason};
+
+    if diarize {
+        println!("⚠ --diarize is not supported in `vox chat` yet and is ignored.");
+        println!("  Speaker identification is available in Live Talk: vox serve\n");
+    }
+
+    let language = normalize_language(language);
+    let (whisper_model, switched) = whisper_model_for_language(whisper_model, language.as_deref());
+    if switched {
+        println!(
+            "Using multilingual Whisper model '{whisper_model}' for language '{}'.",
+            language.as_deref().unwrap_or_default()
+        );
+    }
 
     // Resolve all required models (auto-download if --yes)
     let vad_path = ensure_model("silero-vad", "silero_vad.onnx", yes).await?;
 
-    let whisper_file = model_filename(whisper_model);
-    let whisper_name = whisper_download_name(whisper_model);
+    let whisper_file = model_filename(&whisper_model);
+    let whisper_name = whisper_download_name(&whisper_model);
     let whisper_path = ensure_model(&whisper_name, &whisper_file, yes).await?;
-
-    // Download Piper model (default to en-us for best English pronunciation)
-    let piper_voice = piper_voice_alias("en-us");
-    let piper_config = ensure_piper_voice(&piper_voice, yes).await?;
-
-    // Download speaker encoder model if diarization is enabled
-    #[cfg(feature = "diarization")]
-    let speaker_encoder_path = if diarize {
-        println!("Downloading speaker encoder model...");
-        Some(ensure_model("speaker-encoder", "speaker_encoder.onnx", yes).await?)
-    } else {
-        None
-    };
-
-    #[cfg(not(feature = "diarization"))]
-    let _diarize_check = diarize; // suppress warning
 
     // Initialize backends
     println!("Loading VAD model...");
     let vad = vox::SileroVad::new(&vad_path)?;
 
     println!("Loading Whisper model ({whisper_model})...");
-    let stt = vox::WhisperBackend::from_model(&whisper_path)?;
+    let stt = vox::WhisperBackend::with_config(vox::WhisperConfig {
+        model_path: whisper_path,
+        language: language.clone(),
+        translate: false,
+        n_threads: 4,
+    })?;
 
-    println!("Loading Piper TTS...");
-    let tts = vox::PiperBackend::new(&piper_config)?;
-
-    // Initialize diarization pipeline if enabled
-    #[cfg(feature = "diarization")]
-    let diarization_pipeline = if diarize {
-        if let Some(encoder_path) = speaker_encoder_path {
-            println!("Loading speaker encoder for diarization...");
-
-            use vox::diarization::{
-                DiarizationConfig, DiarizationPipeline, RecognitionConfig, SpeakerEmbedding,
-                SpeakerRegistry,
-            };
-
-            // Load speaker embedding model
-            let embedding = SpeakerEmbedding::new(&encoder_path)?;
-
-            // Create speaker registry with default config
-            let recognition_config = RecognitionConfig {
-                threshold: 0.7,
-                require_threshold: true,
-            };
-            let registry = SpeakerRegistry::with_config(recognition_config);
-
-            // Create diarization pipeline with auto-enrollment
-            let diarization_config = DiarizationConfig {
-                auto_enroll: true, // Auto-enroll unknown speakers as "Speaker 1", "Speaker 2", etc.
-                min_audio_ms: 500,
-                skip_short_utterances: true,
-            };
-
-            let pipeline = DiarizationPipeline::new(embedding, registry, diarization_config);
-            println!("✓ Diarization pipeline initialized with auto-enrollment");
-            println!("  Unknown speakers will be auto-enrolled as Speaker 1, Speaker 2, etc.");
-            Some(std::sync::Arc::new(tokio::sync::Mutex::new(pipeline)))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    #[cfg(not(feature = "diarization"))]
-    if diarize {
-        println!("⚠ Warning: Diarization feature not enabled in this build.");
-        println!("  Rebuild with: cargo build --features cli,piper,diarization");
-    }
+    let tts = load_tts(language.as_deref(), yes).await?;
 
     // Build system prompt based on voice mode
     let mode = if voice_mode {
@@ -156,12 +130,10 @@ pub async fn run(
     } else {
         vox::VoicePromptMode::Standard
     };
-    let system_prompt = vox::build_system_prompt(mode);
+    let system_prompt = vox::prompts::build_system_prompt_for_language(mode, language.as_deref());
 
     // Verify Ollama is reachable
     let client = reqwest::Client::new();
-    let ollama_host = ollama_host.to_string();
-    let ollama_model = ollama_model.to_string();
 
     println!("Checking Ollama at {ollama_host}...");
     match client
@@ -178,15 +150,13 @@ pub async fn run(
         }
     }
 
-    // Clone model name for the println after the closure captures it.
-    let model_display = ollama_model.clone();
-
-    // Clone system prompt for the closure
-    let system_prompt_clone = system_prompt.clone();
-
-    // Clone diarization pipeline for the utterance callback
-    #[cfg(feature = "diarization")]
-    let diarization_for_callback = diarization_pipeline.clone();
+    // One session for the whole run: it carries the conversation memory.
+    let session = Arc::new(tokio::sync::Mutex::new(ChatSession::new(
+        client,
+        ollama_host,
+        ollama_model,
+        Some(system_prompt),
+    )));
 
     // Build pipeline
     let pipeline = vox::Vox::builder()
@@ -194,67 +164,46 @@ pub async fn run(
         .stt(stt)
         .tts(tts)
         .on_utterance(move |result, ctx| {
-            // Extract and display speaker information if diarization is enabled
-            #[cfg(feature = "diarization")]
-            let (speaker_display_name, confidence) =
-                if let Some(ref _diarization) = diarization_for_callback {
-                    // Extract speaker ID from the STT result
-                    // The Vox engine needs to populate result.speaker_id by processing
-                    // utterances through the diarization pipeline in VadEvent::SpeechEnd
-                    if let Some(ref speaker_id) = result.speaker_id {
-                        let registry_clone = _diarization.clone();
-                        let (name, conf) = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(async {
-                                let diarization_lock = registry_clone.lock().await;
-                                let registry = diarization_lock.registry();
-                                let registry_guard = registry.lock().unwrap();
-
-                                let name = registry_guard
-                                    .get_speaker(speaker_id)
-                                    .map(|s| s.name.clone())
-                                    .unwrap_or_else(|| speaker_id.clone());
-
-                                // Calculate confidence (would come from Recognition result)
-                                let confidence = 0.85f32;
-
-                                (name, confidence)
-                            })
-                        });
-                        (name, conf)
-                    } else {
-                        ("You".to_string(), 1.0f32)
-                    }
-                } else {
-                    ("You".to_string(), 1.0f32)
-                };
-
-            // Display with speaker info if diarization is enabled
-            #[cfg(feature = "diarization")]
-            if diarization_for_callback.is_some() {
-                display_speaker_message(&speaker_display_name, &result.text, confidence, true);
-            } else {
-                println!("\n[You] {}", result.text);
+            let user_text = result.text.trim().to_string();
+            if user_text.is_empty() {
+                return;
             }
+            println!("\n[You] {user_text}");
+            print!("\n[Assistant] ");
+            std::io::stdout().flush().ok();
 
-            #[cfg(not(feature = "diarization"))]
-            println!("\n[You] {}", result.text);
-
-            let client = client.clone();
-            let host = ollama_host.clone();
-            let model = ollama_model.clone();
-            let system = system_prompt_clone.clone();
-
+            let session = Arc::clone(&session);
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(async {
-                    match ask_ollama(&client, &host, &model, &result.text, Some(&system)).await {
-                        Ok(response) => {
-                            println!("\n[Assistant] {response}\n");
-                            if let Err(e) = ctx.speak_and_play(&response).await {
-                                eprintln!("TTS error: {e}");
-                            }
-                        }
+                    let mut session = session.lock().await;
+                    let ctx = &ctx;
+                    let outcome = session
+                        .turn(
+                            &user_text,
+                            tokio_util::sync::CancellationToken::new(),
+                            |token| {
+                                print!("{token}");
+                                std::io::stdout().flush().ok();
+                            },
+                            |segment: &str| {
+                                let segment = segment.to_string();
+                                async move {
+                                    // The text is already on screen, so a
+                                    // TTS failure does not end the turn.
+                                    if let Err(e) = ctx.speak_and_play(&segment).await {
+                                        eprintln!("\nTTS error: {e}");
+                                    }
+                                    Ok(())
+                                }
+                            },
+                        )
+                        .await;
+                    println!("\n");
+                    match outcome {
+                        Ok(StopReason::Finished) | Ok(StopReason::Cancelled) => {}
                         Err(e) => {
-                            eprintln!("\n[Error] {e}\n");
+                            eprintln!("[Error] {e}");
+                            eprintln!("  Is Ollama running? Start it with: ollama serve\n");
                         }
                     }
                 });
@@ -264,13 +213,10 @@ pub async fn run(
 
     println!("\n═══════════════════════════════════════════════════════════");
     println!("🎙  Chat ready! Speak into your microphone");
-    println!("🤖 AI: {} via Ollama", model_display);
-    #[cfg(feature = "diarization")]
-    if diarization_pipeline.is_some() {
-        println!("👥 Diarization: Enabled (auto-enrollment active)");
-        println!(
-            "   NOTE: Full integration requires engine support - currently loading models only"
-        );
+    println!("🤖 AI: {ollama_model} via Ollama");
+    match &language {
+        Some(lang) => println!("🌐 Language: {lang}"),
+        None => println!("🌐 Language: auto-detect"),
     }
     println!("⏹  Press Ctrl+C to stop");
     println!("═══════════════════════════════════════════════════════════\n");
@@ -280,37 +226,8 @@ pub async fn run(
     Ok(())
 }
 
-/// Display a speaker's message with colored UI.
-#[cfg(all(feature = "piper", feature = "diarization"))]
-fn display_speaker_message(speaker_name: &str, text: &str, confidence: f32, is_user: bool) {
-    // Confidence bar
-    let filled = (confidence * 10.0) as usize;
-    let empty = 10 - filled.min(10);
-    let confidence_bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
-
-    // Color based on role
-    let (color, reset) = if is_user {
-        ("\x1b[36m", "\x1b[0m") // Cyan for user
-    } else {
-        ("\x1b[35m", "\x1b[0m") // Magenta for assistant
-    };
-
-    println!("\n┌─────────────────────────────────────────────────────────┐");
-    println!(
-        "│ 🎤 Speaker: {}{:20}{}                       │",
-        color, speaker_name, reset
-    );
-    println!(
-        "│ 📊 Confidence: {} {:.0}%                         │",
-        confidence_bar,
-        confidence * 100.0
-    );
-    println!("└─────────────────────────────────────────────────────────┘");
-    println!("💬 {}{}{}: \"{}\"", color, speaker_name, reset, text);
-}
-
-/// Stub when piper feature is disabled.
-#[cfg(not(feature = "piper"))]
+/// Stub when no chat-capable TTS backend is compiled in.
+#[cfg(not(any(feature = "piper", feature = "kokoro")))]
 pub async fn run(
     _whisper_model: &str,
     _ollama_model: &str,
@@ -318,10 +235,53 @@ pub async fn run(
     _yes: bool,
     _voice_mode: bool,
     _diarize: bool,
+    _language: Option<&str>,
 ) -> anyhow::Result<()> {
     anyhow::bail!(
-        "Chat requires the 'piper' feature for TTS.\n\n\
-         Rebuild with:\n\
-         \n  cargo install vox --features cli,piper\n"
+        "Chat needs a TTS backend, and this build has none.\n\n\
+         Install with Piper (recommended) or Kokoro:\n\
+         \n  cargo install vox-voice --features cli,piper\
+         \n  cargo install vox-voice --features cli,kokoro\n"
     );
+}
+
+#[cfg(all(test, any(feature = "piper", feature = "kokoro")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_is_normalized() {
+        assert_eq!(normalize_language(None), None);
+        assert_eq!(normalize_language(Some("")), None);
+        assert_eq!(normalize_language(Some("auto")), None);
+        assert_eq!(normalize_language(Some(" TR ")), Some("tr".to_string()));
+    }
+
+    #[test]
+    fn english_only_model_is_swapped_for_other_languages() {
+        assert_eq!(
+            whisper_model_for_language("tiny.en", Some("tr")),
+            ("tiny".to_string(), true)
+        );
+        assert_eq!(
+            whisper_model_for_language("small.en", Some("de")),
+            ("small".to_string(), true)
+        );
+    }
+
+    #[test]
+    fn model_is_kept_when_it_fits_the_language() {
+        for (model, lang) in [
+            ("tiny.en", None),
+            ("tiny.en", Some("en")),
+            ("tiny.en", Some("en-us")),
+            ("base", Some("tr")),
+            ("turbo", Some("de")),
+        ] {
+            assert_eq!(
+                whisper_model_for_language(model, lang),
+                (model.to_string(), false)
+            );
+        }
+    }
 }
