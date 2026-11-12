@@ -134,6 +134,16 @@ name = "live_talk_integration"
 path = "tests/live_talk_integration.rs"
 required-features = ["server"]
 
+[[test]]
+name = "privacy_ledger_tests"
+path = "tests/privacy_ledger_tests.rs"
+required-features = ["server"]
+
+[[test]]
+name = "offline_server_tests"
+path = "tests/offline_server_tests.rs"
+required-features = ["server"]
+
 [[bin]]
 name = "vox"
 path = "src/bin/vox.rs"

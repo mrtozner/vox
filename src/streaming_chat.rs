@@ -262,8 +262,6 @@ where
     F: FnMut(&str) -> Fut + Send,
     Fut: std::future::Future<Output = Result<(), VoxError>> + Send,
 {
-    let url = format!("http://{}/api/chat", host);
-
     let body = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -271,6 +269,13 @@ where
         "keep_alive": crate::conversation::OLLAMA_KEEP_ALIVE,
         "options": crate::conversation::ollama_options(),
     });
+    let (url, egress) = crate::privacy::ollama_request(
+        host,
+        "/api/chat",
+        "llm chat",
+        crate::privacy::json_len(&body),
+    )
+    .map_err(|e| VoxError::Pipeline(e.to_string()))?;
 
     let first_token_timeout = options.first_token_timeout;
     let idle_timeout = options.idle_timeout;
@@ -325,6 +330,7 @@ where
                     let chunk =
                         chunk.map_err(|e| VoxError::Pipeline(format!("Stream error: {e}")))?;
                     started |= !chunk.is_empty();
+                    egress.add_received(chunk.len() as u64);
                     line_buffer.extend_from_slice(&chunk);
                 }
                 None => eof = true,

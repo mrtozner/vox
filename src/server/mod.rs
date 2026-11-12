@@ -13,6 +13,7 @@ mod loaders;
 pub mod middleware;
 pub mod models;
 pub mod openai;
+mod privacy_api;
 mod speakers;
 mod speakers_api;
 mod state;
@@ -66,6 +67,7 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/v1/synthesize", post(handlers::synthesize))
         .route("/v1/vox/models", get(handlers::models))
         .route("/v1/stats", get(handlers::stats))
+        .route("/v1/privacy/ledger", get(privacy_api::ledger))
         .route("/health", get(handlers::health))
         .route("/health/ready", get(handlers::health_ready))
         // OpenAI-compatible surface
@@ -255,6 +257,8 @@ pub async fn run_with_config(
 ) -> anyhow::Result<()> {
     // Fail before loading any model if the bind address is not allowed.
     check_bind_host(host, server_opts.allow_remote)?;
+    // Offline mode: refuse a remote Ollama before loading any model.
+    vox::privacy::ensure_ollama_host_allowed(&server_opts.resolved_ollama_host())?;
 
     // Single source of truth for model resolution, shared with the CLI:
     // `VOX_MODELS_DIR` → source checkout → per-user data directory.
@@ -421,6 +425,7 @@ pub async fn run_with_config(
     println!("    POST /v1/synthesize  — text-to-speech (JSON body)");
     println!("    GET  /v1/vox/models  — list loaded backends");
     println!("    GET  /v1/stats       — server statistics");
+    println!("    GET  /v1/privacy/ledger — outbound connections made by this server");
     println!("    GET  /v1/models               — OpenAI-compatible model list");
     println!("    POST /v1/audio/transcriptions — OpenAI-compatible speech-to-text");
     println!("    POST /v1/audio/speech         — OpenAI-compatible text-to-speech");
@@ -432,6 +437,9 @@ pub async fn run_with_config(
     println!("    GET  /health         — liveness (GET /health/ready — readiness)");
     println!();
     println!("  LLM: Ollama at {}", state.ollama_host);
+    if vox::privacy::offline() {
+        println!("  offline mode: only loopback Ollama, no model downloads");
+    }
     println!();
 
     let listener = TcpListener::bind(&addr).await?;
