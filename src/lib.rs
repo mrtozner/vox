@@ -53,6 +53,10 @@ pub mod capabilities;
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod system_profile;
 
+// Egress control: Ollama host resolution, offline mode, privacy ledger.
+#[cfg(any(feature = "cli", feature = "server"))]
+pub mod privacy;
+
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
