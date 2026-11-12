@@ -45,6 +45,7 @@ fn build_test_app() -> Router {
         tts_model_name: None,
         tts_model_size: None,
         capabilities: Arc::new(vox::CapabilityRegistry::default()),
+        sessions: Default::default(),
         #[cfg(feature = "diarization")]
         diarization: None,
         #[cfg(feature = "diarization")]
@@ -371,6 +372,7 @@ async fn stats_counter_increments_across_requests() {
         tts_model_name: None,
         tts_model_size: None,
         capabilities: Arc::new(vox::CapabilityRegistry::default()),
+        sessions: Default::default(),
         #[cfg(feature = "diarization")]
         diarization: None,
         #[cfg(feature = "diarization")]
@@ -450,6 +452,7 @@ async fn cors_headers_are_present_on_response() {
         tts_model_name: None,
         tts_model_size: None,
         capabilities: Arc::new(vox::CapabilityRegistry::default()),
+        sessions: Default::default(),
         #[cfg(feature = "diarization")]
         diarization: None,
         #[cfg(feature = "diarization")]

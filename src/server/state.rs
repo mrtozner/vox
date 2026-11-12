@@ -29,6 +29,8 @@ pub struct ServerState {
     pub tts_model_name: Option<String>,
     pub tts_model_size: Option<u64>,
     pub capabilities: Arc<vox::CapabilityRegistry>,
+    /// Live Talk conversation memory by session id, kept across reconnects.
+    pub sessions: Arc<vox::conversation::SessionStore>,
     #[cfg(feature = "diarization")]
     pub diarization: Option<Arc<vox::DiarizationPipeline>>,
     #[cfg(feature = "diarization")]

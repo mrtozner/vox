@@ -209,6 +209,7 @@ pub async fn run_with_options(
         tts_model_name,
         tts_model_size,
         capabilities,
+        sessions: Default::default(),
         #[cfg(feature = "diarization")]
         diarization,
         #[cfg(feature = "diarization")]

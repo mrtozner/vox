@@ -44,6 +44,7 @@ fn test_state() -> Arc<ServerState> {
         streaming_stt: None,
         conversation_tts: None,
         capabilities: Arc::new(vox::CapabilityRegistry::default()),
+        sessions: Default::default(),
         #[cfg(feature = "diarization")]
         diarization: None,
         #[cfg(feature = "diarization")]
@@ -379,6 +380,7 @@ mod wav_decoding {
             streaming_stt: None,
             conversation_tts: None,
             capabilities: Arc::new(vox::CapabilityRegistry::default()),
+            sessions: Default::default(),
             #[cfg(feature = "diarization")]
             diarization: None,
             #[cfg(feature = "diarization")]
