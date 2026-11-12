@@ -6,10 +6,6 @@
 #[path = "../cli/mod.rs"]
 mod cli;
 
-#[cfg(feature = "server")]
-#[path = "../server/mod.rs"]
-mod server;
-
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]

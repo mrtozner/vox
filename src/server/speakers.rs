@@ -23,7 +23,7 @@ use std::time::Duration;
 use axum::extract::FromRef;
 use serde::Serialize;
 
-use vox::diarization::{
+use crate::diarization::{
     Identification, IdentifyMode, SpeakerExport, SpeakerRecord, merge_embeddings,
     validate_speaker_name,
 };
@@ -42,8 +42,8 @@ const ADAPTATION_FLUSH_DELAY: Duration = Duration::from_secs(5);
 /// this instead of the whole [`ServerState`] so they depend on nothing else.
 #[derive(Clone, Default)]
 pub(super) struct SpeakerCtx {
-    pub(super) pipeline: Option<Arc<vox::DiarizationPipeline>>,
-    pub(super) db: Option<Arc<vox::SpeakerDatabase>>,
+    pub(super) pipeline: Option<Arc<crate::DiarizationPipeline>>,
+    pub(super) db: Option<Arc<crate::SpeakerDatabase>>,
 }
 
 impl SpeakerCtx {
@@ -54,7 +54,7 @@ impl SpeakerCtx {
         }
     }
 
-    fn db(&self) -> Result<&Arc<vox::SpeakerDatabase>, SpeakerError> {
+    fn db(&self) -> Result<&Arc<crate::SpeakerDatabase>, SpeakerError> {
         self.db.as_ref().ok_or(SpeakerError::Unavailable)
     }
 }
@@ -88,8 +88,8 @@ impl fmt::Display for SpeakerError {
     }
 }
 
-impl From<vox::VoxError> for SpeakerError {
-    fn from(err: vox::VoxError) -> Self {
+impl From<crate::VoxError> for SpeakerError {
+    fn from(err: crate::VoxError) -> Self {
         Self::Internal(err.to_string())
     }
 }
@@ -205,7 +205,7 @@ pub(super) fn color_for(id: &str) -> String {
 /// nobody matched, or extraction failed (logged; never fatal to the turn).
 pub(super) async fn identify_speaker(
     ctx: &SpeakerCtx,
-    audio: &vox::AudioChunk,
+    audio: &crate::AudioChunk,
     mode: IdentifyMode,
 ) -> Option<SpeakerMatch> {
     let pipeline = ctx.pipeline.as_ref()?;
@@ -284,7 +284,7 @@ async fn commit_identification(
 pub(super) async fn diarize_utterance(
     state: &Arc<ServerState>,
     diarization_on: bool,
-    utterance: &vox::Utterance,
+    utterance: &crate::Utterance,
 ) -> (
     Option<String>,
     Option<String>,
@@ -313,8 +313,8 @@ pub(super) async fn diarize_utterance(
 /// Persist adapted references after [`ADAPTATION_FLUSH_DELAY`], unless a
 /// flush is already on its way.
 fn schedule_adaptation_flush(
-    pipeline: &Arc<vox::DiarizationPipeline>,
-    db: &Arc<vox::SpeakerDatabase>,
+    pipeline: &Arc<crate::DiarizationPipeline>,
+    db: &Arc<crate::SpeakerDatabase>,
 ) {
     if !pipeline.claim_flush() {
         return;
@@ -328,7 +328,7 @@ fn schedule_adaptation_flush(
 }
 
 /// Write every adapted-but-unsaved reference embedding to the database now.
-async fn flush_adaptations(pipeline: &vox::DiarizationPipeline, db: &vox::SpeakerDatabase) {
+async fn flush_adaptations(pipeline: &crate::DiarizationPipeline, db: &crate::SpeakerDatabase) {
     for (speaker, count) in pipeline.take_unsaved_adaptations() {
         if let Err(e) = db
             .update_speaker_embedding(&speaker.id, &speaker.embedding, count)
@@ -443,7 +443,7 @@ pub(super) async fn list_speakers(ctx: &SpeakerCtx) -> Result<Vec<SpeakerDetail>
 }
 
 async fn require_speaker(
-    db: &vox::SpeakerDatabase,
+    db: &crate::SpeakerDatabase,
     id: &str,
 ) -> Result<SpeakerRecord, SpeakerError> {
     db.get_record(id)
@@ -534,7 +534,7 @@ pub(super) async fn merge(
                 })?;
             let count = src_count
                 .saturating_add(dst_count)
-                .min(vox::diarization::MAX_SAMPLE_COUNT);
+                .min(crate::diarization::MAX_SAMPLE_COUNT);
             (merged, count)
         }
         (false, true) => (dst.embedding.clone(), dst_count),
@@ -599,12 +599,12 @@ pub(super) async fn forget_speaker(state: &Arc<ServerState>, id: &str) -> Result
 pub(super) mod tests {
     use super::*;
 
-    use vox::diarization::{DiarizationConfig, DiarizationPipeline, SpeakerRegistry};
+    use crate::diarization::{DiarizationConfig, DiarizationPipeline, SpeakerRegistry};
 
     /// A speaker subsystem backed by an in-memory database and a pipeline
     /// with no encoder model.
     pub(crate) async fn test_ctx() -> SpeakerCtx {
-        let db = vox::SpeakerDatabase::open(":memory:").await.unwrap();
+        let db = crate::SpeakerDatabase::open(":memory:").await.unwrap();
         let pipeline = DiarizationPipeline::without_encoder(
             SpeakerRegistry::new(),
             DiarizationConfig::default(),
@@ -617,7 +617,7 @@ pub(super) mod tests {
 
     /// Enroll a speaker in both the database and the registry.
     pub(crate) async fn enroll(ctx: &SpeakerCtx, id: &str, name: &str, embedding: &[f32]) {
-        let speaker = vox::Speaker {
+        let speaker = crate::Speaker {
             id: id.to_string(),
             name: name.to_string(),
             embedding: embedding.to_vec(),

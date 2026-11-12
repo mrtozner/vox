@@ -20,8 +20,8 @@ use axum::response::IntoResponse;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
-use vox::conversation::{Conversation, SharedConversation};
-use vox::streaming_chat::{StopReason, StreamOptions};
+use crate::conversation::{Conversation, SharedConversation};
+use crate::streaming_chat::{StopReason, StreamOptions};
 
 use super::ServerState;
 use super::error::ServerError;
@@ -40,9 +40,9 @@ pub const DEFAULT_POST_TURN_MUTE: Duration = Duration::from_millis(400);
 /// Everything a converse session needs. The transport is passed separately
 /// so the session can be driven without a real socket.
 pub struct ConverseDeps {
-    pub stt: Arc<dyn vox::traits::SttBackend>,
-    pub tts: Arc<dyn vox::traits::TtsBackend>,
-    pub vad: Box<dyn vox::traits::VadBackend>,
+    pub stt: Arc<dyn crate::traits::SttBackend>,
+    pub tts: Arc<dyn crate::traits::TtsBackend>,
+    pub vad: Box<dyn crate::traits::VadBackend>,
     pub http_client: reqwest::Client,
     /// Ollama `host:port`. Server configuration; never taken from the client.
     pub ollama_host: String,
@@ -140,17 +140,17 @@ async fn handle_converse_ws(socket: WebSocket, state: Arc<ServerState>) {
     let Some(vad_path) = state.vad_model_path.clone() else {
         return refuse(socket, "VAD model not available".into()).await;
     };
-    let vad: Box<dyn vox::traits::VadBackend> = match vox::SileroVad::new(&vad_path) {
+    let vad: Box<dyn crate::traits::VadBackend> = match crate::SileroVad::new(&vad_path) {
         Ok(v) => Box::new(v),
         Err(e) => return refuse(socket, format!("failed to initialize VAD: {e}")).await,
     };
 
     // Every STT/TTS call of the session takes a server inference slot.
-    let stt: Arc<dyn vox::traits::SttBackend> = Arc::new(super::ws::LimitedStt {
+    let stt: Arc<dyn crate::traits::SttBackend> = Arc::new(super::ws::LimitedStt {
         inner: stt,
         state: Arc::clone(&state),
     });
-    let tts: Arc<dyn vox::traits::TtsBackend> = Arc::new(super::ws::LimitedTts {
+    let tts: Arc<dyn crate::traits::TtsBackend> = Arc::new(super::ws::LimitedTts {
         inner: tts,
         state: Arc::clone(&state),
     });
@@ -203,8 +203,8 @@ where
 /// What stays the same for every turn of a connection.
 struct TurnCtx<S> {
     sink: SharedSink<S>,
-    stt: Arc<dyn vox::traits::SttBackend>,
-    tts: Arc<dyn vox::traits::TtsBackend>,
+    stt: Arc<dyn crate::traits::SttBackend>,
+    tts: Arc<dyn crate::traits::TtsBackend>,
     http_client: reqwest::Client,
     ollama_host: String,
     stream_options: StreamOptions,
@@ -264,9 +264,9 @@ where
         http_client: deps.http_client,
         ollama_host: deps.ollama_host,
         stream_options: deps.stream_options,
-        system_prompt: vox::build_system_prompt(vox::VoicePromptMode::Voice),
+        system_prompt: crate::build_system_prompt(crate::VoicePromptMode::Voice),
         conversation: Arc::new(std::sync::Mutex::new(Conversation::for_num_ctx(
-            vox::conversation::ollama_num_ctx(),
+            crate::conversation::ollama_num_ctx(),
         ))),
     });
 
@@ -372,10 +372,10 @@ fn apply_config(config: ConverseConfig, model: &mut String, voice: &mut Option<S
 async fn detect_utterance<S>(
     samples: &[f32],
     frame_size: usize,
-    vad: &mut dyn vox::traits::VadBackend,
+    vad: &mut dyn crate::traits::VadBackend,
     sink: &SharedSink<S>,
     residual: &mut Vec<f32>,
-) -> Result<Option<vox::Utterance>, ()>
+) -> Result<Option<crate::Utterance>, ()>
 where
     S: Sink<Message> + Unpin,
 {
@@ -384,7 +384,7 @@ where
     let frames: Vec<f32> = residual.drain(..consumed).collect();
 
     for frame_samples in frames.chunks_exact(frame_size) {
-        let frame = vox::AudioChunk {
+        let frame = crate::AudioChunk {
             samples: frame_samples.to_vec(),
             sample_rate: 16000,
             channels: 1,
@@ -404,12 +404,12 @@ where
         };
         for event in events {
             match event {
-                vox::VadEvent::SpeechStart => {
+                crate::VadEvent::SpeechStart => {
                     if !send_event(sink, &ConverseWsEvent::SpeechStart).await {
                         return Err(());
                     }
                 }
-                vox::VadEvent::SpeechEnd(utterance) => {
+                crate::VadEvent::SpeechEnd(utterance) => {
                     if !send_event(sink, &ConverseWsEvent::SpeechEnd).await {
                         return Err(());
                     }
@@ -417,7 +417,7 @@ where
                     // turn would ignore anyway.
                     return Ok(Some(utterance));
                 }
-                vox::VadEvent::Silence => {}
+                crate::VadEvent::Silence => {}
             }
         }
     }
@@ -428,7 +428,7 @@ where
 /// reported to the client and end the turn, not the connection.
 async fn run_turn<S>(
     ctx: Arc<TurnCtx<S>>,
-    utterance: vox::Utterance,
+    utterance: crate::Utterance,
     model: String,
     voice: Option<String>,
     closed: CancellationToken,
@@ -497,14 +497,14 @@ async fn run_turn<S>(
                 if text.trim().is_empty() {
                     return Ok(());
                 }
-                let request = vox::TtsRequest {
+                let request = crate::TtsRequest {
                     text: text.clone(),
                     voice,
                     seed: None,
                 };
                 let output = ctx.tts.synthesize(&request).await?;
                 let wav = encode_wav_chunk(&output.audio.samples, output.audio.sample_rate)
-                    .map_err(vox::VoxError::Tts)?;
+                    .map_err(crate::VoxError::Tts)?;
                 let index = spoken.lock().unwrap_or_else(|e| e.into_inner()).len();
                 let event = ConverseWsEvent::Sentence {
                     index,
@@ -513,7 +513,7 @@ async fn run_turn<S>(
                     sample_rate: output.audio.sample_rate,
                 };
                 if !send_event(&ctx.sink, &event).await {
-                    return Err(vox::VoxError::Pipeline("client disconnected".to_string()));
+                    return Err(crate::VoxError::Pipeline("client disconnected".to_string()));
                 }
                 spoken.lock().unwrap_or_else(|e| e.into_inner()).push(text);
                 Ok(())
@@ -521,7 +521,7 @@ async fn run_turn<S>(
         }
     };
 
-    let stop = vox::streaming_chat::stream_chat(
+    let stop = crate::streaming_chat::stream_chat(
         &ctx.http_client,
         &ctx.ollama_host,
         &model,

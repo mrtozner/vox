@@ -113,9 +113,9 @@ pub async fn listen_ws(
 /// Handle a single WebSocket connection.
 async fn handle_ws(
     socket: WebSocket,
-    stt: Arc<dyn vox::traits::SttBackend>,
+    stt: Arc<dyn crate::traits::SttBackend>,
     vad_path: std::path::PathBuf,
-    streaming_stt: Option<Arc<dyn vox::traits::StreamingSttBackend>>,
+    streaming_stt: Option<Arc<dyn crate::traits::StreamingSttBackend>>,
     state: Arc<ServerState>,
 ) {
     // Counted as an open session until this function returns, so shutdown
@@ -124,7 +124,7 @@ async fn handle_ws(
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     #[cfg(feature = "silero")]
-    let mut vad: Box<dyn vox::traits::VadBackend> = match vox::SileroVad::new(&vad_path) {
+    let mut vad: Box<dyn crate::traits::VadBackend> = match crate::SileroVad::new(&vad_path) {
         Ok(v) => Box::new(v),
         Err(e) => {
             let msg = serde_json::to_string(&WsEvent::Error {
@@ -179,7 +179,7 @@ async fn handle_ws(
             return;
         }
 
-        let mut session: Option<Box<dyn vox::traits::SttSession>> = None;
+        let mut session: Option<Box<dyn crate::traits::SttSession>> = None;
         // Residual buffer preserves samples that don't fit a full VAD frame so
         // they carry over to the next binary message instead of being dropped
         // at the ~4%-per-chunk rate of the old `continue`-based implementation.
@@ -225,7 +225,7 @@ async fn handle_ws(
                     let frames: Vec<f32> = residual.drain(..consumed).collect();
 
                     for frame_samples in frames.chunks_exact(frame_size) {
-                        let frame = vox::AudioChunk {
+                        let frame = crate::AudioChunk {
                             samples: frame_samples.to_vec(),
                             sample_rate: 16000,
                             channels: 1,
@@ -257,7 +257,7 @@ async fn handle_ws(
                             Ok(events) => {
                                 for event in events {
                                     let json = match event {
-                                        vox::VadEvent::SpeechStart => {
+                                        crate::VadEvent::SpeechStart => {
                                             if let Some(streaming) = &streaming_stt {
                                                 match streaming.create_session() {
                                                     Ok(s) => session = Some(s),
@@ -268,7 +268,7 @@ async fn handle_ws(
                                             }
                                             serde_json::to_string(&WsEvent::SpeechStart)
                                         }
-                                        vox::VadEvent::SpeechEnd(utterance) => {
+                                        crate::VadEvent::SpeechEnd(utterance) => {
                                             let stt_result = if let Some(mut s) = session.take() {
                                                 match s.finish() {
                                                     Ok(result) => Some(result),
@@ -378,7 +378,7 @@ async fn handle_ws(
 
                                             serde_json::to_string(&WsEvent::SpeechEnd)
                                         }
-                                        vox::VadEvent::Silence => continue,
+                                        crate::VadEvent::Silence => continue,
                                     };
 
                                     if let Ok(json) = json

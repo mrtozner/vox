@@ -52,16 +52,16 @@ impl LoadOptions {
 
 /// Resolve the models directory for the server.
 ///
-/// Delegates to [`vox::paths::models_dir`], the single source of truth
+/// Delegates to [`crate::paths::models_dir`], the single source of truth
 /// shared with the CLI: `VOX_MODELS_DIR` → `models/` next to vox's
 /// `Cargo.toml` (source checkout) → per-user OS data directory.
 pub(super) fn resolve_models_dir() -> PathBuf {
-    vox::paths::models_dir()
+    crate::paths::models_dir()
 }
 
 /// `(backend, model name, model size in MB)` for the loaded STT model.
 pub(super) type SttLoadResult = (
-    Option<Arc<dyn vox::traits::SttBackend>>,
+    Option<Arc<dyn crate::traits::SttBackend>>,
     Option<String>,
     Option<u64>,
 );
@@ -70,15 +70,16 @@ pub(super) type SttLoadResult = (
 ///
 /// An explicitly requested model comes first; the rest follows the
 /// hardware- and language-aware order from
-/// [`vox::system_profile::SystemProfile::recommended_whisper_candidates`],
+/// [`crate::system_profile::SystemProfile::recommended_whisper_candidates`],
 /// which covers English-only, multilingual and turbo models.
+#[cfg_attr(not(feature = "whisper"), allow(dead_code))]
 pub(super) fn stt_candidates(
-    profile: &vox::system_profile::SystemProfile,
+    profile: &crate::system_profile::SystemProfile,
     opts: &LoadOptions,
 ) -> Vec<String> {
     let mut candidates: Vec<String> = Vec::new();
     if let Some(model) = opts.stt_model.as_deref() {
-        candidates.push(vox::paths::whisper_model_filename(model));
+        candidates.push(crate::paths::whisper_model_filename(model));
     }
     for name in profile.recommended_whisper_candidates(opts.language.as_deref()) {
         if !candidates.iter().any(|c| c == name) {
@@ -93,10 +94,10 @@ pub(super) fn stt_candidates(
 #[cfg(feature = "whisper")]
 pub(super) fn whisper_config(
     model_path: &Path,
-    profile: &vox::system_profile::SystemProfile,
+    profile: &crate::system_profile::SystemProfile,
     opts: &LoadOptions,
-) -> vox::WhisperConfig {
-    vox::WhisperConfig::new(model_path)
+) -> crate::WhisperConfig {
+    crate::WhisperConfig::new(model_path)
         .with_language(opts.language.clone())
         .with_threads(profile.recommended_inference_threads())
 }
@@ -105,7 +106,7 @@ pub(super) fn whisper_config(
 #[cfg(feature = "whisper")]
 pub(super) fn load_stt(
     models_dir: &Path,
-    profile: &vox::system_profile::SystemProfile,
+    profile: &crate::system_profile::SystemProfile,
     opts: &LoadOptions,
 ) -> SttLoadResult {
     let candidates = stt_candidates(profile, opts);
@@ -126,7 +127,7 @@ pub(super) fn load_stt(
         }
         let config = whisper_config(&path, profile, opts);
         let threads = config.n_threads;
-        match vox::WhisperBackend::with_config(config) {
+        match crate::WhisperBackend::with_config(config) {
             Ok(backend) => {
                 info!(
                     model = %path.display(),
@@ -145,7 +146,7 @@ pub(super) fn load_stt(
                     .ok()
                     .map(|m| m.len() / (1024 * 1024));
                 return (
-                    Some(Arc::new(backend) as Arc<dyn vox::traits::SttBackend>),
+                    Some(Arc::new(backend) as Arc<dyn crate::traits::SttBackend>),
                     Some(variant),
                     size,
                 );
@@ -173,7 +174,7 @@ pub(super) fn load_stt(
 #[cfg(not(feature = "whisper"))]
 pub(super) fn load_stt(
     _models_dir: &Path,
-    _profile: &vox::system_profile::SystemProfile,
+    _profile: &crate::system_profile::SystemProfile,
     _opts: &LoadOptions,
 ) -> SttLoadResult {
     tracing::warn!("STT disabled (compiled without 'whisper' feature)");
@@ -186,18 +187,18 @@ pub(super) async fn load_tts(
     models_dir: &std::path::Path,
     opts: &LoadOptions,
 ) -> (
-    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<Arc<dyn crate::traits::TtsBackend>>,
     Option<String>,
     Option<u64>,
 ) {
     let _ = models_dir;
 
     // Try Qwen3 first (if enabled)
-    match vox::tts::Qwen3Backend::new().await {
+    match crate::tts::Qwen3Backend::new().await {
         Ok(backend) => {
             info!("loaded qwen3 TTS backend");
             return (
-                Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
+                Some(Arc::new(backend) as Arc<dyn crate::traits::TtsBackend>),
                 Some("qwen3".to_string()),
                 None, // Model size not applicable (auto-downloaded to HF cache)
             );
@@ -213,7 +214,7 @@ pub(super) async fn load_tts(
         let model_path = models_dir.join("kokoro-v1.0.onnx");
         let voices_path = models_dir.join("voices.bin");
         if model_path.exists() && voices_path.exists() {
-            match vox::tts::KokoroBackend::new(&model_path, &voices_path).await {
+            match crate::tts::KokoroBackend::new(&model_path, &voices_path).await {
                 Ok(backend) => {
                     info!("loaded kokoro TTS backend");
                     let model_name = model_path
@@ -225,7 +226,7 @@ pub(super) async fn load_tts(
                         .ok()
                         .map(|m| m.len() / (1024 * 1024));
                     return (
-                        Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
+                        Some(Arc::new(backend) as Arc<dyn crate::traits::TtsBackend>),
                         Some(model_name),
                         model_size,
                     );
@@ -254,14 +255,14 @@ pub(super) async fn load_tts(
     models_dir: &std::path::Path,
     opts: &LoadOptions,
 ) -> (
-    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<Arc<dyn crate::traits::TtsBackend>>,
     Option<String>,
     Option<u64>,
 ) {
     let model_path = models_dir.join("kokoro-v1.0.onnx");
     let voices_path = models_dir.join("voices.bin");
     if model_path.exists() && voices_path.exists() {
-        match vox::tts::KokoroBackend::new(&model_path, &voices_path).await {
+        match crate::tts::KokoroBackend::new(&model_path, &voices_path).await {
             Ok(backend) => {
                 info!("loaded kokoro TTS backend");
                 let model_name = model_path
@@ -273,7 +274,7 @@ pub(super) async fn load_tts(
                     .ok()
                     .map(|m| m.len() / (1024 * 1024));
                 return (
-                    Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
+                    Some(Arc::new(backend) as Arc<dyn crate::traits::TtsBackend>),
                     Some(model_name),
                     model_size,
                 );
@@ -306,7 +307,7 @@ pub(super) async fn load_tts(
     models_dir: &std::path::Path,
     opts: &LoadOptions,
 ) -> (
-    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<Arc<dyn crate::traits::TtsBackend>>,
     Option<String>,
     Option<u64>,
 ) {
@@ -326,7 +327,7 @@ pub(super) async fn load_tts(
     models_dir: &std::path::Path,
     opts: &LoadOptions,
 ) -> (
-    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<Arc<dyn crate::traits::TtsBackend>>,
     Option<String>,
     Option<u64>,
 ) {
@@ -339,7 +340,7 @@ pub(super) async fn load_tts(
 
 #[cfg(feature = "piper")]
 pub(super) type PiperLoadResult = Option<(
-    Option<Arc<dyn vox::traits::TtsBackend>>,
+    Option<Arc<dyn crate::traits::TtsBackend>>,
     Option<String>,
     Option<u64>,
 )>;
@@ -455,7 +456,7 @@ pub(super) fn try_load_piper(models_dir: &Path, opts: &LoadOptions) -> PiperLoad
     }
 
     for path in candidates {
-        match vox::tts::PiperBackend::new(&path) {
+        match crate::tts::PiperBackend::new(&path) {
             Ok(backend) => {
                 info!(model = %path.display(), "loaded piper TTS backend");
                 let model_name = path
@@ -472,7 +473,7 @@ pub(super) fn try_load_piper(models_dir: &Path, opts: &LoadOptions) -> PiperLoad
                     .ok()
                     .map(|m| m.len() / (1024 * 1024));
                 return Some((
-                    Some(Arc::new(backend) as Arc<dyn vox::traits::TtsBackend>),
+                    Some(Arc::new(backend) as Arc<dyn crate::traits::TtsBackend>),
                     Some(model_name),
                     model_size,
                 ));
@@ -488,7 +489,7 @@ pub(super) fn try_load_piper(models_dir: &Path, opts: &LoadOptions) -> PiperLoad
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vox::system_profile::{Arch, Device, HardwareClass, Os, SystemProfile};
+    use crate::system_profile::{Arch, Device, HardwareClass, Os, SystemProfile};
 
     fn profile(class: HardwareClass, num_cpus: usize) -> SystemProfile {
         SystemProfile {

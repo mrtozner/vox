@@ -1,4 +1,4 @@
-//! REST API for per-person long-term memory (see [`vox::memory`]).
+//! REST API for per-person long-term memory (see [`crate::memory`]).
 //!
 //! | Method | Path | |
 //! |---|---|---|
@@ -22,7 +22,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use vox::memory::{MemoryItem, MemoryStatus, MemoryStore};
+use crate::memory::{MemoryItem, MemoryStatus, MemoryStore};
 
 use super::speakers::{SpeakerCtx, SpeakerError};
 

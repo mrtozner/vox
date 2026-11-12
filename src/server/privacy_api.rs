@@ -12,7 +12,7 @@ use super::ServerState;
 ///
 /// `ledger` covers every outbound connection made by this process since it
 /// started: requests to Ollama and model downloads. Byte counts are HTTP
-/// body bytes. See [`vox::privacy`] for what is and is not covered.
+/// body bytes. See [`crate::privacy`] for what is and is not covered.
 #[derive(Serialize)]
 pub struct PrivacyLedgerResponse {
     /// The Ollama address this server sends LLM requests to.
@@ -23,15 +23,15 @@ pub struct PrivacyLedgerResponse {
     pub fully_local: bool,
     /// `offline`, `totals`, `destinations`, `recent`, `dropped_entries`.
     #[serde(flatten)]
-    pub ledger: vox::privacy::LedgerSnapshot,
+    pub ledger: crate::privacy::LedgerSnapshot,
 }
 
 /// GET /v1/privacy/ledger
 pub async fn ledger(State(state): State<Arc<ServerState>>) -> Json<PrivacyLedgerResponse> {
-    let ledger = vox::privacy::ledger().snapshot();
+    let ledger = crate::privacy::ledger().snapshot();
     Json(PrivacyLedgerResponse {
         ollama_host: state.ollama_host.clone(),
-        ollama_host_loopback: vox::privacy::is_loopback_host(&state.ollama_host),
+        ollama_host_loopback: crate::privacy::is_loopback_host(&state.ollama_host),
         fully_local: ledger.totals.non_loopback_connections == 0,
         ledger,
     })

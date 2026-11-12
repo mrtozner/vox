@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Model downloads are pinned to a revision and verified by size and SHA-256
 - `vox chat` streams from Ollama `/api/chat` and keeps conversation memory
 - `vox speak` with an unknown `--backend` lists the backends the binary was actually built with
+- The HTTP/WebSocket server is part of the library (`vox::server`, `server` feature) instead of being compiled into the binary by path; the `server` feature now also enables `silero`
+- `cpal` is an optional dependency behind the new `mic` feature and Ctrl-C handling is behind the new `signal` feature. Both are on by default. **With `default-features = false`, add `mic` to keep `Vox::builder().build()` and `vox::audio::AudioCapture`, and `signal` to keep Ctrl-C in `Vox::listen()`**
+- The library no longer enables `tokio`'s `full` feature set: the core asks for `rt`, `sync`, `macros` and `time`, and each Cargo feature adds what it uses. An application that relied on vox to turn on other tokio features must now enable them itself
 
 ### Added
 - OpenAI-compatible endpoints: `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`, `GET /v1/models`, `GET /v1/models/{id}`
@@ -31,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multilingual Whisper models, Whisper large-v3-turbo (including quantized variants) and a Turkish Piper voice in the model registry
 - Release archives for Linux aarch64, plus `SHA256SUMS` and build provenance attestations for every archive
 - `NOTICE`, `LICENSE-GPL-3.0`, and `docs/raspberry_pi.md`
+- Embedding API: `VoxBuilder::build_with_channel` (engine fed from a channel, no audio device), `Vox::listen_until` (caller-supplied stop condition, no signal handler), and `vox::server::{build_router, serve, run_with_config, ServerState}`
 
 ### Fixed
 - Microphone capture resamples from the device's real sample rate and feeds the VAD whole frames

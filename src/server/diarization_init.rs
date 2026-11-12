@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use vox::diarization::{EMBEDDING_VERSION, EmbeddingVersionChange};
+use crate::diarization::{EMBEDDING_VERSION, EmbeddingVersionChange};
 
 /// Resolve the path for the persistent speaker database.
 ///
@@ -29,8 +29,8 @@ fn speaker_db_path() -> std::path::PathBuf {
 pub(super) async fn load_diarization(
     models_dir: &std::path::Path,
 ) -> (
-    Option<Arc<vox::DiarizationPipeline>>,
-    Option<Arc<vox::SpeakerDatabase>>,
+    Option<Arc<crate::DiarizationPipeline>>,
+    Option<Arc<crate::SpeakerDatabase>>,
 ) {
     let encoder_path = models_dir.join("speaker_encoder.onnx");
     if !encoder_path.exists() {
@@ -41,7 +41,7 @@ pub(super) async fn load_diarization(
         return (None, None);
     }
 
-    let embedding = match vox::SpeakerEmbedding::new(&encoder_path) {
+    let embedding = match crate::SpeakerEmbedding::new(&encoder_path) {
         Ok(e) => e,
         Err(err) => {
             tracing::warn!(error = %err, "failed to load speaker encoder, diarization disabled");
@@ -82,9 +82,9 @@ pub(super) async fn load_diarization(
 #[cfg(feature = "diarization")]
 async fn open_and_hydrate(
     db_path: &std::path::Path,
-    embedding: vox::SpeakerEmbedding,
-) -> Result<(vox::DiarizationPipeline, vox::SpeakerDatabase, usize), vox::VoxError> {
-    let db = vox::SpeakerDatabase::open(db_path.to_string_lossy()).await?;
+    embedding: crate::SpeakerEmbedding,
+) -> Result<(crate::DiarizationPipeline, crate::SpeakerDatabase, usize), crate::VoxError> {
+    let db = crate::SpeakerDatabase::open(db_path.to_string_lossy()).await?;
 
     // Embeddings from a different front end (CMVN, feature layout) are not
     // comparable. Only the voiceprints are invalidated; names, history and
@@ -104,7 +104,7 @@ async fn open_and_hydrate(
 
     // Hydrate the in-memory registry from the persisted voiceprints.
     let model_dim = embedding.embedding_dim();
-    let mut registry = vox::SpeakerRegistry::new();
+    let mut registry = crate::SpeakerRegistry::new();
     for (speaker, sample_count) in db.list_voiceprints().await? {
         let id = speaker.id.clone();
         // A voiceprint from a different encoder model cannot be compared
@@ -133,7 +133,7 @@ async fn open_and_hydrate(
     // Enrollment is decided per utterance by the server (consent gate), so
     // the pipeline's own auto-enroll stays off. Reserving the database's
     // high-water mark keeps the ID of a deleted speaker from being reissued.
-    let pipeline = vox::DiarizationPipelineBuilder::new()
+    let pipeline = crate::DiarizationPipelineBuilder::new()
         .embedding(embedding)
         .registry(registry)
         .auto_enroll(false)

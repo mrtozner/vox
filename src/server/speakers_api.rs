@@ -98,7 +98,7 @@ async fn list(State(ctx): State<SpeakerCtx>) -> Result<Json<SpeakerListResponse>
     Ok(Json(SpeakerListResponse {
         available,
         enrollment_consent: speakers::enrollment_consent(&ctx).await,
-        min_audio_ms: vox::diarization::MIN_SPEAKER_AUDIO_MS,
+        min_audio_ms: crate::diarization::MIN_SPEAKER_AUDIO_MS,
         speakers,
     }))
 }
@@ -191,11 +191,11 @@ async fn export(
         object.insert("format".into(), json!(EXPORT_FORMAT));
         object.insert(
             "embedding_version".into(),
-            json!(vox::diarization::EMBEDDING_VERSION),
+            json!(crate::diarization::EMBEDDING_VERSION),
         );
         // Long-term memory is part of what is stored about a person.
         if let Some(db) = ctx.db.as_deref() {
-            let memory = vox::memory::MemoryStore::new(db).export(&id).await?;
+            let memory = crate::memory::MemoryStore::new(db).export(&id).await?;
             object.insert("memory".into(), json!(memory));
         }
     }
@@ -557,7 +557,7 @@ mod tests {
         assert_eq!(embedding.len(), 2);
 
         // What is remembered about the speaker is part of the export.
-        let memory = vox::memory::MemoryStore::new(db);
+        let memory = crate::memory::MemoryStore::new(db);
         memory.set_enabled("speaker_1", true).await.unwrap();
         memory
             .record_exchange("speaker_1", "I like tea", Some("Noted."), false)

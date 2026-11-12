@@ -303,7 +303,6 @@ pub const LIVE_TALK_PROTOCOL_VERSION: u32 = 2;
 ///   any, is over and the microphone is accepted again).
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "type")]
-#[allow(dead_code)]
 pub enum LiveTalkWsEvent {
     #[serde(rename = "ready")]
     Ready {
@@ -372,7 +371,7 @@ pub enum LiveTalkWsEvent {
     #[serde(rename = "cancelled")]
     Cancelled { turn_id: u64, reason: CancelReason },
     #[serde(rename = "memory")]
-    Memory(vox::conversation::ConversationSnapshot),
+    Memory(crate::conversation::ConversationSnapshot),
     #[serde(rename = "memory_distilled")]
     MemoryDistilled {
         speaker_id: String,
@@ -401,7 +400,6 @@ pub enum LiveTalkMode {
 /// Why a turn was cancelled.
 #[derive(Debug, serde::Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum CancelReason {
     /// The user started speaking (server-side voice detection, or
     /// `ptt_start`) while the turn was running.

@@ -11,7 +11,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 
-use vox::types::{AudioChunk, SttResult, TtsOutput, TtsRequest, Utterance};
+use crate::types::{AudioChunk, SttResult, TtsOutput, TtsRequest, Utterance};
 
 use super::ServerState;
 use super::access::content_security_policy;
@@ -124,7 +124,7 @@ pub fn decode_wav_to_mono_16k(bytes: &[u8]) -> Result<DecodedAudio, ServerError>
     let frames = (samples.len() / channels) as u64;
     let duration_ms = frames * 1000 / u64::from(spec.sample_rate);
 
-    let samples = vox::audio::to_mono_16k(&samples, spec.sample_rate, spec.channels)
+    let samples = crate::audio::to_mono_16k(&samples, spec.sample_rate, spec.channels)
         .map_err(|e| ServerError::internal(format!("audio conversion failed: {e}")))?;
 
     Ok(DecodedAudio {
@@ -217,7 +217,7 @@ pub async fn run_transcription(state: &ServerState, body: Bytes) -> Result<SttRe
     let utterance = Utterance {
         audio: AudioChunk {
             samples: audio.samples,
-            sample_rate: vox::audio::SPEECH_SAMPLE_RATE,
+            sample_rate: crate::audio::SPEECH_SAMPLE_RATE,
             channels: 1,
         },
         duration_ms: audio_ms,
@@ -241,7 +241,7 @@ pub async fn run_transcription(state: &ServerState, body: Bytes) -> Result<SttRe
 /// Validate the text and synthesize it under an inference permit.
 pub async fn run_synthesis(
     state: &ServerState,
-    tts: &Arc<dyn vox::traits::TtsBackend>,
+    tts: &Arc<dyn crate::traits::TtsBackend>,
     request: TtsRequest,
     text_param: &'static str,
 ) -> Result<TtsOutput, ServerError> {
@@ -353,7 +353,7 @@ pub async fn vox_models_response(state: &ServerState) -> ModelsResponse {
     // Check Ollama connectivity, bounded so a hung Ollama cannot stall the UI.
     let ollama = {
         let request =
-            vox::privacy::ollama_request(&state.ollama_host, "/api/tags", "llm status check", 0);
+            crate::privacy::ollama_request(&state.ollama_host, "/api/tags", "llm status check", 0);
         let response = match &request {
             Ok((url, _)) => {
                 let request = state.http_client.get(url).timeout(OLLAMA_TAGS_TIMEOUT);
@@ -522,7 +522,7 @@ pub async fn index(headers: HeaderMap) -> impl IntoResponse {
     )
 }
 
-fn voice_infos(tts: &Arc<dyn vox::traits::TtsBackend>) -> Vec<VoiceInfo> {
+fn voice_infos(tts: &Arc<dyn crate::traits::TtsBackend>) -> Vec<VoiceInfo> {
     let backend = tts.backend_name().to_string();
     tts.list_voices()
         .into_iter()
@@ -591,7 +591,7 @@ fn ollama_send_error(host: &str, err: &reqwest::Error) -> ServerError {
 }
 
 /// An Ollama request refused by offline mode: 403 `offline_mode`.
-fn offline_denied(err: vox::privacy::EgressDenied) -> ServerError {
+fn offline_denied(err: crate::privacy::EgressDenied) -> ServerError {
     tracing::warn!("{err}");
     ServerError::forbidden(err.to_string()).with_code("offline_mode")
 }
@@ -622,8 +622,8 @@ pub async fn chat(
     let model = req.model.unwrap_or_else(|| "llama3.2".to_string());
 
     // Build environment-aware system prompt
-    let system_prompt = vox::prompts::build_system_prompt_with_registry(
-        vox::prompts::VoicePromptMode::Standard,
+    let system_prompt = crate::prompts::build_system_prompt_with_registry(
+        crate::prompts::VoicePromptMode::Standard,
         &state.capabilities,
     );
 
@@ -632,14 +632,14 @@ pub async fn chat(
         prompt: req.text,
         system: Some(system_prompt),
         stream: false,
-        keep_alive: vox::conversation::OLLAMA_KEEP_ALIVE,
-        options: vox::conversation::ollama_options(),
+        keep_alive: crate::conversation::OLLAMA_KEEP_ALIVE,
+        options: crate::conversation::ollama_options(),
     };
-    let (url, egress) = vox::privacy::ollama_request(
+    let (url, egress) = crate::privacy::ollama_request(
         host,
         "/api/generate",
         "llm chat",
-        vox::privacy::json_len(&body),
+        crate::privacy::json_len(&body),
     )
     .map_err(offline_denied)?;
 
@@ -704,7 +704,7 @@ pub async fn ollama_models(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ServerError> {
     let (url, egress) =
-        vox::privacy::ollama_request(&state.ollama_host, "/api/tags", "llm model list", 0)
+        crate::privacy::ollama_request(&state.ollama_host, "/api/tags", "llm model list", 0)
             .map_err(offline_denied)?;
 
     let resp = state
@@ -774,11 +774,11 @@ pub async fn ollama_models(
                 return Some(OllamaModelInfo { name, size });
             }
             let show_body = serde_json::json!({ "name": name.clone() });
-            let (show_url, egress) = vox::privacy::ollama_request(
+            let (show_url, egress) = crate::privacy::ollama_request(
                 &host,
                 "/api/show",
                 "llm model details",
-                vox::privacy::json_len(&show_body),
+                crate::privacy::json_len(&show_body),
             )
             .ok()?;
             let req = client

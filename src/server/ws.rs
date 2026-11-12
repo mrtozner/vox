@@ -96,15 +96,18 @@ where
 
 /// An STT backend that takes a server inference slot for each call.
 pub(super) struct LimitedStt {
-    pub inner: std::sync::Arc<dyn vox::traits::SttBackend>,
+    pub inner: std::sync::Arc<dyn crate::traits::SttBackend>,
     pub state: std::sync::Arc<super::ServerState>,
 }
 
 #[async_trait::async_trait]
-impl vox::traits::SttBackend for LimitedStt {
-    async fn transcribe(&self, audio: &vox::Utterance) -> Result<vox::SttResult, vox::VoxError> {
+impl crate::traits::SttBackend for LimitedStt {
+    async fn transcribe(
+        &self,
+        audio: &crate::Utterance,
+    ) -> Result<crate::SttResult, crate::VoxError> {
         let Some(_permit) = self.state.inference_permit_wait().await else {
-            return Err(vox::VoxError::Stt("server is shutting down".into()));
+            return Err(crate::VoxError::Stt("server is shutting down".into()));
         };
         self.inner.transcribe(audio).await
     }
@@ -112,20 +115,23 @@ impl vox::traits::SttBackend for LimitedStt {
 
 /// A TTS backend that takes a server inference slot for each call.
 pub(super) struct LimitedTts {
-    pub inner: std::sync::Arc<dyn vox::traits::TtsBackend>,
+    pub inner: std::sync::Arc<dyn crate::traits::TtsBackend>,
     pub state: std::sync::Arc<super::ServerState>,
 }
 
 #[async_trait::async_trait]
-impl vox::traits::TtsBackend for LimitedTts {
-    async fn synthesize(&self, request: &vox::TtsRequest) -> Result<vox::TtsOutput, vox::VoxError> {
+impl crate::traits::TtsBackend for LimitedTts {
+    async fn synthesize(
+        &self,
+        request: &crate::TtsRequest,
+    ) -> Result<crate::TtsOutput, crate::VoxError> {
         let Some(_permit) = self.state.inference_permit_wait().await else {
-            return Err(vox::VoxError::Tts("server is shutting down".into()));
+            return Err(crate::VoxError::Tts("server is shutting down".into()));
         };
         self.inner.synthesize(request).await
     }
 
-    fn list_voices(&self) -> Vec<vox::types::VoiceInfo> {
+    fn list_voices(&self) -> Vec<crate::types::VoiceInfo> {
         self.inner.list_voices()
     }
 
