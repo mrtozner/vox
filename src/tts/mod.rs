@@ -20,6 +20,7 @@ mod piper;
 #[cfg(feature = "qwen3")]
 mod qwen3;
 
+pub mod segment;
 mod streaming;
 
 #[cfg(feature = "kokoro")]
@@ -37,4 +38,5 @@ pub use self::piper::{PiperBackend, PiperConfig};
 #[cfg(feature = "qwen3")]
 pub use qwen3::{Qwen3Backend, Qwen3Config};
 
+pub use segment::{Segmenter, sanitize_for_tts, split_sentences};
 pub use streaming::SentenceStreamingAdapter;
