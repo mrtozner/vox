@@ -114,12 +114,9 @@ pub async fn run(
     let vad = vox::SileroVad::new(&vad_path)?;
 
     println!("Loading Whisper model ({whisper_model})...");
-    let stt = vox::WhisperBackend::with_config(vox::WhisperConfig {
-        model_path: whisper_path,
-        language: language.clone(),
-        translate: false,
-        n_threads: 4,
-    })?;
+    let stt = vox::WhisperBackend::with_config(
+        vox::WhisperConfig::new(whisper_path).with_language(language.clone()),
+    )?;
 
     let tts = load_tts(language.as_deref(), yes).await?;
 
