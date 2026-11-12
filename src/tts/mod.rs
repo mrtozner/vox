@@ -24,6 +24,7 @@ mod piper;
 mod qwen3;
 
 pub mod normalize;
+pub mod segment;
 
 mod streaming;
 
@@ -42,4 +43,5 @@ pub use self::piper::{PiperBackend, PiperConfig};
 #[cfg(feature = "qwen3")]
 pub use qwen3::{Qwen3Backend, Qwen3Config};
 
+pub use segment::{Segmenter, sanitize_for_tts, split_sentences};
 pub use streaming::SentenceStreamingAdapter;
