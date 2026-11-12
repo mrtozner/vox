@@ -28,11 +28,11 @@ use server::models::{
     LiveTalkMode, LiveTalkModeConfig, LiveTalkWsEvent,
 };
 use server::ws_converse::{ConverseDeps, run_converse};
-use vox::conversation::{Conversation, SessionStore};
+use vox::conversation::{Conversation, SessionStore, SharedConversation};
 use vox::diarization::{
     DiarizationConfig, DiarizationPipeline, IdentifyMode, SpeakerDatabase, SpeakerRegistry,
 };
-use vox::memory::{MemoryRole, MemoryStore};
+use vox::memory::{DISTILL_SYSTEM_PROMPT, MemoryRole, MemoryStore};
 use vox::streaming_chat::StreamOptions;
 
 // ─── Wire types ──────────────────────────────────────────────
@@ -828,6 +828,7 @@ struct Rig {
     speakers: Option<Arc<FakeSpeakers>>,
     memory: Option<MemoryStore>,
     identify_grace: Duration,
+    distill: bool,
 }
 
 impl Rig {
@@ -850,6 +851,7 @@ impl Rig {
             speakers: None,
             memory: None,
             identify_grace: Duration::from_secs(5),
+            distill: true,
         }
     }
 
@@ -868,6 +870,7 @@ impl Rig {
             speakers: self.speakers.clone().map(|s| s as Arc<dyn SpeakerService>),
             memory: self.memory.clone(),
             identify_grace: self.identify_grace,
+            distill: self.distill,
         };
         tokio::spawn(run_live_talk(sink, stream, deps));
         client.send(config);
@@ -2357,4 +2360,303 @@ async fn enroll_speaker_without_a_speaker_model_is_refused() {
     let error = client.expect("error").await;
     assert_eq!(error["fatal"], false);
     assert!(error["message"].as_str().unwrap().contains("not available"));
+}
+
+// ─── Distill on evict ────────────────────────────────────────
+
+/// A session whose context window holds two of the short test turns: every
+/// third turn pushes the two before it out. Returns the config that joins
+/// it and its conversation.
+fn tiny_session(rig: &Rig, id: &str) -> (Value, SharedConversation) {
+    let handle = rig.sessions.attach(Some(id));
+    assert!(!handle.resumed);
+    *handle.conversation.lock().unwrap() = Conversation::with_budget(40);
+    let config = json!({
+        "type": "config",
+        "model": "test-model",
+        "diarization": true,
+        "session_id": id,
+    });
+    (config, handle.conversation)
+}
+
+/// A rig with speakers and a memory in which Mert has memory switched on.
+async fn memory_rig(scripts: Vec<Script>) -> (Rig, MemoryStore, SpeakerDatabase) {
+    let db = speaker_db(":memory:").await;
+    let memory = MemoryStore::new(&db);
+    memory
+        .set_enabled("speaker_1", true)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut rig = Rig::new(scripts).await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    (rig, memory, db)
+}
+
+async fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+    for _ in 0..300 {
+        if check() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("never happened: {what}");
+}
+
+fn is_distill_request(request: &Value) -> bool {
+    request["messages"][0]["content"] == DISTILL_SYSTEM_PROMPT
+}
+
+#[tokio::test]
+async fn trimmed_turns_are_distilled_into_facts_for_people_with_memory_on() {
+    let (rig, memory, _db) = memory_rig(vec![
+        reply(&["One."]),
+        reply(&["Two."]),
+        reply(&["Three."]),
+        reply(&[
+            "<think>What did Mert say?</think>\n- Mert lives",
+            " in Izmir.\n- Mert has a dog named Zeytin.\n",
+        ]),
+    ])
+    .await;
+    let (config, conversation) = tiny_session(&rig, "distill-facts-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+
+    // Mert has memory on, Ada has not. The third turn pushes both of the
+    // earlier ones out of the context.
+    client.turn_at(MERT_LEVEL).await;
+    client.turn_at(ADA_LEVEL).await;
+    let events = client.turn_at(MERT_LEVEL).await;
+    let memory_event = of_type(&events, "memory");
+    assert_eq!(memory_event.last().unwrap()["dropped_turns"], 2);
+
+    let distilled = client.expect("memory_distilled").await;
+    assert_eq!(distilled["speaker_id"], "speaker_1");
+    assert_eq!(distilled["speaker_name"], "Mert");
+    assert_eq!(
+        distilled["facts"],
+        json!(["Mert lives in Izmir.", "Mert has a dog named Zeytin."])
+    );
+    assert_eq!(
+        memory.facts("speaker_1", 10).await.unwrap(),
+        ["Mert lives in Izmir.", "Mert has a dog named Zeytin."]
+    );
+
+    settle().await;
+    {
+        let requests = rig.llm_requests.lock().unwrap();
+        // One request for Mert's turn; none for Ada, whose words stay put.
+        assert_eq!(requests.len(), 4);
+        assert!(!requests[..3].iter().any(is_distill_request));
+        assert!(is_distill_request(&requests[3]));
+        assert_eq!(requests[3]["model"], "test-model");
+        assert_eq!(requests[3]["options"], requests[0]["options"]);
+        let excerpt = &contents(&requests[3])[1];
+        assert!(excerpt.starts_with("Person: Mert\n"), "{excerpt}");
+        assert!(excerpt.contains("Mert: utterance 1\nAssistant: One.\n"));
+        // Not Ada's turn, and not the one that is still in the context.
+        assert!(!excerpt.contains("utterance 2"));
+        assert!(!excerpt.contains("utterance 3"));
+    }
+    let ada = memory.export("speaker_2").await.unwrap().unwrap();
+    assert!(ada.memories.is_empty());
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 0);
+
+    // The facts are what the next session is reminded of first.
+    let block = memory
+        .recall_block("speaker_1", "Mert", None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(block.contains("Known about them:\n- Mert lives in Izmir.\n"));
+}
+
+#[tokio::test]
+async fn speech_interrupts_a_distillation_and_its_turns_wait_for_the_next_trim() {
+    let never = Script {
+        silent: true,
+        ..Script::default()
+    };
+    let (rig, memory, _db) = memory_rig(vec![
+        reply(&["One."]),
+        reply(&["Two."]),
+        reply(&["Three."]),
+        never,
+        reply(&["Four."]),
+        reply(&["Five."]),
+        reply(&["- Mert lives in Izmir.\n"]),
+    ])
+    .await;
+    let (config, conversation) = tiny_session(&rig, "distill-cancel-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    // The distillation of turns 1 and 2 is with the model, which is slow.
+    eventually("the distillation request", || {
+        rig.llm_requests.lock().unwrap().len() == 4
+    })
+    .await;
+    assert!(is_distill_request(&rig.llm_requests.lock().unwrap()[3]));
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 0);
+
+    // The user starts to speak: the request is dropped at once, before the
+    // utterance is even complete, and the two turns are back in the queue.
+    client.send_audio(&vec![MERT_LEVEL; FRAME * 3]);
+    client.expect("speech_start").await;
+    eventually("the turns going back in the queue", || {
+        conversation.lock().unwrap().evicted_len() == 2
+    })
+    .await;
+
+    // The turn runs as usual. It trims nothing, so nothing is distilled.
+    client.send_audio(&vec![0.0; FRAME]);
+    let events = client.until("turn_done").await;
+    assert_eq!(of_type(&events, "sentence")[0]["text"], "Four.");
+    assert!(of_type(&events, "memory_distilled").is_empty());
+    client.send(json!({"type": "playback_done", "turn_id": 4}));
+    settle().await;
+    assert_eq!(rig.llm_requests.lock().unwrap().len(), 5);
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 2);
+    assert!(memory.facts("speaker_1", 10).await.unwrap().is_empty());
+
+    // The next trim takes the turns that were left over along.
+    client.turn_at(MERT_LEVEL).await;
+    let distilled = client.expect("memory_distilled").await;
+    assert_eq!(distilled["facts"], json!(["Mert lives in Izmir."]));
+    let requests = rig.llm_requests.lock().unwrap();
+    assert_eq!(requests.len(), 7);
+    assert!(!is_distill_request(&requests[4]));
+    assert!(!is_distill_request(&requests[5]));
+    let excerpt = &contents(&requests[6])[1];
+    for n in 1..=4 {
+        assert!(
+            excerpt.contains(&format!("Mert: utterance {n}\n")),
+            "{excerpt}"
+        );
+    }
+    assert!(!excerpt.contains("utterance 5"));
+}
+
+#[tokio::test]
+async fn forget_memory_drops_a_running_distillation_and_its_turns() {
+    let never = Script {
+        silent: true,
+        ..Script::default()
+    };
+    let (rig, memory, _db) = memory_rig(vec![
+        reply(&["One."]),
+        reply(&["Two."]),
+        reply(&["Three."]),
+        never,
+    ])
+    .await;
+    let (config, conversation) = tiny_session(&rig, "distill-forget-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    eventually("the distillation request", || {
+        rig.llm_requests.lock().unwrap().len() == 4
+    })
+    .await;
+
+    client.send(json!({"type": "forget_memory"}));
+    let cleared = client.expect("memory").await;
+    assert_eq!(cleared["turns"].as_array().unwrap().len(), 0);
+    settle().await;
+    // Not put back, and nothing came of it.
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 0);
+    assert!(memory.facts("speaker_1", 10).await.unwrap().is_empty());
+    assert!(client.drain(Duration::from_millis(100)).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_distillation_is_stopped_when_the_client_leaves() {
+    let never = Script {
+        silent: true,
+        ..Script::default()
+    };
+    let (rig, _memory, _db) = memory_rig(vec![
+        reply(&["One."]),
+        reply(&["Two."]),
+        reply(&["Three."]),
+        never,
+    ])
+    .await;
+    let (config, conversation) = tiny_session(&rig, "distill-leave-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    eventually("the distillation request", || {
+        rig.llm_requests.lock().unwrap().len() == 4
+    })
+    .await;
+
+    // The turns stay with the session for a reconnect.
+    drop(client);
+    eventually("the turns going back in the queue", || {
+        conversation.lock().unwrap().evicted_len() == 2
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn nothing_is_sent_to_the_model_when_distilling_or_memory_is_off() {
+    let three = || vec![reply(&["One."]), reply(&["Two."]), reply(&["Three."])];
+
+    // Distilling is switched off on the server.
+    let (mut rig, memory, _db) = memory_rig(three()).await;
+    rig.distill = false;
+    let (config, _conversation) = tiny_session(&rig, "distill-off-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    settle().await;
+    assert_eq!(rig.llm_requests.lock().unwrap().len(), 3);
+    assert!(memory.facts("speaker_1", 10).await.unwrap().is_empty());
+
+    // Distilling is on, but the only speaker has memory off.
+    let (rig, memory, _db) = memory_rig(three()).await;
+    memory.set_enabled("speaker_1", false).await.unwrap();
+    let (config, conversation) = tiny_session(&rig, "distill-off-2");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    settle().await;
+    assert_eq!(rig.llm_requests.lock().unwrap().len(), 3);
+    // The turns were looked at and let go.
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 0);
+    assert_eq!(memory.status("speaker_1").await.unwrap().unwrap().count, 0);
+    assert!(client.drain(Duration::from_millis(50)).await.is_empty());
+}
+
+#[test]
+fn memory_distilled_event_is_flat() {
+    let event = LiveTalkWsEvent::MemoryDistilled {
+        speaker_id: "speaker_1".into(),
+        speaker_name: "Mert".into(),
+        facts: vec!["Mert lives in Izmir.".into()],
+    };
+    assert_eq!(
+        serde_json::to_value(&event).unwrap(),
+        json!({
+            "type": "memory_distilled",
+            "speaker_id": "speaker_1",
+            "speaker_name": "Mert",
+            "facts": ["Mert lives in Izmir."],
+        })
+    );
 }

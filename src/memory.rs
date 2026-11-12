@@ -21,6 +21,13 @@
 //!   runs with FTS5 `secure-delete`, so removed terms are not left behind in
 //!   its segments.
 //!
+//! - **Facts are distilled.** When turns fall out of a session's context
+//!   window, the session can ask the local model what in them is worth
+//!   keeping about the person ([`distill_messages`],
+//!   [`parse_distilled_facts`]) and store the answer as `fact` rows
+//!   ([`MemoryStore::add_facts`]). Facts are bounded per person
+//!   ([`MAX_FACTS`]) and follow the same opt-in.
+//!
 //! Schema (created by [`create_schema`], which the speaker database calls
 //! when it opens):
 //!
@@ -48,6 +55,19 @@ pub const MAX_MEMORY_CHARS: usize = 4_000;
 /// Conversation rows (user and assistant) kept per person. The oldest go
 /// first. Facts are not counted.
 pub const MAX_CONVERSATION_ROWS: i64 = 2_000;
+
+/// Facts kept per person. The oldest go first.
+pub const MAX_FACTS: i64 = 200;
+
+/// Longest single fact, in characters; a longer one is cut.
+pub const MAX_FACT_CHARS: usize = 240;
+
+/// Most facts taken from one distillation reply.
+pub const MAX_FACTS_PER_DISTILL: usize = 6;
+
+/// Longest line of a distillation request taken from one side of an
+/// exchange, in characters.
+pub const MAX_DISTILL_LINE_CHARS: usize = 600;
 
 /// The id that marks an unidentified speaker in other parts of vox.
 const UNKNOWN_SPEAKER: &str = "unknown";
@@ -391,6 +411,157 @@ pub fn format_recall_block(
     Some(block)
 }
 
+/// One exchange as the listener experienced it, for distillation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeardExchange {
+    /// What the person said.
+    pub user: String,
+    /// What they heard of the reply; may be empty.
+    pub assistant: String,
+    /// The reply was cut short by the person.
+    pub interrupted: bool,
+}
+
+/// System prompt of a distillation request. Fixed text: everything that
+/// varies is in the user message.
+pub const DISTILL_SYSTEM_PROMPT: &str = "\
+You keep long-term notes about a person for a voice assistant. You get an \
+excerpt of a conversation between that person and the assistant. Extract what \
+will still be useful to know about the person in later conversations: who they \
+are, the people, places and things in their life, lasting preferences, plans \
+and commitments.
+Rules:
+- Use only what the person said. The assistant's lines are context, never a \
+source of facts.
+- Leave out small talk, one-off questions and requests, and anything about the \
+assistant.
+- Leave out what the known notes already say.
+- Write each fact as one short sentence that names the person, in the language \
+the person spoke.
+- Output one fact per line, each line starting with \"- \". No other text.
+- If nothing is worth keeping, output exactly: NONE";
+
+/// The two messages (system, user) of a request that asks the model what is
+/// worth remembering about `name` from `exchanges`. `known_facts` are listed
+/// so the model does not repeat them.
+pub fn distill_messages(
+    name: &str,
+    known_facts: &[String],
+    exchanges: &[HeardExchange],
+) -> (String, String) {
+    let name = one_line(name, 64);
+    let name = if name.is_empty() {
+        "The person".to_string()
+    } else {
+        name
+    };
+    let mut user = format!("Person: {name}\n");
+    if !known_facts.is_empty() {
+        user.push_str("\nKnown notes:\n");
+        for fact in known_facts {
+            user.push_str("- ");
+            user.push_str(&one_line(fact, MAX_FACT_CHARS));
+            user.push('\n');
+        }
+    }
+    user.push_str("\nConversation excerpt:\n");
+    for exchange in exchanges {
+        user.push_str(&name);
+        user.push_str(": ");
+        user.push_str(&one_line(&exchange.user, MAX_DISTILL_LINE_CHARS));
+        user.push('\n');
+        let reply = one_line(&exchange.assistant, MAX_DISTILL_LINE_CHARS);
+        if !reply.is_empty() {
+            user.push_str("Assistant: ");
+            user.push_str(&reply);
+            if exchange.interrupted {
+                user.push_str(" (cut off)");
+            }
+            user.push('\n');
+        }
+    }
+    user.push_str(&format!(
+        "\nList at most {MAX_FACTS_PER_DISTILL} facts worth keeping about {name}."
+    ));
+    (DISTILL_SYSTEM_PROMPT.to_string(), user)
+}
+
+/// Remove `<think>…</think>` reasoning from a model reply. An unclosed block
+/// runs to the end.
+fn without_reasoning(reply: &str) -> String {
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    let mut out = String::with_capacity(reply.len());
+    let mut rest = reply;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        match rest[start..].find(CLOSE) {
+            Some(end) => rest = &rest[start + end + CLOSE.len()..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The text of a list line (`- x`, `* x`, `• x`, `1. x`, `2) x`); `None`
+/// for a line that is not a list item.
+fn list_item(line: &str) -> Option<&str> {
+    let line = line.trim();
+    for bullet in ["- ", "* ", "• ", "– "] {
+        if let Some(rest) = line.strip_prefix(bullet) {
+            return Some(rest.trim());
+        }
+    }
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    if (1..=3).contains(&digits) {
+        let rest = &line[digits..];
+        if let Some(rest) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+            return Some(rest.trim());
+        }
+    }
+    None
+}
+
+/// The facts in a distillation reply: its list lines, cleaned, without
+/// duplicates, at most [`MAX_FACTS_PER_DISTILL`].
+///
+/// Anything that is not a list line (a preamble, reasoning, `NONE`) is
+/// ignored, so a model that does not follow the format yields no facts
+/// rather than wrong ones.
+pub fn parse_distilled_facts(reply: &str) -> Vec<String> {
+    let reply = without_reasoning(reply);
+    let mut facts: Vec<String> = Vec::new();
+    for line in reply.lines() {
+        let Some(item) = list_item(line) else {
+            continue;
+        };
+        // Markdown emphasis and quotes around the sentence are not content.
+        let item = item.replace("**", "").replace('`', "");
+        let item = item.trim_matches(|c: char| c == '"' || c == '*' || c.is_whitespace());
+        let fact = one_line(item, MAX_FACT_CHARS);
+        // Too short to be a sentence about someone, a "nothing" marker, or
+        // a heading.
+        if fact.chars().count() < 4
+            || fact.trim_end_matches('.').eq_ignore_ascii_case("none")
+            || fact.ends_with(':')
+        {
+            continue;
+        }
+        if facts
+            .iter()
+            .any(|f| f.to_lowercase() == fact.to_lowercase())
+        {
+            continue;
+        }
+        facts.push(fact);
+        if facts.len() == MAX_FACTS_PER_DISTILL {
+            break;
+        }
+    }
+    facts
+}
+
 /// Long-term memory in the speaker database file.
 ///
 /// Cheap to create and to clone: it shares the database's connection pool.
@@ -655,6 +826,103 @@ impl MemoryStore {
         .await
         .map_err(db_err("store a fact"))?;
         Ok((id.rows_affected() == 1).then(|| id.last_insert_rowid()))
+    }
+
+    /// Store several facts about a person in one go and return the ones
+    /// that were new. A fact that is already stored (compared without regard
+    /// to case) is skipped. Beyond [`MAX_FACTS`] the oldest facts are
+    /// deleted.
+    ///
+    /// Empty, with nothing written, unless memory is switched on for the
+    /// person.
+    pub async fn add_facts(
+        &self,
+        speaker_id: &str,
+        facts: &[String],
+    ) -> Result<Vec<String>, VoxError> {
+        if !is_person_id(speaker_id) || facts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let err = db_err("store facts");
+        let now = now_secs();
+        let mut tx = self.pool.begin().await.map_err(&err)?;
+        // Checked inside the transaction, as for an exchange.
+        let opt_in: Option<i64> =
+            sqlx::query_scalar("SELECT memory_opt_in FROM persons WHERE speaker_id = ?1")
+                .bind(speaker_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(&err)?;
+        if opt_in != Some(1) {
+            return Ok(Vec::new());
+        }
+        let known: Vec<String> = sqlx::query_scalar(
+            "SELECT content FROM memories WHERE person_id = ?1 AND role = 'fact'",
+        )
+        .bind(speaker_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(&err)?;
+        let mut known: std::collections::HashSet<String> =
+            known.iter().map(|f| f.to_lowercase()).collect();
+
+        let mut stored = Vec::new();
+        for fact in facts {
+            let fact = one_line(fact, MAX_FACT_CHARS);
+            if fact.is_empty() || !known.insert(fact.to_lowercase()) {
+                continue;
+            }
+            sqlx::query(
+                "INSERT INTO memories (person_id, role, content, interrupted, created_at) \
+                 VALUES (?1, 'fact', ?2, 0, ?3)",
+            )
+            .bind(speaker_id)
+            .bind(&fact)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(&err)?;
+            stored.push(fact);
+        }
+        if !stored.is_empty() {
+            // Keep the newest facts only.
+            sqlx::query(
+                r#"
+                DELETE FROM memories
+                WHERE person_id = ?1 AND role = 'fact' AND id <= (
+                    SELECT id FROM memories
+                    WHERE person_id = ?1 AND role = 'fact'
+                    ORDER BY id DESC LIMIT 1 OFFSET ?2
+                )
+                "#,
+            )
+            .bind(speaker_id)
+            .bind(MAX_FACTS)
+            .execute(&mut *tx)
+            .await
+            .map_err(&err)?;
+        }
+        tx.commit().await.map_err(&err)?;
+        Ok(stored)
+    }
+
+    /// The newest `limit` facts stored about a person, oldest of them first.
+    /// Empty unless memory is switched on for the person.
+    pub async fn facts(&self, speaker_id: &str, limit: u32) -> Result<Vec<String>, VoxError> {
+        if !self.is_enabled(speaker_id).await? {
+            return Ok(Vec::new());
+        }
+        let mut facts: Vec<String> = sqlx::query_scalar(
+            "SELECT content FROM memories WHERE person_id = ?1 AND role = 'fact' \
+             ORDER BY id DESC LIMIT ?2",
+        )
+        .bind(speaker_id)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err("list facts"))?;
+        facts.reverse();
+        Ok(facts)
     }
 
     /// What to remind the model of when this person speaks: their newest
@@ -1306,6 +1574,156 @@ mod tests {
         assert!(block.contains("line number 19"));
         assert!(!block.contains("line number 0\n"));
         assert_eq!(format_recall_block("Mert", &[], &limits), None);
+    }
+
+    #[tokio::test]
+    async fn facts_are_stored_once_only_with_opt_in_and_show_up_in_recall() {
+        let (_db, memory) = db_with(&[("speaker_1", "Mert"), ("speaker_2", "Ada")]).await;
+        let facts = vec![
+            "Mert lives in Izmir.".to_string(),
+            "Mert has a dog\nnamed   Zeytin.".to_string(),
+            "mert lives in izmir.".to_string(),
+        ];
+
+        // Memory is off: nothing is written, nothing is listed.
+        assert!(
+            memory
+                .add_facts("speaker_1", &facts)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            memory
+                .add_facts("unknown", &facts)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(memory.add_facts("nobody", &facts).await.unwrap().is_empty());
+        assert_eq!(count(&memory, "SELECT COUNT(*) FROM memories").await, 0);
+
+        memory.set_enabled("speaker_1", true).await.unwrap();
+        let stored = memory.add_facts("speaker_1", &facts).await.unwrap();
+        assert_eq!(
+            stored,
+            ["Mert lives in Izmir.", "Mert has a dog named Zeytin."]
+        );
+        // Again: all known.
+        assert!(
+            memory
+                .add_facts("speaker_1", &facts)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(memory.facts("speaker_1", 10).await.unwrap(), stored);
+        assert_eq!(
+            memory.facts("speaker_1", 1).await.unwrap(),
+            ["Mert has a dog named Zeytin."]
+        );
+        assert!(memory.facts("speaker_2", 10).await.unwrap().is_empty());
+
+        let block = memory
+            .recall_block("speaker_1", "Mert", None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(block.contains("Known about them:\n- Mert lives in Izmir.\n- Mert has a dog"));
+
+        // Switched off: stored facts stay but are not handed out.
+        memory.set_enabled("speaker_1", false).await.unwrap();
+        assert!(memory.facts("speaker_1", 10).await.unwrap().is_empty());
+        assert!(
+            memory
+                .add_facts("speaker_1", &["Mert likes tea.".to_string()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Forgetting deletes facts and their index entries.
+        memory.forget("speaker_1").await.unwrap();
+        assert_eq!(count(&memory, "SELECT COUNT(*) FROM memories").await, 0);
+        assert_eq!(indexed_terms(&memory).await, 0);
+    }
+
+    #[tokio::test]
+    async fn facts_are_bounded_per_person() {
+        let (_db, memory) = db_with(&[("speaker_1", "Mert")]).await;
+        memory.set_enabled("speaker_1", true).await.unwrap();
+        let total = MAX_FACTS + 5;
+        for chunk in (0..total).collect::<Vec<_>>().chunks(50) {
+            let facts: Vec<String> = chunk.iter().map(|n| format!("Mert fact {n}.")).collect();
+            assert_eq!(
+                memory.add_facts("speaker_1", &facts).await.unwrap().len(),
+                facts.len()
+            );
+        }
+        let facts = memory.facts("speaker_1", u32::MAX).await.unwrap();
+        assert_eq!(facts.len() as i64, MAX_FACTS);
+        assert_eq!(facts[0], "Mert fact 5.");
+        assert_eq!(facts.last().unwrap(), &format!("Mert fact {}.", total - 1));
+    }
+
+    #[test]
+    fn distill_request_names_the_person_and_lists_what_was_heard() {
+        let exchanges = [
+            HeardExchange {
+                user: "I moved\nto Izmir".into(),
+                assistant: "Nice. How is".into(),
+                interrupted: true,
+            },
+            HeardExchange {
+                user: "never mind".into(),
+                assistant: String::new(),
+                interrupted: true,
+            },
+        ];
+        let known = vec!["Mert has a dog.".to_string()];
+        let (system, user) = distill_messages("Mert", &known, &exchanges);
+        assert_eq!(system, DISTILL_SYSTEM_PROMPT);
+        assert_eq!(
+            user,
+            "Person: Mert\n\nKnown notes:\n- Mert has a dog.\n\nConversation excerpt:\n\
+             Mert: I moved to Izmir\nAssistant: Nice. How is (cut off)\nMert: never mind\n\n\
+             List at most 6 facts worth keeping about Mert."
+        );
+        // Same input, same bytes.
+        assert_eq!(distill_messages("Mert", &known, &exchanges).1, user);
+
+        let (_, user) = distill_messages(" ", &[], &exchanges[..1]);
+        assert!(user.starts_with("Person: The person\n\nConversation excerpt:\n"));
+    }
+
+    #[test]
+    fn distilled_facts_are_the_list_lines_of_the_reply() {
+        let reply = "<think>\n- not a fact, just thinking\n</think>\nHere is what I found:\n\
+                     - Mert lives in Izmir.\n* Mert's sister is called **Elif**\n\
+                     1. \"Mert is allergic to nuts.\"\n2) mert lives in izmir.\n\
+                     - ok\n- NONE\n- Family:\nMert also said hello.\n";
+        assert_eq!(
+            parse_distilled_facts(reply),
+            [
+                "Mert lives in Izmir.",
+                "Mert's sister is called Elif",
+                "Mert is allergic to nuts.",
+            ]
+        );
+        assert!(parse_distilled_facts("NONE").is_empty());
+        assert!(parse_distilled_facts("- None.").is_empty());
+        assert!(parse_distilled_facts("Nothing worth keeping.").is_empty());
+        assert!(parse_distilled_facts("<think>- Mert is thinking").is_empty());
+
+        let many: String = (0..20)
+            .map(|n| format!("- Mert fact number {n}.\n"))
+            .collect();
+        assert_eq!(parse_distilled_facts(&many).len(), MAX_FACTS_PER_DISTILL);
+        let long = format!("- {}", "x".repeat(1_000));
+        assert_eq!(
+            parse_distilled_facts(&long)[0].chars().count(),
+            MAX_FACT_CHARS
+        );
     }
 
     #[test]

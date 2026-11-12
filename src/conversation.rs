@@ -25,10 +25,15 @@
 //!   that person's first message. It is put in again only when the turn that
 //!   carried it has been trimmed away.
 //!
+//! - **Evicted turns are handed on, not lost.** A trimmed turn of a known
+//!   speaker waits in a bounded queue ([`Conversation::take_evicted`]) so the
+//!   owner of the session can distill it into long-term memory while the
+//!   model is idle.
+//!
 //! [`SessionStore`] keeps conversations alive across reconnects, keyed by a
 //! session id and dropped after an idle time-to-live.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -264,6 +269,21 @@ impl Turn {
     }
 }
 
+/// Most trimmed turns kept waiting for [`Conversation::take_evicted`]. When
+/// nobody collects them the oldest are dropped.
+pub const MAX_EVICTED_TURNS: usize = 128;
+
+/// A turn of a known speaker that trimming removed from the context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvictedTurn {
+    pub speaker: SpeakerLabel,
+    /// What the user said, without the speaker tag or a recall block.
+    pub user: String,
+    /// The reply the listener heard, without the interruption marker.
+    pub assistant: String,
+    pub interrupted: bool,
+}
+
 /// One remembered turn, as shown to a client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TurnSnapshot {
@@ -311,6 +331,9 @@ pub struct Conversation {
     recall: HashMap<String, RecallEntry>,
     /// Set by [`Conversation::clear`]: no recall for the rest of the session.
     recall_suppressed: bool,
+    /// Trimmed turns of known speakers, oldest first, at most
+    /// [`MAX_EVICTED_TURNS`]; see [`Conversation::take_evicted`].
+    evicted: VecDeque<EvictedTurn>,
 }
 
 impl Conversation {
@@ -330,6 +353,7 @@ impl Conversation {
             dropped_turns: 0,
             recall: HashMap::new(),
             recall_suppressed: false,
+            evicted: VecDeque::new(),
         }
     }
 
@@ -349,10 +373,12 @@ impl Conversation {
     ///
     /// The frozen recall blocks go too, and none is looked up or injected
     /// for the rest of the session: the user asked to forget, so context
-    /// from earlier sessions must not come straight back. Stored long-term
+    /// from earlier sessions must not come straight back. Trimmed turns that
+    /// were waiting to be distilled are dropped as well. Stored long-term
     /// memory is not touched by this.
     pub fn clear(&mut self) {
         self.turns.clear();
+        self.evicted.clear();
         self.total_tokens = 0;
         self.dropped_turns = 0;
         self.recall.clear();
@@ -392,6 +418,35 @@ impl Conversation {
                 block,
                 in_context: false,
             });
+    }
+
+    /// Number of trimmed turns waiting for [`take_evicted`](Self::take_evicted).
+    pub fn evicted_len(&self) -> usize {
+        self.evicted.len()
+    }
+
+    /// Take the turns that trimming removed from the context, oldest first.
+    ///
+    /// Only turns of an identified speaker are kept for this: nothing is
+    /// ever remembered about an unknown voice. The caller owns them from
+    /// here on; work that is abandoned half way can hand them back with
+    /// [`restore_evicted`](Self::restore_evicted).
+    pub fn take_evicted(&mut self) -> Vec<EvictedTurn> {
+        self.evicted.drain(..).collect()
+    }
+
+    /// Put back turns from [`take_evicted`](Self::take_evicted) that were
+    /// not processed. They go in front of whatever was trimmed since.
+    pub fn restore_evicted(&mut self, turns: Vec<EvictedTurn>) {
+        for turn in turns.into_iter().rev() {
+            self.evicted.push_front(turn);
+        }
+        self.cap_evicted();
+    }
+
+    fn cap_evicted(&mut self) {
+        let excess = self.evicted.len().saturating_sub(MAX_EVICTED_TURNS);
+        self.evicted.drain(..excess);
     }
 
     /// Number of sentences recorded for the newest turn.
@@ -521,19 +576,24 @@ impl Conversation {
             drop += 1;
         }
         for turn in self.turns.drain(..drop) {
-            if !turn.carries_recall {
+            let Some(speaker) = turn.speaker else {
                 continue;
-            }
+            };
             // The block left the context with this turn: the person's next
             // message brings it back.
-            if let Some(entry) = turn
-                .speaker
-                .as_ref()
-                .and_then(|speaker| self.recall.get_mut(&speaker.id))
+            if turn.carries_recall
+                && let Some(entry) = self.recall.get_mut(&speaker.id)
             {
                 entry.in_context = false;
             }
+            self.evicted.push_back(EvictedTurn {
+                speaker,
+                user: turn.user_text,
+                assistant: turn.sentences.join(" "),
+                interrupted: turn.interrupted,
+            });
         }
+        self.cap_evicted();
         self.total_tokens = remaining;
         self.dropped_turns += drop;
         drop
@@ -1123,5 +1183,97 @@ mod tests {
         c.freeze_recall("speaker_1", Some("[Memory] likes tea".into()));
         assert_eq!(c.recall_need("speaker_1"), RecallNeed::Nothing);
         assert_eq!(c.recall_need("speaker_2"), RecallNeed::Nothing);
+    }
+
+    /// Three turns by Mert, a stranger and Ada, then enough filler to trim
+    /// all three away.
+    fn trimmed_conversation() -> Conversation {
+        let mut c = Conversation::with_budget(200);
+        let recall = "[Memory] likes tea";
+        c.freeze_recall("speaker_1", Some(recall.into()));
+        let mert = UserMessage::new("I moved to Izmir", label("speaker_1", "Mert"), Some(recall));
+        c.commit_message(&mert, &s(&["Nice.", "How is it?"]), false);
+        c.commit("who is this", &s(&["No idea."]), false);
+        let ada = UserMessage::new("stop", label("speaker_2", "Ada"), None);
+        c.commit_message(&ada, &s(&["Sure"]), true);
+        assert_eq!(c.evicted_len(), 0);
+        let long = "x".repeat(90);
+        for _ in 0..4 {
+            c.commit(&long, &s(&["ok."]), false);
+        }
+        c
+    }
+
+    #[test]
+    fn trimmed_turns_of_known_speakers_wait_to_be_collected() {
+        let mut c = trimmed_conversation();
+        // The stranger's turn and the untagged filler are not kept.
+        assert_eq!(c.evicted_len(), 2);
+        let evicted = c.take_evicted();
+        assert_eq!(
+            evicted,
+            vec![
+                EvictedTurn {
+                    speaker: label("speaker_1", "Mert").unwrap(),
+                    // Plain text: no tag, no recall block, no marker.
+                    user: "I moved to Izmir".into(),
+                    assistant: "Nice. How is it?".into(),
+                    interrupted: false,
+                },
+                EvictedTurn {
+                    speaker: label("speaker_2", "Ada").unwrap(),
+                    user: "stop".into(),
+                    assistant: "Sure".into(),
+                    interrupted: true,
+                },
+            ]
+        );
+        assert_eq!(c.evicted_len(), 0);
+        assert!(c.take_evicted().is_empty());
+    }
+
+    #[test]
+    fn restored_turns_go_in_front_of_newer_ones() {
+        let mut c = trimmed_conversation();
+        let first = c.take_evicted();
+        let later = UserMessage::new("later", label("speaker_2", "Ada"), None);
+        c.commit_message(&later, &s(&["ok."]), false);
+        let long = "x".repeat(90);
+        for _ in 0..20 {
+            if c.evicted_len() > 0 {
+                break;
+            }
+            c.commit(&long, &s(&["ok."]), false);
+        }
+        assert_eq!(c.evicted_len(), 1);
+        c.restore_evicted(first);
+        let users: Vec<String> = c.take_evicted().into_iter().map(|t| t.user).collect();
+        assert_eq!(users, ["I moved to Izmir", "stop", "later"]);
+    }
+
+    #[test]
+    fn the_evicted_queue_is_bounded_and_cleared_with_the_conversation() {
+        let mut c = Conversation::with_budget(30);
+        for i in 0..MAX_EVICTED_TURNS + 10 {
+            let m = UserMessage::new(&format!("turn {i}"), label("speaker_1", "Mert"), None);
+            c.commit_message(
+                &m,
+                &s(&["A reply that is long enough to fill the budget."]),
+                false,
+            );
+        }
+        assert_eq!(c.evicted_len(), MAX_EVICTED_TURNS);
+        // The oldest were dropped.
+        let evicted = c.take_evicted();
+        assert_ne!(evicted[0].user, "turn 0");
+        assert_eq!(
+            evicted.last().unwrap().user,
+            format!("turn {}", MAX_EVICTED_TURNS + 8)
+        );
+
+        c.restore_evicted(evicted);
+        assert_eq!(c.evicted_len(), MAX_EVICTED_TURNS);
+        c.clear();
+        assert_eq!(c.evicted_len(), 0);
     }
 }

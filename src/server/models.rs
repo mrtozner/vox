@@ -296,6 +296,9 @@ pub const LIVE_TALK_PROTOCOL_VERSION: u32 = 2;
 ///   arrived before any turn existed.
 /// - `memory`       — the whole conversation memory, sent after `ready`,
 ///   after every change to it and after `forget_memory`.
+/// - `memory_distilled` — turns that fell out of the conversation memory
+///   were condensed into these new long-term facts about a speaker who has
+///   memory switched on. Belongs to no turn; sent while the session is idle.
 /// - `error`        — `fatal: false` leaves the session usable (the turn, if
 ///   any, is over and the microphone is accepted again).
 #[derive(Debug, serde::Serialize)]
@@ -370,6 +373,13 @@ pub enum LiveTalkWsEvent {
     Cancelled { turn_id: u64, reason: CancelReason },
     #[serde(rename = "memory")]
     Memory(vox::conversation::ConversationSnapshot),
+    #[serde(rename = "memory_distilled")]
+    MemoryDistilled {
+        speaker_id: String,
+        speaker_name: String,
+        /// The facts that were stored, as stored.
+        facts: Vec<String>,
+    },
     #[serde(rename = "error")]
     Error {
         message: String,
