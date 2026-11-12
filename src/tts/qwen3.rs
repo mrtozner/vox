@@ -1,14 +1,109 @@
 //! Qwen3-TTS backend integration.
 
 use async_trait::async_trait;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use qwen3_tts::{Language, Qwen3TTS, Speaker, SynthesisOptions, auto_device};
 use tokio::sync::Mutex;
 
+use super::normalize;
 use crate::error::VoxError;
 use crate::traits::TtsBackend;
 use crate::types::{AudioChunk, TtsOutput, TtsRequest, VoiceInfo};
+
+/// The HuggingFace hub cache: `$HF_HUB_CACHE`, else `$HF_HOME/hub`, else
+/// `~/.cache/huggingface/hub`.
+fn hub_cache_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("HF_HUB_CACHE").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    if let Some(home) = std::env::var_os("HF_HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(home).join("hub");
+    }
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".cache").join("huggingface"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/huggingface"))
+        .join("hub")
+}
+
+fn is_model_dir(dir: &Path) -> bool {
+    dir.join("config.json").is_file()
+}
+
+/// Find the directory holding the files of `model_id` (`Org/Repo`).
+///
+/// Tried in order:
+///
+/// 1. `override_dir`, when given. A wrong override is an error, not a reason
+///    to load some other copy.
+/// 2. The hub cache entry `models--Org--Repo`: the snapshot `refs/main`
+///    names, else the only snapshot present. The hub stores snapshots under
+///    their commit hash, so there is no `snapshots/main` to look for.
+/// 3. `hub/Org/Repo`, a plain directory made with `--local-dir`.
+fn resolve_model_dir(
+    hub: &Path,
+    model_id: &str,
+    override_dir: Option<&Path>,
+) -> Result<PathBuf, VoxError> {
+    if let Some(dir) = override_dir {
+        return if is_model_dir(dir) {
+            Ok(dir.to_path_buf())
+        } else {
+            Err(VoxError::Tts(format!(
+                "VOX_QWEN3_MODEL_PATH is set to {}, which has no config.json",
+                dir.display()
+            )))
+        };
+    }
+
+    let repo = hub.join(format!("models--{}", model_id.replace('/', "--")));
+    let snapshots = repo.join("snapshots");
+
+    if let Ok(commit) = std::fs::read_to_string(repo.join("refs").join("main")) {
+        let commit = commit.trim();
+        // A ref is a bare commit hash; anything else is not a path to follow.
+        if !commit.is_empty() && commit.chars().all(|c| c.is_ascii_alphanumeric()) {
+            let dir = snapshots.join(commit);
+            if is_model_dir(&dir) {
+                return Ok(dir);
+            }
+        }
+    }
+
+    let mut found: Vec<PathBuf> = std::fs::read_dir(&snapshots)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok().map(|e| e.path()))
+                .filter(|path| is_model_dir(path))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    match found.len() {
+        0 => {}
+        1 => return Ok(found.remove(0)),
+        n => {
+            return Err(VoxError::Tts(format!(
+                "{n} snapshots of {model_id} in {} and no usable refs/main to choose one; \
+                 set VOX_QWEN3_MODEL_PATH to the snapshot to load",
+                snapshots.display()
+            )));
+        }
+    }
+
+    let flat = hub.join(model_id);
+    if is_model_dir(&flat) {
+        return Ok(flat);
+    }
+
+    Err(VoxError::Tts(format!(
+        "qwen3 model {model_id} not found under {}. Download it with:\n  \
+         huggingface-cli download {model_id}\n\
+         or point VOX_QWEN3_MODEL_PATH at a directory that holds its config.json",
+        hub.display()
+    )))
+}
 
 /// Configuration for the Qwen3 TTS backend.
 #[derive(Debug, Clone)]
@@ -110,50 +205,15 @@ impl Qwen3Backend {
             }
         });
 
-        // Use HuggingFace cache directory with better detection
-        let cache_dir = std::env::var("HF_HOME")
-            .or_else(|_| std::env::var("HOME").map(|h| format!("{}/.cache/huggingface", h)))
-            .unwrap_or_else(|_| "/tmp/huggingface".to_string());
-
-        // Try multiple path patterns HuggingFace uses
-        let model_paths = vec![
-            // New HF cache format (models--Org--Repo/snapshots/main)
-            std::path::PathBuf::from(&cache_dir)
-                .join("hub")
-                .join(format!(
-                    "models--{}--{}",
-                    model_id.split('/').nth(0).unwrap_or("Qwen"),
-                    model_id
-                        .split('/')
-                        .nth(1)
-                        .unwrap_or("Qwen3-TTS-12Hz-0.6B-CustomVoice")
-                ))
-                .join("snapshots")
-                .join("main"),
-            // Old HF cache format (hub/Org/Repo)
-            std::path::PathBuf::from(&cache_dir)
-                .join("hub")
-                .join(&model_id),
-            // Environment override
-            std::env::var("VOX_QWEN3_MODEL_PATH")
-                .ok()
-                .map(std::path::PathBuf::from)
-                .unwrap_or_default(),
-        ];
-
-        let model_path = model_paths.into_iter()
-            .find(|p| p.exists() && p.join("config.json").exists())
-            .ok_or_else(|| VoxError::Tts(format!(
-                "model not found. Please download using:\n  \
-                 huggingface-cli download {} --local-dir ~/.cache/huggingface/hub/models--Qwen--{}/snapshots/main",
-                model_id,
-                model_id.split('/').nth(1).unwrap_or("Qwen3-TTS-12Hz-0.6B-CustomVoice")
-            )))?;
+        let override_dir = std::env::var_os("VOX_QWEN3_MODEL_PATH")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+        let model_path = resolve_model_dir(&hub_cache_dir(), &model_id, override_dir.as_deref())?;
 
         // Convert to string for API
         let model_path_str = model_path.to_string_lossy().to_string();
 
-        // Load model (this will automatically download from HuggingFace if not cached)
+        // Load the model from the resolved local directory.
         let model = tokio::task::spawn_blocking(move || -> Result<Qwen3TTS, VoxError> {
             tracing::info!(path = %model_path_str, "loading from local cache");
 
@@ -415,7 +475,7 @@ impl Qwen3Backend {
             .unwrap_or(&self.config.default_voice);
         let (speaker, language) = self.parse_voice(voice_name)?;
 
-        let text = request.text.clone();
+        let text = normalize::clean(&request.text);
         let temperature = self.config.temperature;
         let seed = request.seed;
         let model = Arc::clone(&self.model);
@@ -462,23 +522,16 @@ impl Qwen3Backend {
         .map_err(|e| VoxError::Tts(format!("streaming task panicked: {e}")))?;
 
         let (samples, sample_rate) = result?;
-        let duration_ms = (samples.len() as f64 / sample_rate as f64 * 1000.0) as u64;
+        let output = TtsOutput::from_mono(samples, sample_rate);
 
         tracing::info!(
-            duration_ms = duration_ms,
+            duration_ms = output.duration_ms,
             processing_time_ms = start.elapsed().as_millis() as u64,
-            rtf = start.elapsed().as_secs_f64() / (duration_ms as f64 / 1000.0),
+            rtf = real_time_factor(start.elapsed(), output.duration_ms),
             "qwen3 streaming synthesis complete"
         );
 
-        Ok(TtsOutput {
-            audio: AudioChunk {
-                samples,
-                sample_rate,
-                channels: 1,
-            },
-            duration_ms,
-        })
+        Ok(output)
     }
 }
 
@@ -491,71 +544,51 @@ impl TtsBackend for Qwen3Backend {
             .unwrap_or(&self.config.default_voice);
         let (speaker, language) = self.parse_voice(voice_name)?;
 
-        let text = request.text.clone();
+        let text = normalize::clean(&request.text);
         let temperature = self.config.temperature;
         let seed = request.seed;
-
-        // Clone the Arc to move into blocking task
         let model = Arc::clone(&self.model);
 
-        // Run synthesis - use blocking because model.lock() is async
+        // Inference is synchronous and takes seconds. Run it on the blocking
+        // pool, and take the model lock there too, so neither the work nor
+        // the wait for the lock ties up an async worker.
         let start = std::time::Instant::now();
-        let result = {
-            // Lock the mutex for the duration of synthesis
-            let model_guard = model.lock().await;
+        let (samples, sample_rate) =
+            tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32), VoxError> {
+                let model_guard = model.blocking_lock();
 
-            // Run synthesis on the blocking thread pool
-            // We can't move the guard, so we do synthesis here
-            tracing::debug!(
-                text_len = text.len(),
-                speaker = ?speaker,
-                language = ?language,
-                "starting qwen3 synthesis"
-            );
+                tracing::debug!(
+                    text_len = text.len(),
+                    speaker = ?speaker,
+                    language = ?language,
+                    "starting qwen3 synthesis"
+                );
 
-            // Build synthesis options
-            let options = SynthesisOptions {
-                temperature: temperature as f64,
-                seed,
-                ..Default::default()
-            };
+                let options = SynthesisOptions {
+                    temperature: temperature as f64,
+                    seed,
+                    ..Default::default()
+                };
 
-            // Synthesize audio
-            let audio = model_guard
-                .synthesize_with_voice(&text, speaker, language, Some(options))
-                .map_err(|e| VoxError::Tts(format!("synthesis failed: {e}")))?;
+                let audio = model_guard
+                    .synthesize_with_voice(&text, speaker, language, Some(options))
+                    .map_err(|e| VoxError::Tts(format!("synthesis failed: {e}")))?;
 
-            // Extract samples
-            let samples = audio.samples;
-            let sample_rate = audio.sample_rate;
+                Ok((audio.samples, audio.sample_rate))
+            })
+            .await
+            .map_err(|e| VoxError::Tts(format!("qwen3 synthesis task panicked: {e}")))??;
 
-            tracing::debug!(
-                num_samples = samples.len(),
-                sample_rate = sample_rate,
-                "synthesis completed"
-            );
-
-            Ok::<(Vec<f32>, u32), VoxError>((samples, sample_rate))
-        };
-
-        let (samples, sample_rate) = result?;
-        let duration_ms = (samples.len() as f64 / sample_rate as f64 * 1000.0) as u64;
+        let output = TtsOutput::from_mono(samples, sample_rate);
 
         tracing::info!(
-            duration_ms = duration_ms,
+            duration_ms = output.duration_ms,
             processing_time_ms = start.elapsed().as_millis() as u64,
-            rtf = start.elapsed().as_secs_f64() / (duration_ms as f64 / 1000.0),
+            rtf = real_time_factor(start.elapsed(), output.duration_ms),
             "qwen3 synthesis complete"
         );
 
-        Ok(TtsOutput {
-            audio: AudioChunk {
-                samples,
-                sample_rate,
-                channels: 1,
-            },
-            duration_ms,
-        })
+        Ok(output)
     }
 
     fn list_voices(&self) -> Vec<VoiceInfo> {
@@ -567,9 +600,152 @@ impl TtsBackend for Qwen3Backend {
     }
 }
 
+/// Processing time over audio time; 0 when there is no audio.
+fn real_time_factor(elapsed: std::time::Duration, duration_ms: u64) -> f64 {
+    if duration_ms == 0 {
+        return 0.0;
+    }
+    elapsed.as_secs_f64() / (duration_ms as f64 / 1000.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    const MODEL_ID: &str = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice";
+    const REPO_DIR: &str = "models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice";
+
+    /// A fresh directory under the system temp dir, removed on drop.
+    struct TempHub(PathBuf);
+
+    impl TempHub {
+        fn new() -> Self {
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "vox-qwen3-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        /// Create `relative` with a `config.json` in it.
+        fn model_dir(&self, relative: &str) -> PathBuf {
+            let dir = self.0.join(relative);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("config.json"), "{}").unwrap();
+            dir
+        }
+
+        fn write(&self, relative: &str, contents: &str) {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+    }
+
+    impl Drop for TempHub {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn resolves_the_snapshot_refs_main_points_to() {
+        let hub = TempHub::new();
+        let old = hub.model_dir(&format!("{REPO_DIR}/snapshots/aaa111"));
+        let current = hub.model_dir(&format!("{REPO_DIR}/snapshots/bbb222"));
+        // Trailing newline, as `git`-style ref files have.
+        hub.write(&format!("{REPO_DIR}/refs/main"), "bbb222\n");
+
+        let resolved = resolve_model_dir(&hub.0, MODEL_ID, None).unwrap();
+        assert_eq!(resolved, current);
+        assert_ne!(resolved, old);
+    }
+
+    #[test]
+    fn resolves_a_lone_snapshot_without_refs() {
+        let hub = TempHub::new();
+        let only = hub.model_dir(&format!("{REPO_DIR}/snapshots/0123abcd"));
+        assert_eq!(resolve_model_dir(&hub.0, MODEL_ID, None).unwrap(), only);
+    }
+
+    #[test]
+    fn a_stale_ref_falls_back_to_the_lone_snapshot() {
+        let hub = TempHub::new();
+        let only = hub.model_dir(&format!("{REPO_DIR}/snapshots/0123abcd"));
+        hub.write(&format!("{REPO_DIR}/refs/main"), "deadbeef");
+        assert_eq!(resolve_model_dir(&hub.0, MODEL_ID, None).unwrap(), only);
+    }
+
+    #[test]
+    fn incomplete_snapshots_are_ignored() {
+        let hub = TempHub::new();
+        let complete = hub.model_dir(&format!("{REPO_DIR}/snapshots/complete"));
+        // An interrupted download: the directory exists, config.json does not.
+        std::fs::create_dir_all(hub.0.join(format!("{REPO_DIR}/snapshots/partial"))).unwrap();
+        assert_eq!(resolve_model_dir(&hub.0, MODEL_ID, None).unwrap(), complete);
+    }
+
+    #[test]
+    fn several_snapshots_without_a_ref_are_ambiguous() {
+        let hub = TempHub::new();
+        hub.model_dir(&format!("{REPO_DIR}/snapshots/aaa111"));
+        hub.model_dir(&format!("{REPO_DIR}/snapshots/bbb222"));
+        let err = resolve_model_dir(&hub.0, MODEL_ID, None).unwrap_err();
+        assert!(err.to_string().contains("2 snapshots"), "{err}");
+    }
+
+    #[test]
+    fn a_ref_cannot_point_outside_the_snapshots_directory() {
+        let hub = TempHub::new();
+        hub.model_dir("elsewhere");
+        hub.write(&format!("{REPO_DIR}/refs/main"), "../../elsewhere");
+        assert!(resolve_model_dir(&hub.0, MODEL_ID, None).is_err());
+    }
+
+    #[test]
+    fn resolves_a_flat_local_dir() {
+        let hub = TempHub::new();
+        let flat = hub.model_dir(MODEL_ID);
+        assert_eq!(resolve_model_dir(&hub.0, MODEL_ID, None).unwrap(), flat);
+    }
+
+    #[test]
+    fn the_override_wins_and_must_be_valid() {
+        let hub = TempHub::new();
+        hub.model_dir(&format!("{REPO_DIR}/snapshots/0123abcd"));
+        let custom = hub.model_dir("custom");
+        assert_eq!(
+            resolve_model_dir(&hub.0, MODEL_ID, Some(&custom)).unwrap(),
+            custom
+        );
+
+        let missing = hub.0.join("missing");
+        let err = resolve_model_dir(&hub.0, MODEL_ID, Some(&missing)).unwrap_err();
+        assert!(err.to_string().contains("VOX_QWEN3_MODEL_PATH"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_model_says_how_to_get_it() {
+        let hub = TempHub::new();
+        let err = resolve_model_dir(&hub.0, MODEL_ID, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!("huggingface-cli download {MODEL_ID}")),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn real_time_factor_handles_empty_audio() {
+        let second = std::time::Duration::from_secs(1);
+        assert_eq!(real_time_factor(second, 0), 0.0);
+        assert_eq!(real_time_factor(second, 2000), 0.5);
+    }
 
     #[test]
     fn test_voice_list_shows_aiden_for_us_male() {
