@@ -2044,3 +2044,60 @@ async fn openai_speech_rejects_what_it_cannot_do() {
     )
     .await;
 }
+
+// ---------------------------------------------------------------------------
+// /v1/speakers through the production router
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn speaker_routes_are_mounted_behind_the_access_policy() {
+    let app = app(empty_state());
+
+    // Diarization is not loaded: the list answers, empty and unavailable.
+    let response = app.clone().oneshot(get_req("/v1/speakers")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["available"], false);
+    assert_eq!(json["speakers"], serde_json::json!([]));
+
+    // Mutations fail with the server-wide error body.
+    let request = Request::builder()
+        .method("DELETE")
+        .uri("/v1/speakers?confirm=all")
+        .header(header::HOST, HOST)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "diarization_unavailable");
+    assert_eq!(json["error"]["message"], json["message"]);
+    assert!(json["message"].is_string());
+
+    // A foreign origin cannot wipe or export the speaker store.
+    for (method, uri) in [
+        ("DELETE", "/v1/speakers?confirm=all"),
+        (
+            "GET",
+            "/v1/speakers/speaker_1/export?include_embedding=true",
+        ),
+        ("PUT", "/v1/speakers/consent"),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, "https://evil.example")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"granted":true}"#))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_error(
+            response,
+            StatusCode::FORBIDDEN,
+            "permission_error",
+            "origin_not_allowed",
+        )
+        .await;
+    }
+}

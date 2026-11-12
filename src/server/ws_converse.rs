@@ -123,6 +123,9 @@ async fn refuse(mut socket: WebSocket, message: String) {
 
 #[cfg(feature = "silero")]
 async fn handle_converse_ws(socket: WebSocket, state: Arc<ServerState>) {
+    // Counted as an open session until this function returns, so shutdown
+    // can wait for it.
+    let _session = state.ws_session();
     let Some(stt) = state.stt.as_ref().map(Arc::clone) else {
         return refuse(socket, "STT backend not loaded".into()).await;
     };
@@ -142,7 +145,20 @@ async fn handle_converse_ws(socket: WebSocket, state: Arc<ServerState>) {
         Err(e) => return refuse(socket, format!("failed to initialize VAD: {e}")).await,
     };
 
+    // Every STT/TTS call of the session takes a server inference slot.
+    let stt: Arc<dyn vox::traits::SttBackend> = Arc::new(super::ws::LimitedStt {
+        inner: stt,
+        state: Arc::clone(&state),
+    });
+    let tts: Arc<dyn vox::traits::TtsBackend> = Arc::new(super::ws::LimitedTts {
+        inner: tts,
+        state: Arc::clone(&state),
+    });
+
+    // On shutdown the session sees the client as gone and the relay sends
+    // the 1001 close frame.
     let (sink, stream) = socket.split();
+    let (sink, stream, relay) = super::ws::with_shutdown(sink, stream, state.shutdown.clone());
     run_converse(
         sink,
         stream,
@@ -157,6 +173,7 @@ async fn handle_converse_ws(socket: WebSocket, state: Arc<ServerState>) {
         },
     )
     .await;
+    let _ = relay.await;
 }
 
 /// Fallback when the `silero` feature is disabled: immediately report an error.

@@ -1121,7 +1121,7 @@ function handleListenEvent(data) {
             // If the user had diarization enabled before a reconnect and
             // still has consent, re-send the config to resume.
             if (S.diarizationOn && S.diarizationAvailable) {
-                sendDiarizationConfig(true);
+                enableDiarization();
             }
             break;
         case 'speech_start':
@@ -1259,6 +1259,29 @@ function requestDiarizationConsent(onConfirm) {
     $('consentNo').onclick = () => finish(false);
     dlg.oncancel = (e) => { e.preventDefault(); finish(false); };
     dlg.showModal();
+}
+
+// The server enrolls new voices only once consent is recorded on its side
+// (PUT /v1/speakers/consent). The user agreed in the dialog above, so record
+// it before turning diarization on; otherwise the server only recognizes
+// speakers it already knows.
+async function recordServerConsent() {
+    try {
+        const res = await fetch('/v1/speakers/consent');
+        if (res.ok && (await res.json()).granted) return;
+        await fetch('/v1/speakers/consent', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ granted: true }),
+        });
+    } catch (_e) {
+        // The server reports missing consent itself when the config arrives.
+    }
+}
+
+async function enableDiarization() {
+    if (S.diarizationConsented) await recordServerConsent();
+    if (S.diarizationOn) sendDiarizationConfig(true);
 }
 
 function sendSpeakerCmd(cmd) {
@@ -1568,16 +1591,17 @@ async function sendChat(text, retryMsgEl) {
             body: JSON.stringify({ text, model }),
         });
 
-        if (res.status === 503) {
+        if (!res.ok) {
+            // The server answers {error:{message,type,code,param}, message};
+            // older builds sent {error:"..."}.
             const body = await res.json().catch(() => ({}));
-            const msg = (body.error || '').includes('Ollama')
-                ? 'Ollama not running. Start with: ollama serve'
-                : body.error || 'Chat service unavailable';
+            const err = body && body.error;
+            const detail = (err && typeof err === 'object' ? err.message : err) || body.message || '';
+            const msg = String(detail) || ('Chat failed (HTTP ' + res.status + ')');
             showToast(msg, 'error');
             addRetryBtn(userMsgEl, text);
             return;
         }
-        if (!res.ok) throw new Error('HTTP ' + res.status);
 
         const data = await res.json();
         appendChatMessage('assistant', data.response);
@@ -2459,7 +2483,7 @@ document.addEventListener('DOMContentLoaded', () => {
             requestDiarizationConsent(() => {
                 S.diarizationOn = true;
                 toggle.classList.add('on');
-                sendDiarizationConfig(true);
+                enableDiarization();
                 renderSpeakersSidebar(true);
             });
         } else {

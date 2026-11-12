@@ -428,6 +428,7 @@ pub async fn run_with_config(
     println!("    WS   /v1/speak        — streaming text-to-speech");
     println!("    WS   /v1/converse     — continuous voice chat (VAD+STT+LLM+TTS)");
     println!("    WS   /v1/live-talk    — barge-in voice chat (experimental)");
+    println!("    GET  /v1/speakers     — speaker store (rename, forget, merge, export, consent)");
     println!("    GET  /health         — liveness (GET /health/ready — readiness)");
     println!();
     println!("  LLM: Ollama at {}", state.ollama_host);

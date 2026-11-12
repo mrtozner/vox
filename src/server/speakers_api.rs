@@ -11,7 +11,8 @@
 //! | `GET` / `PUT` | `/v1/speakers/consent` | read / set enrollment consent |
 //!
 //! Embeddings never leave the server except through `export` with
-//! `?include_embedding=true`. Errors are `{"error": "..."}` with 400
+//! `?include_embedding=true`. Errors use the server-wide body
+//! (`{"error": {message, type, code, param}, "message": "..."}`) with 400
 //! (invalid request), 404 (unknown speaker), 503 (diarization not loaded)
 //! or 500.
 
@@ -56,7 +57,15 @@ impl IntoResponse for SpeakerError {
         if status.is_server_error() {
             tracing::warn!(error = %self, "speaker API request failed");
         }
-        (status, Json(json!({ "error": self.to_string() }))).into_response()
+        let code = match &self {
+            Self::Unavailable => "diarization_unavailable",
+            Self::NotFound(_) => "speaker_not_found",
+            Self::Invalid(_) => "invalid_request",
+            Self::Internal(_) => "internal_error",
+        };
+        super::error::ServerError::new(status, self.to_string())
+            .with_code(code)
+            .into_response()
     }
 }
 
@@ -349,7 +358,11 @@ mod tests {
         ] {
             let (status, _, json) = call(&ctx, method.clone(), uri, body).await;
             assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{method} {uri}");
-            assert_eq!(keys(&json), ["error"], "{method} {uri}");
+            assert_eq!(keys(&json), ["error", "message"], "{method} {uri}");
+            assert_eq!(
+                json["error"]["code"], "diarization_unavailable",
+                "{method} {uri}"
+            );
         }
     }
 
@@ -385,7 +398,8 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
-            assert!(json["error"].is_string(), "{bad}");
+            assert!(json["error"]["message"].is_string(), "{bad}");
+            assert_eq!(json["error"]["code"], "invalid_request", "{bad}");
         }
 
         let (status, _, json) = call(
@@ -396,7 +410,9 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(json, json!({ "error": "speaker 'ghost' not found" }));
+        assert_eq!(json["message"], "speaker 'ghost' not found");
+        assert_eq!(json["error"]["message"], "speaker 'ghost' not found");
+        assert_eq!(json["error"]["code"], "speaker_not_found");
 
         // The rejected names changed nothing.
         let (_, _, json) = call(&ctx, Method::GET, "/v1/speakers", None).await;
@@ -420,7 +436,7 @@ mod tests {
         // Deleting everyone needs the explicit confirmation.
         let (status, _, json) = call(&ctx, Method::DELETE, "/v1/speakers", None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(json["error"].as_str().unwrap().contains("confirm=all"));
+        assert!(json["message"].as_str().unwrap().contains("confirm=all"));
         let (_, _, json) = call(&ctx, Method::GET, "/v1/speakers", None).await;
         assert_eq!(json["speakers"].as_array().unwrap().len(), 2);
 
