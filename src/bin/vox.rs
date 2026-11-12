@@ -21,6 +21,10 @@ use clap::{Parser, Subcommand};
                   Whisper STT + Kokoro TTS + Silero VAD — no cloud, no Python, just Rust."
 )]
 struct Cli {
+    /// Stay on this machine: refuse an Ollama host that is not loopback and
+    /// refuse model downloads [env: VOX_OFFLINE=1]
+    #[arg(long, global = true)]
+    offline: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -64,15 +68,17 @@ enum Commands {
     },
     /// Chat with an LLM using your voice
     Chat {
-        /// Whisper model size (tiny.en, base.en, small.en)
-        #[arg(long, default_value = "tiny.en")]
-        model: String,
-        /// Ollama model name
-        #[arg(long, default_value = "llama3.2")]
-        llm: String,
-        /// Ollama host:port
-        #[arg(long, default_value = "localhost:11434")]
-        ollama_host: String,
+        /// Whisper model size (tiny.en, base.en, small.en).
+        /// Default: the model picked by `vox tune`, else tiny.en
+        #[arg(long)]
+        model: Option<String>,
+        /// Ollama model name. Default: the model picked by `vox tune`, else llama3.2
+        #[arg(long)]
+        llm: Option<String>,
+        /// Ollama host:port. Default: VOX_OLLAMA_HOST, then `ollama_host` in
+        /// config.toml, then localhost:11434
+        #[arg(long)]
+        ollama_host: Option<String>,
         /// Auto-download missing models without prompting
         #[arg(long, short = 'y')]
         yes: bool,
@@ -93,6 +99,43 @@ enum Commands {
         /// Auto-download missing models without prompting
         #[arg(long, short = 'y')]
         yes: bool,
+    },
+    /// Measure STT, TTS and LLM speed on this machine with real speech and
+    /// save the best installed models to config.toml
+    Tune {
+        /// Recommend from the hardware profile and installed models only:
+        /// loads nothing, connects to nothing, writes nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Download the recommended models that are missing
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// WAV file with speech to transcribe instead of a synthesized sentence
+        #[arg(long)]
+        sample: Option<std::path::PathBuf>,
+        /// What is said in --sample, to score transcription accuracy
+        #[arg(long, requires = "sample")]
+        reference: Option<String>,
+        /// Spoken language as a Whisper code (en, tr, de, ...) or "auto"
+        #[arg(long)]
+        language: Option<String>,
+        /// Ollama model to measure (repeatable). Default: installed models
+        /// that fit in RAM, smallest first
+        #[arg(long)]
+        llm: Vec<String>,
+        /// Ollama host:port. Default: VOX_OLLAMA_HOST, then `ollama_host` in
+        /// config.toml, then localhost:11434
+        #[arg(long)]
+        ollama_host: Option<String>,
+        /// Timed repetitions per model
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+        /// Skip the LLM measurement
+        #[arg(long)]
+        no_llm: bool,
+        /// Measure but do not write config.toml
+        #[arg(long)]
+        no_save: bool,
     },
     /// Interactive configuration wizard
     Config,
@@ -190,6 +233,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if cli.offline {
+        vox::privacy::set_offline(true);
+    }
 
     match cli.command {
         Commands::Listen {
@@ -218,10 +264,25 @@ async fn main() -> anyhow::Result<()> {
             diarize,
             language,
         } => {
+            // Flag, then VOX_OLLAMA_HOST, then config.toml, then the default.
+            let config = cli::config::load();
+            let host = vox::privacy::resolve_ollama_host(
+                ollama_host.as_deref(),
+                config.ollama_host.as_deref(),
+            );
+            // Offline mode: refuse a remote Ollama before loading any model.
+            vox::privacy::ensure_ollama_host_allowed(&host.host)?;
+            let tuned = config.tune.unwrap_or_default();
+            let model = model
+                .or(tuned.stt_model)
+                .unwrap_or_else(|| "tiny.en".to_string());
+            let llm = llm
+                .or(tuned.llm_model)
+                .unwrap_or_else(|| "llama3.2".to_string());
             cli::chat::run(
                 &model,
                 &llm,
-                &ollama_host,
+                &host.host,
                 yes,
                 voice_mode,
                 diarize,
@@ -234,6 +295,32 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Benchmark { yes } => {
             cli::benchmark::run(yes).await?;
+        }
+        Commands::Tune {
+            dry_run,
+            yes,
+            sample,
+            reference,
+            language,
+            llm,
+            ollama_host,
+            runs,
+            no_llm,
+            no_save,
+        } => {
+            cli::tune::run(cli::tune::TuneArgs {
+                dry_run,
+                yes,
+                sample,
+                reference,
+                language,
+                llm,
+                ollama_host,
+                runs,
+                no_llm,
+                no_save,
+            })
+            .await?;
         }
         Commands::Config => {
             cli::config::run().await?;
@@ -372,6 +459,116 @@ mod tests {
             }
             _ => panic!("expected serve"),
         }
+    }
+
+    #[test]
+    fn offline_flag_is_accepted_before_and_after_the_subcommand() {
+        for args in [
+            &["vox", "--offline", "models", "list"][..],
+            &["vox", "models", "list", "--offline"][..],
+            &["vox", "models", "--offline", "download", "kokoro"][..],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert!(cli.offline, "{args:?}");
+        }
+        assert!(
+            !Cli::try_parse_from(["vox", "models", "list"])
+                .unwrap()
+                .offline
+        );
+    }
+
+    #[test]
+    fn chat_defaults_are_left_to_config_resolution() {
+        match parse(&["vox", "chat"]) {
+            Commands::Chat {
+                model,
+                llm,
+                ollama_host,
+                ..
+            } => {
+                assert_eq!(model, None);
+                assert_eq!(llm, None);
+                assert_eq!(ollama_host, None);
+            }
+            _ => panic!("expected chat"),
+        }
+        match parse(&[
+            "vox",
+            "chat",
+            "--llm",
+            "qwen2.5:3b",
+            "--ollama-host",
+            "box:1",
+        ]) {
+            Commands::Chat {
+                llm, ollama_host, ..
+            } => {
+                assert_eq!(llm.as_deref(), Some("qwen2.5:3b"));
+                assert_eq!(ollama_host.as_deref(), Some("box:1"));
+            }
+            _ => panic!("expected chat"),
+        }
+    }
+
+    #[test]
+    fn tune_parses_its_flags() {
+        match parse(&["vox", "tune", "--dry-run"]) {
+            Commands::Tune {
+                dry_run,
+                runs,
+                llm,
+                no_llm,
+                no_save,
+                ..
+            } => {
+                assert!(dry_run);
+                assert_eq!(runs, 3);
+                assert!(llm.is_empty());
+                assert!(!no_llm && !no_save);
+            }
+            _ => panic!("expected tune"),
+        }
+        match parse(&[
+            "vox",
+            "tune",
+            "--llm",
+            "a:1b",
+            "--llm",
+            "b:3b",
+            "--language",
+            "tr",
+            "--runs",
+            "5",
+            "--sample",
+            "me.wav",
+            "--reference",
+            "merhaba",
+            "--no-save",
+        ]) {
+            Commands::Tune {
+                llm,
+                language,
+                runs,
+                sample,
+                reference,
+                no_save,
+                dry_run,
+                ..
+            } => {
+                assert_eq!(llm, ["a:1b", "b:3b"]);
+                assert_eq!(language.as_deref(), Some("tr"));
+                assert_eq!(runs, 5);
+                assert_eq!(sample, Some(std::path::PathBuf::from("me.wav")));
+                assert_eq!(reference.as_deref(), Some("merhaba"));
+                assert!(no_save && !dry_run);
+            }
+            _ => panic!("expected tune"),
+        }
+        assert!(
+            Cli::try_parse_from(["vox", "tune", "--reference", "text"]).is_err(),
+            "--reference needs --sample"
+        );
     }
 
     #[test]

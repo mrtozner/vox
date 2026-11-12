@@ -1,16 +1,63 @@
-//! Handler for `vox config` — interactive configuration wizard.
+//! Handler for `vox config` — interactive configuration wizard — and the
+//! `config.toml` file it shares with `vox tune`.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Overrides the directory holding `config.toml`.
+pub const CONFIG_DIR_ENV: &str = "VOX_CONFIG_DIR";
 
 /// Configuration structure for vox.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+///
+/// Every field has a default, so a file that sets only some of them loads.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct VoxConfig {
     pub stt_backend: String,
     pub stt_model: String,
     pub tts_backend: String,
     pub tts_voice: String,
     pub quantization: bool,
+    /// Ollama address for `vox chat` and `vox tune`. `--ollama-host` and
+    /// `VOX_OLLAMA_HOST` take precedence (see `vox::privacy::resolve_ollama_host`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ollama_host: Option<String>,
+    /// What `vox tune` measured on this machine and picked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tune: Option<TuneConfig>,
+}
+
+/// The `[tune]` table: the models `vox tune` picked and the measurements
+/// behind the choice.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct TuneConfig {
+    /// When the measurement ran, in seconds since the Unix epoch.
+    pub measured_unix: u64,
+    /// One-line description of the machine that was measured.
+    pub machine: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Whisper model name as accepted by `--model` (`base.en`, `small`, ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_model: Option<String>,
+    /// Processing time divided by audio duration; below 1 is faster than real time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_rtf: Option<f64>,
+    /// Share of the reference words transcribed correctly, 0 to 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_word_accuracy: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tts_backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tts_rtf: Option<f64>,
+    /// Ollama model tag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_tokens_per_sec: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_first_token_ms: Option<u64>,
 }
 
 impl Default for VoxConfig {
@@ -21,23 +68,60 @@ impl Default for VoxConfig {
             tts_backend: "kokoro".to_string(),
             tts_voice: "af_heart".to_string(),
             quantization: false,
+            ollama_host: None,
+            tune: None,
         }
     }
 }
 
-/// Return the vox config directory path (`~/.vox/`), creating it if needed.
+/// The directory holding `config.toml`: `VOX_CONFIG_DIR` if set, otherwise
+/// `vox` under the per-user data directory (`~/.vox` if there is none).
+/// Not created here; [`save_to`] creates it.
 pub fn config_dir() -> PathBuf {
-    let dir = dirs::data_dir().map(|d| d.join("vox")).unwrap_or_else(|| {
+    if let Some(dir) = std::env::var_os(CONFIG_DIR_ENV).filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    dirs::data_dir().map(|d| d.join("vox")).unwrap_or_else(|| {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".vox")
-    });
+    })
+}
 
-    if !dir.exists() {
-        let _ = std::fs::create_dir_all(&dir);
+/// Where `config.toml` lives. Does not create anything.
+pub fn config_path() -> PathBuf {
+    config_dir().join("config.toml")
+}
+
+/// Read a config file. A missing file is the default configuration; a file
+/// that does not parse is an error.
+pub fn load_from(path: &Path) -> anyhow::Result<VoxConfig> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(VoxConfig::default()),
+        Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
+    };
+    toml::from_str(&text).map_err(|e| anyhow::anyhow!("invalid config {}: {e}", path.display()))
+}
+
+/// Read the user's config. An unreadable or invalid file is reported on
+/// stderr and treated as the default configuration, so a broken config file
+/// never stops a command from running.
+pub fn load() -> VoxConfig {
+    load_from(&config_path()).unwrap_or_else(|e| {
+        eprintln!("warning: {e}; using defaults");
+        VoxConfig::default()
+    })
+}
+
+/// Write a config file, creating its directory.
+pub fn save_to(config: &VoxConfig, path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", parent.display()))?;
     }
-
-    dir
+    let text = toml::to_string_pretty(config)?;
+    std::fs::write(path, text).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", path.display()))
 }
 
 /// Run the interactive configuration wizard.
@@ -45,7 +129,14 @@ pub async fn run() -> anyhow::Result<()> {
     println!("=== Vox Configuration Wizard ===\n");
     println!("This wizard will help you configure your vox defaults.\n");
 
-    let mut config = VoxConfig::default();
+    // Start from the existing file so settings the wizard does not ask about
+    // (`ollama_host`, the `[tune]` results) survive.
+    let existing = load();
+    let mut config = VoxConfig {
+        ollama_host: existing.ollama_host,
+        tune: existing.tune,
+        ..VoxConfig::default()
+    };
 
     // STT Backend selection
     println!("1. Select STT (Speech-to-Text) Backend:");
@@ -171,9 +262,8 @@ pub async fn run() -> anyhow::Result<()> {
     println!();
 
     // Save configuration
-    let config_path = config_dir().join("config.toml");
-    let toml_str = toml::to_string_pretty(&config)?;
-    std::fs::write(&config_path, toml_str)?;
+    let config_path = config_path();
+    save_to(&config, &config_path)?;
 
     println!("=== Configuration Saved ===");
     println!("Config file: {}", config_path.display());
@@ -189,4 +279,94 @@ pub async fn run() -> anyhow::Result<()> {
     println!("You can manually edit this file or re-run 'vox config' to change settings.");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "vox-config-test-{}-{name}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn missing_file_is_the_default_config() {
+        let dir = scratch("missing");
+        assert_eq!(
+            load_from(&dir.join("config.toml")).unwrap(),
+            VoxConfig::default()
+        );
+    }
+
+    #[test]
+    fn config_written_before_tune_existed_still_loads() {
+        let dir = scratch("legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "stt_backend = \"whisper\"\nstt_model = \"base.en\"\ntts_backend = \"piper\"\n\
+             tts_voice = \"de\"\nquantization = false\n",
+        )
+        .unwrap();
+        let config = load_from(&path).unwrap();
+        assert_eq!(config.stt_model, "base.en");
+        assert_eq!(config.tts_voice, "de");
+        assert_eq!(config.ollama_host, None);
+        assert_eq!(config.tune, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tune_results_round_trip() {
+        let dir = scratch("roundtrip");
+        let path = dir.join("nested").join("config.toml");
+        let config = VoxConfig {
+            ollama_host: Some("localhost:11434".into()),
+            tune: Some(TuneConfig {
+                measured_unix: 1_700_000_000,
+                machine: "test machine".into(),
+                language: Some("en".into()),
+                stt_model: Some("small.en".into()),
+                stt_rtf: Some(0.12),
+                stt_word_accuracy: Some(1.0),
+                tts_backend: Some("piper".into()),
+                tts_rtf: Some(0.05),
+                llm_model: Some("llama3.2:3b".into()),
+                llm_tokens_per_sec: Some(42.5),
+                llm_first_token_ms: Some(180),
+            }),
+            ..VoxConfig::default()
+        };
+        save_to(&config, &path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[tune]"), "{text}");
+        assert!(text.contains("llm_model = \"llama3.2:3b\""), "{text}");
+        assert_eq!(load_from(&path).unwrap(), config);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unset_optional_fields_are_not_written() {
+        let text = toml::to_string_pretty(&VoxConfig::default()).unwrap();
+        assert!(!text.contains("ollama_host"), "{text}");
+        assert!(!text.contains("tune"), "{text}");
+    }
+
+    #[test]
+    fn invalid_file_is_an_error_naming_the_path() {
+        let dir = scratch("invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "stt_model = [not toml").unwrap();
+        let err = load_from(&path).unwrap_err().to_string();
+        assert!(err.contains("config.toml"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -144,6 +144,11 @@ name = "offline_server_tests"
 path = "tests/offline_server_tests.rs"
 required-features = ["server"]
 
+[[test]]
+name = "offline_cli_tests"
+path = "tests/offline_cli_tests.rs"
+required-features = ["cli"]
+
 [[bin]]
 name = "vox"
 path = "src/bin/vox.rs"
