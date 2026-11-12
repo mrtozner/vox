@@ -132,6 +132,8 @@ main { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 }
 .settings-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; padding: 12px var(--gutter); border-bottom: 1px solid var(--line); }
 .settings-row .grow { flex: 1; }
+.settings-row .diarize-toggle { padding-block: 7px; }
+.settings-row .diarize-toggle, .settings-row .btn { flex: none; white-space: nowrap; }
 
 .mic-btn {
     width: 56px; height: 56px; border-radius: 50%; flex-shrink: 0; cursor: pointer;
@@ -157,6 +159,12 @@ main { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .speaker-swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; display: inline-block; background: #888; }
 .speaker-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 1px 8px 1px 6px; border-radius: 999px; background: var(--sunken); color: var(--ink); border: 1px solid var(--line); }
 .speaker-badge .speaker-swatch { width: 7px; height: 7px; }
+button.speaker-badge { cursor: pointer; }
+button.speaker-badge:hover { border-color: var(--ink-3); }
+.link-btn { background: none; border: 0; padding: 2px 4px; color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; border-radius: 4px; }
+.enroll-row { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.enroll-row input { font-size: 12px; padding: 2px 6px; width: 14ch; min-width: 0; border: 1px solid var(--accent); border-radius: 4px; background: var(--surface); }
+.tag-warn { font-size: 11px; font-weight: 600; color: var(--think); background: var(--think-soft); border-radius: var(--r-s); padding: 1px 7px; }
 
 /* ── Listen ── */
 .listen-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px 16px; align-items: center; padding: 16px var(--gutter); border-bottom: 1px solid var(--line); }
@@ -201,6 +209,31 @@ main { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .speaker-forget:hover { color: var(--cut); background: var(--cut-soft); }
 .inline-confirm { flex-basis: 100%; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); background: var(--cut-soft); border-radius: var(--r-s); padding: 6px 8px; }
 .privacy-note { font-size: 11px; color: var(--ink-3); margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line); }
+.speakers-sidebar > .btn { align-self: flex-start; }
+
+/* ── People (voiceprint manager) ── */
+.people-dialog { width: min(620px, calc(100% - 32px)); max-width: none; max-height: calc(100% - 32px); overflow-y: auto; }
+.people-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.people-head h2 { margin: 0; }
+.people-sub { font-size: 13px; }
+.people-status { font-size: 13px; color: var(--listen); min-height: 20px; overflow-wrap: anywhere; }
+.people-status.error { color: var(--cut); } .people-status.warning { color: var(--think); }
+.people-notice { background: var(--think-soft); margin-bottom: 8px; }
+.people-list { list-style: none; display: flex; flex-direction: column; }
+.person { border-top: 1px solid var(--line); padding: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.person-top { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.person-top .speaker-name { font-size: 14px; font-weight: 600; flex: 0 1 auto; }
+.person-top .speaker-edit { flex: 0 1 24ch; font-size: 14px; }
+.person-meta { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; }
+.person-mem { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; justify-content: space-between; }
+.person-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.person-actions a.btn { text-decoration: none; display: inline-block; }
+.person > .inline-confirm, .people-foot .inline-confirm { flex-basis: auto; }
+.inline-confirm.neutral { background: var(--sunken); }
+.inline-confirm select { font-size: 12px; padding: 3px 6px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); min-width: 0; max-width: 100%; }
+.inline-confirm .confirm-note { flex-basis: 100%; color: var(--ink-3); }
+.people-empty { color: var(--ink-3); font-size: 13px; padding: 12px 0; border-top: 1px solid var(--line); }
+.people-foot { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 @media (max-width: 760px) {
     .listen-body.with-sidebar { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
     .speakers-sidebar { order: -1; border-left: 0; border-bottom: 1px solid var(--line); max-height: 132px; }
@@ -307,9 +340,13 @@ main { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .dash-card { padding: 16px 16px 16px 0; border-bottom: 1px solid var(--line); min-width: 0; }
 .dash-card-title { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-bottom: 8px; }
 .dash-card-value { font-family: var(--font-display); font-size: 28px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.dash-card-value.ok { color: var(--listen); } .dash-card-value.err { color: var(--cut); }
+.dash-card-value.ok { color: var(--listen); } .dash-card-value.err { color: var(--cut); } .dash-card-value.warn { color: var(--think); }
+.dash-card-value.text { font-size: 19px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 6px; text-wrap: balance; }
+.dash-note { font-size: 11px; color: var(--ink-3); margin-top: 6px; }
+.dash-card > .btn { margin-top: 10px; }
+.dash-sub-title { font-size: 11px; color: var(--ink-3); margin-top: 8px; font-weight: 600; }
 .dash-row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 13px; }
-.label { color: var(--ink-3); }
+.label { color: var(--ink-3); min-width: 0; overflow-wrap: anywhere; }
 .dash-row > span:last-child { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
 .dash-indicator { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .dash-indicator.loaded { background: var(--listen); } .dash-indicator.not-loaded { background: var(--line-strong); }
@@ -411,6 +448,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
         <aside class="speakers-sidebar" id="speakersSidebar" aria-label="Speakers">
             <h3 class="panel-title">Speakers</h3>
             <div id="speakersList"><div class="speakers-sidebar-empty">No speakers yet</div></div>
+            <button class="btn btn-ghost btn-sm" id="listenPeopleBtn">Manage people</button>
             <p class="privacy-note">Voiceprints are kept in a database on the vox server. Forgetting a speaker deletes theirs.</p>
         </aside>
     </div>
@@ -463,6 +501,11 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
                         <option value="push_to_talk">Push to talk</option>
                     </select>
                 </label>
+                <label class="diarize-toggle disabled" id="liveDiarizeToggle" title="Speaker recognition is not available on this server">
+                    <input type="checkbox" id="liveDiarizeCheckbox" disabled>
+                    <span class="diarize-dot"></span>
+                    <span>Identify speakers</span>
+                </label>
                 <span class="grow"></span>
                 <button class="btn btn-ghost btn-sm" id="memoryToggle" aria-expanded="false" aria-controls="memoryPanel">Memory (0)</button>
             </div>
@@ -491,6 +534,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
                 <button class="btn live-ptt-btn" id="livePttBtn" hidden aria-label="Push to talk (hold)">Hold to talk</button>
                 <button class="btn btn-ghost" id="liveCancelBtn" disabled>Stop reply</button>
                 <span class="grow"></span>
+                <button class="btn btn-ghost btn-sm" id="livePeopleBtn" title="Voiceprints and per-person memory">People</button>
                 <button class="btn btn-ghost btn-sm" id="liveClearBtn" title="Clears the view only. Memory is kept until you forget it.">Clear view</button>
             </div>
         </div>
@@ -528,6 +572,9 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
         <div class="dash-card"><div class="dash-card-title">Models</div><div id="dashModels"><span class="label">loading...</span></div></div>
         <div class="dash-card"><div class="dash-card-title">Statistics</div><div id="dashStats"><span class="label">loading...</span></div></div>
         <div class="dash-card"><div class="dash-card-title">Live Talk latency, this page (median per turn)</div><div id="dashLatency"><span class="label">No turns yet</span></div></div>
+        <div class="dash-card"><div class="dash-card-title">People</div><div id="dashPeople"><span class="label">loading...</span></div><button class="btn btn-ghost btn-sm" id="dashPeopleBtn">Manage people</button></div>
+        <!-- GET /v1/privacy/ledger. Stays hidden on a server without that endpoint. -->
+        <div class="dash-card" id="dashPrivacyCard" hidden><div class="dash-card-title">Network, since the server started</div><div class="dash-card-value text" id="dashPrivacyValue">--</div><div id="dashPrivacy"></div></div>
     </div>
 </section>
 </main>
@@ -550,6 +597,29 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
     <div class="row">
         <button class="btn btn-ghost" id="consentNo">Not now</button>
         <button class="btn" id="consentYes">Turn on</button>
+    </div>
+</dialog>
+
+<dialog id="peopleDialog" class="people-dialog" aria-labelledby="peopleTitle">
+    <div class="people-head">
+        <h2 id="peopleTitle">People</h2>
+        <button class="btn btn-ghost btn-sm" id="peopleClose">Close</button>
+    </div>
+    <p class="people-sub">Everyone the vox server keeps a voiceprint for. Memory is off for each person until you switch it on. With it on, what they say in Live Talk while speakers are identified, and what vox answered, is kept on the server and brought back in later conversations.</p>
+    <div class="people-status" id="peopleStatus" role="status" aria-live="polite"></div>
+    <div class="inline-confirm people-notice" id="peopleNotice" hidden>
+        <span>The open Live Talk conversation can still contain what they said.</span>
+        <button class="btn btn-danger btn-sm" id="peopleNoticeForget">Forget this conversation too</button>
+        <button class="btn btn-ghost btn-sm" id="peopleNoticeKeep">Keep it</button>
+    </div>
+    <ul class="people-list" id="peopleList"></ul>
+    <div class="people-foot" id="peopleFoot" hidden>
+        <button class="btn btn-ghost btn-sm" id="peopleForgetAllBtn">Forget everyone</button>
+        <div class="inline-confirm" id="peopleForgetAllConfirm" hidden>
+            <span>Delete every voiceprint, with each person's history and memory? This cannot be undone.</span>
+            <button class="btn btn-danger btn-sm" id="peopleForgetAllYes">Delete all</button>
+            <button class="btn btn-ghost btn-sm" id="peopleForgetAllNo">Keep</button>
+        </div>
     </div>
 </dialog>
 
@@ -576,6 +646,11 @@ const S = {
     speakers: {},        // id -> {id,name,color}
     speakerCounts: {},   // id -> transcript lines seen on this page
     speakersDirty: false,
+    // People: the server's speaker store (GET /v1/speakers) with each person's memory setting.
+    people: [],              // [{id,name,color,created_at,last_seen,sample_count,has_voiceprint, memory:{enabled,count}|null}]
+    peopleAvailable: null,   // null until first answer; false when the server has no speaker model
+    peopleError: null, peopleSeq: 0,
+    ledgerSeen: false,       // /v1/privacy/ledger answered at least once
 };
 
 const DIARIZATION_CONSENT_KEY = 'vox.diarization.consented';
@@ -623,11 +698,39 @@ function speakerSwatch(color) {
     sw.style.background = safeColor(color);
     return sw;
 }
-function speakerBadge(name, color) {
-    const badge = el('span', 'speaker-badge');
+// The name is the badge's last child: a text node (see renameBadges).
+function speakerBadge(name, color, tag) {
+    const badge = el(tag || 'span', 'speaker-badge');
+    if (tag === 'button') badge.type = 'button';
     badge.appendChild(speakerSwatch(color));
     badge.appendChild(document.createTextNode(name));
     return badge;
+}
+// One JSON request. Resolves with the parsed body, rejects with the server's message.
+async function apiJson(method, url, body) {
+    const opt = { method };
+    if (body !== undefined) {
+        opt.headers = { 'Content-Type': 'application/json' };
+        opt.body = JSON.stringify(body);
+    }
+    let res;
+    try { res = await fetch(url, opt); } catch (_) { throw new Error('Could not reach the vox server'); }
+    if (!res.ok) throw new Error(await errorMessage(res));
+    return res.json().catch(() => null);
+}
+function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return fmtInt(n) + ' B';
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+    return n.toFixed(n < 10 ? 1 : 0) + ' ' + units[i];
+}
+function dashRow(label, value) {
+    const row = el('div', 'dash-row');
+    row.appendChild(el('span', 'label', label));
+    row.appendChild(el('span', null, value));
+    return row;
 }
 function wsUrl(path) {
     return (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + path;
@@ -754,13 +857,16 @@ function switchTab(name) {
         // blank for a beat while voices/models load.
         loadLiveTalkSelectors().catch(() => { /* toasts handle UX */ });
     }
-    if (name === 'dashboard') startDashPolling();
+    if (name === 'dashboard') { startDashPolling(); loadPeople(); }
     else stopDashPolling();
     Object.values(TAPES).forEach((t) => t.resize());
 }
 
 // ─── 4. TOAST SYSTEM ────────────────────────────────────────
 function showToast(message, type) {
+    // A modal dialog sits in the top layer, above the toasts: while the People
+    // dialog is open the message goes into its own status line.
+    if ($('peopleDialog').open) { setPeopleStatus(message, type); return; }
     const container = $('toastContainer');
     while (container.children.length >= MAX_TOASTS) {
         container.removeChild(container.firstChild);
@@ -1248,8 +1354,10 @@ function sendDiarizationConfig(enabled) {
     }
 }
 
-// Biometric opt-in. Asked once per browser (localStorage key above).
-function requestDiarizationConsent(onConfirm) {
+// Biometric opt-in. Asked once per browser (localStorage key above). Used by
+// the Listen toggle and by "Who is this?" in Live Talk; `focusEl` gets the
+// focus back when the dialog closes.
+function requestDiarizationConsent(onConfirm, onDecline, focusEl) {
     if (S.diarizationConsented) { onConfirm(); return; }
     const dlg = $('consentDialog');
     const finish = (ok) => {
@@ -1258,13 +1366,10 @@ function requestDiarizationConsent(onConfirm) {
             S.diarizationConsented = true;
             try { localStorage.setItem(DIARIZATION_CONSENT_KEY, '1'); } catch (_e) {}
             onConfirm();
-        } else {
-            // User declined: leave the checkbox off.
-            $('diarizeCheckbox').checked = false;
-            $('diarizeToggle').classList.remove('on');
-            S.diarizationOn = false;
+        } else if (onDecline) {
+            onDecline();
         }
-        $('diarizeCheckbox').focus();
+        if (focusEl && focusEl.isConnected) focusEl.focus();
     };
     $('consentYes').onclick = () => finish(true);
     $('consentNo').onclick = () => finish(false);
@@ -1374,6 +1479,359 @@ function renderSpeakersSidebar(force) {
         });
         list.appendChild(row);
     });
+}
+
+// ─── 8a. PEOPLE (voiceprint manager over the /v1/speakers REST API) ───
+// One list for the whole page: Live Talk badges, the memory panel, the Dashboard
+// card and the People dialog read S.people. The Listen sidebar keeps its own
+// per-session list (S.speakers, fed by its socket); changes made here are
+// applied to it so both agree.
+function personById(id) { return S.people.find((p) => p.id === id) || null; }
+function personUrl(id, tail) { return '/v1/speakers/' + encodeURIComponent(id) + (tail || ''); }
+
+function setPeopleStatus(message, type) {
+    const line = $('peopleStatus');
+    line.textContent = message || '';
+    line.className = 'people-status' + (type ? ' ' + type : '');
+}
+
+// Loads the speaker list and each person's memory setting. The newest call wins.
+async function loadPeople() {
+    const seq = ++S.peopleSeq;
+    let data;
+    try {
+        data = await apiJson('GET', '/v1/speakers');
+    } catch (e) {
+        if (seq !== S.peopleSeq) return;
+        S.peopleError = e.message;
+        if (S.peopleAvailable === null) S.peopleAvailable = false;
+        peopleChanged();
+        return;
+    }
+    const people = data && Array.isArray(data.speakers) ? data.speakers : [];
+    await Promise.all(people.map(async (p) => {
+        try {
+            const m = await apiJson('GET', personUrl(p.id, '/memory?limit=1'));
+            p.memory = { enabled: !!(m && m.enabled), count: (m && Number(m.count)) || 0 };
+        } catch (_) {
+            p.memory = null; // a server without the memory routes: no switch is shown
+        }
+    }));
+    if (seq !== S.peopleSeq) return;
+    S.peopleError = null;
+    S.peopleAvailable = !!(data && data.available);
+    S.people = people;
+    peopleChanged();
+}
+
+function peopleChanged() {
+    syncLiveDiarize();
+    renderPeople();
+    renderDashPeople();
+    renderMemory(null);
+}
+
+// Rewrites the name on every badge of one speaker (Live Talk bubbles, Listen lines).
+function renameBadges(id, name) {
+    document.querySelectorAll('[data-speaker]').forEach((node) => {
+        if (node.dataset.speaker !== id) return;
+        const badge = node.querySelector('.speaker-badge');
+        if (badge && badge.lastChild) badge.lastChild.textContent = name;
+    });
+}
+
+function fmtDay(unixSecs) {
+    const n = Number(unixSecs) || 0;
+    if (!n) return 'never';
+    try { return new Date(n * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
+    catch (_) { return new Date(n * 1000).toDateString(); }
+}
+
+// An inline question inside a row: text, optional extra nodes, a confirm and a cancel
+// button. Only one is open per host. Returns the row.
+function inlineConfirm(host, opener, opts) {
+    host.querySelectorAll('.inline-confirm').forEach((n) => n.remove());
+    const row = el('div', 'inline-confirm' + (opts.neutral ? ' neutral' : ''));
+    row.appendChild(el('span', null, opts.text));
+    (opts.extra || []).forEach((n) => row.appendChild(n));
+    const yes = el('button', 'btn btn-sm ' + (opts.neutral ? '' : 'btn-danger'), opts.yes);
+    const no = el('button', 'btn btn-ghost btn-sm', opts.no || 'Keep');
+    row.appendChild(yes);
+    row.appendChild(no);
+    if (opts.note) row.appendChild(opts.note);
+    yes.addEventListener('click', () => { row.remove(); opts.onYes(); });
+    no.addEventListener('click', () => { row.remove(); if (opener.isConnected) opener.focus(); });
+    host.appendChild(row);
+    (opts.focus || yes).focus();
+    return row;
+}
+
+function renderPeople() {
+    const list = $('peopleList');
+    // An open rename field is discarded; mark it closed so its blur cannot commit.
+    list.querySelectorAll('.speaker-edit').forEach((i) => { i.dataset.closed = '1'; });
+    list.textContent = '';
+    $('peopleFoot').hidden = S.people.length === 0;
+    $('peopleForgetAllConfirm').hidden = true;
+    const empty = (text) => list.appendChild(el('li', 'people-empty', text));
+    if (S.peopleAvailable === null) { empty('Loading...'); return; }
+    if (S.peopleError) { empty(S.peopleError); return; }
+    if (!S.peopleAvailable) {
+        empty('Speaker recognition is not loaded on this server, so it keeps no voiceprints.');
+        return;
+    }
+    if (S.people.length === 0) {
+        empty('No one yet. In Live Talk, switch on "Identify speakers" and choose "Who is this?" on something you said. In Listen, people are added as they talk.');
+        return;
+    }
+    S.people.forEach((p) => list.appendChild(personRow(p)));
+}
+
+function personRow(p) {
+    const li = el('li', 'person');
+    li.dataset.id = p.id;
+
+    const top = el('div', 'person-top');
+    const nameBtn = el('button', 'speaker-name', p.name);
+    nameBtn.title = 'Rename';
+    nameBtn.setAttribute('aria-label', 'Rename ' + p.name);
+    top.appendChild(speakerSwatch(p.color));
+    top.appendChild(nameBtn);
+    if (p.has_voiceprint === false) {
+        const tag = el('span', 'tag-warn', 'needs a new voice sample');
+        tag.title = 'The voiceprint was made by an older version and cannot be matched any more.';
+        top.appendChild(tag);
+    }
+    const samples = Number(p.sample_count) || 0;
+    top.appendChild(el('span', 'person-meta',
+        fmtInt(samples) + ' sample' + (samples === 1 ? '' : 's') + ' · last heard ' + fmtDay(p.last_seen)));
+    li.appendChild(top);
+
+    nameBtn.addEventListener('click', () => {
+        const input = el('input', 'speaker-edit');
+        input.value = p.name;
+        input.maxLength = 64;
+        input.setAttribute('aria-label', 'Name for ' + p.name);
+        nameBtn.replaceWith(input);
+        input.focus();
+        input.select();
+        const commit = (save) => {
+            if (input.dataset.closed) return;
+            input.dataset.closed = '1';
+            const name = input.value.trim();
+            if (save && name && name !== p.name) renamePerson(p, name);
+            else renderPeople();
+        };
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); commit(true); }
+            // Cancelling the keydown keeps Escape from closing the whole dialog.
+            else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); commit(false); }
+        });
+        input.addEventListener('blur', () => commit(true));
+    });
+
+    if (p.memory) {
+        const mem = el('div', 'person-mem');
+        const label = el('label', 'diarize-toggle' + (p.memory.enabled ? ' on' : ''));
+        const cbx = el('input');
+        cbx.type = 'checkbox';
+        cbx.checked = p.memory.enabled;
+        cbx.setAttribute('aria-label', 'Remember ' + p.name + ' across conversations');
+        label.appendChild(cbx);
+        label.appendChild(el('span', 'diarize-dot'));
+        label.appendChild(el('span', null, 'Remember across conversations'));
+        cbx.addEventListener('change', () => setPersonMemory(p, cbx.checked));
+        mem.appendChild(label);
+        mem.appendChild(el('span', 'speaker-count', fmtInt(p.memory.count) + ' stored'));
+        li.appendChild(mem);
+    }
+
+    const actions = el('div', 'person-actions');
+    const exportLink = el('a', 'btn btn-ghost btn-sm', 'Export');
+    exportLink.href = personUrl(p.id, '/export');
+    exportLink.setAttribute('download', '');
+    exportLink.title = 'Download everything stored about ' + p.name + ' as JSON (without the voiceprint numbers)';
+    actions.appendChild(exportLink);
+
+    const mergeBtn = el('button', 'btn btn-ghost btn-sm', 'Merge into...');
+    mergeBtn.disabled = S.people.length < 2;
+    mergeBtn.title = 'For one person who was stored twice';
+    actions.appendChild(mergeBtn);
+    mergeBtn.addEventListener('click', () => {
+        const select = el('select');
+        select.setAttribute('aria-label', 'Person to keep');
+        S.people.forEach((other) => {
+            if (other.id === p.id) return;
+            const opt = el('option', null, other.name);
+            opt.value = other.id;
+            select.appendChild(opt);
+        });
+        const note = el('span', 'confirm-note');
+        const describe = () => {
+            const target = personById(select.value);
+            let text = p.name + ' is removed. Their voiceprint and history move to ' + (target ? target.name : 'that person') + '.';
+            if (target && p.memory && p.memory.count > 0 && target.memory && !target.memory.enabled) {
+                text += ' ' + target.name + ' has memory switched off: the ' + fmtInt(p.memory.count)
+                    + ' stored memories move over and are kept, but not used until you switch it on.';
+            }
+            note.textContent = text;
+        };
+        select.addEventListener('change', describe);
+        describe();
+        inlineConfirm(li, mergeBtn, {
+            neutral: true, text: 'Merge ' + p.name + ' into', extra: [select], note,
+            yes: 'Merge', no: 'Cancel', focus: select,
+            onYes: () => mergePeople(p, select.value),
+        });
+    });
+
+    if (p.memory && p.memory.count > 0) {
+        const forgetMemBtn = el('button', 'btn btn-ghost btn-sm', 'Forget memory');
+        actions.appendChild(forgetMemBtn);
+        forgetMemBtn.addEventListener('click', () => inlineConfirm(li, forgetMemBtn, {
+            text: 'Delete what vox remembers about ' + p.name + '? The voiceprint stays.',
+            yes: 'Delete memory', onYes: () => forgetPersonMemory(p),
+        }));
+    }
+
+    const forgetBtn = el('button', 'btn btn-ghost btn-sm', 'Forget person');
+    actions.appendChild(forgetBtn);
+    forgetBtn.addEventListener('click', () => inlineConfirm(li, forgetBtn, {
+        text: 'Delete ' + p.name + ': voiceprint, history and memory? This cannot be undone.',
+        yes: 'Delete', onYes: () => forgetPerson(p),
+    }));
+    li.appendChild(actions);
+    return li;
+}
+
+// Forgetting over REST does not reach into a Live Talk session that is already
+// holding what the person said; offer to forget that conversation as well.
+function noteOpenConversation() {
+    const turns = LT.memory && Array.isArray(LT.memory.turns) ? LT.memory.turns : [];
+    if (turns.length > 0) $('peopleNotice').hidden = false;
+}
+
+async function renamePerson(p, name) {
+    try {
+        const updated = await apiJson('PATCH', personUrl(p.id), { name });
+        const newName = (updated && updated.name) || name;
+        p.name = newName;
+        if (S.speakers[p.id]) { S.speakers[p.id].name = newName; renderSpeakersSidebar(true); }
+        renameBadges(p.id, newName);
+        setPeopleStatus('Renamed to ' + newName + '.');
+    } catch (e) {
+        setPeopleStatus(e.message, 'error');
+    }
+    peopleChanged();
+}
+
+async function setPersonMemory(p, enabled) {
+    try {
+        const status = await apiJson('PUT', personUrl(p.id, '/memory'), { enabled });
+        p.memory = { enabled: !!(status && status.enabled), count: (status && Number(status.count)) || 0 };
+        setPeopleStatus(p.memory.enabled
+            ? 'Memory is on for ' + p.name + '. Live Talk keeps what they say while speakers are identified.'
+            : 'Memory is off for ' + p.name + '. Nothing new is kept; what is stored stays until you forget it.');
+    } catch (e) {
+        setPeopleStatus(e.message, 'error');
+    }
+    peopleChanged();
+}
+
+async function forgetPersonMemory(p) {
+    try {
+        const out = await apiJson('DELETE', personUrl(p.id, '/memory'));
+        const n = (out && Number(out.deleted)) || 0;
+        setPeopleStatus('Deleted ' + fmtInt(n) + ' stored memor' + (n === 1 ? 'y' : 'ies') + ' of ' + p.name + '.');
+        noteOpenConversation();
+    } catch (e) {
+        setPeopleStatus(e.message, 'error');
+    }
+    await loadPeople();
+}
+
+function dropListenSpeaker(id) {
+    delete S.speakers[id];
+    delete S.speakerCounts[id];
+}
+
+async function forgetPerson(p) {
+    try {
+        await apiJson('DELETE', personUrl(p.id));
+        dropListenSpeaker(p.id);
+        renderSpeakersSidebar(true);
+        setPeopleStatus('Forgot ' + p.name + ': voiceprint, history and memory are deleted.');
+        noteOpenConversation();
+    } catch (e) {
+        setPeopleStatus(e.message, 'error');
+    }
+    await loadPeople();
+}
+
+async function mergePeople(source, targetId) {
+    const target = personById(targetId);
+    if (!target) return;
+    try {
+        await apiJson('POST', '/v1/speakers/merge', { source: source.id, target: target.id });
+        if (S.speakerCounts[source.id]) {
+            S.speakerCounts[target.id] = (S.speakerCounts[target.id] || 0) + S.speakerCounts[source.id];
+        }
+        dropListenSpeaker(source.id);
+        renderSpeakersSidebar(true);
+        setPeopleStatus('Merged ' + source.name + ' into ' + target.name + '.');
+    } catch (e) {
+        setPeopleStatus(e.message, 'error');
+    }
+    await loadPeople();
+}
+
+async function forgetEveryone() {
+    try {
+        const out = await apiJson('DELETE', '/v1/speakers?confirm=all');
+        const n = (out && Number(out.deleted)) || 0;
+        S.speakers = {};
+        S.speakerCounts = {};
+        renderSpeakersSidebar(true);
+        setPeopleStatus('Forgot everyone: ' + fmtInt(n) + ' ' + (n === 1 ? 'person' : 'people') + ' deleted.');
+        noteOpenConversation();
+    } catch (e) {
+        setPeopleStatus(e.message, 'error');
+    }
+    await loadPeople();
+}
+
+// Opens the manager; `focusId` scrolls to one person (a badge was clicked).
+function openPeople(focusId) {
+    const dlg = $('peopleDialog');
+    if (!dlg.open) {
+        setPeopleStatus('');
+        $('peopleNotice').hidden = true;
+        dlg.showModal();
+    }
+    renderPeople();
+    loadPeople().then(() => {
+        if (!focusId || !dlg.open) return;
+        const row = [...$('peopleList').children].find((li) => li.dataset.id === focusId);
+        if (!row) { setPeopleStatus('That person is no longer stored.', 'warning'); return; }
+        row.scrollIntoView({ block: 'nearest' });
+        const name = row.querySelector('.speaker-name');
+        if (name) name.focus();
+    });
+}
+
+function renderDashPeople() {
+    const box = $('dashPeople');
+    box.textContent = '';
+    if (S.peopleAvailable === null) { box.appendChild(el('span', 'label', 'loading...')); return; }
+    if (!S.peopleAvailable) {
+        box.appendChild(el('span', 'label', S.peopleError || 'Speaker recognition is not loaded.'));
+        return;
+    }
+    const withMemory = S.people.filter((p) => p.memory && p.memory.enabled).length;
+    const stored = S.people.reduce((sum, p) => sum + (p.memory ? p.memory.count : 0), 0);
+    box.appendChild(dashRow('voiceprints', fmtInt(S.people.length)));
+    box.appendChild(dashRow('memory switched on', fmtInt(withMemory)));
+    box.appendChild(dashRow('stored memories', fmtInt(stored)));
 }
 
 // ─── 9. SPEAK TAB ───────────────────────────────────────────
@@ -1799,7 +2257,7 @@ function stopChatMic() {
 // (b)-(d) send cancel{turn_id, heard_sentences}, also after turn_done while the browser is
 // still playing, so the server's memory keeps only what was actually heard.
 const LIVE_SESSION_KEY = 'vox.live.session';   // sessionStorage: memory survives a mic toggle or reload of this tab
-const LIVE_PREF_KEYS = { model: 'vox.live.model', voice: 'vox.live.voice' }; // localStorage
+const LIVE_PREF_KEYS = { model: 'vox.live.model', voice: 'vox.live.voice', diarization: 'vox.live.diarization' }; // localStorage
 const LT = {
     ws: null,              // WebSocket
     phase: 'idle',         // session: idle | connecting | active
@@ -1825,6 +2283,10 @@ const LT = {
     forgetPending: false,  // forget_memory sent, waiting for the empty 'memory' event
     forgetSock: null,      // short-lived socket used to forget while no session is open
     pref: { model: null, voice: null }, // what the user picked in the selectors
+    wantDiarization: false, // the "Identify speakers" switch
+    diarization: false,    // the open session identifies speakers (ready.diarization)
+    enroll: null,          // { msg } while an enroll_speaker command is unanswered
+    colors: {},            // speaker id -> colour seen on this page, for the memory panel
     bargeInEnabled: true,
     // Client-side RMS barge-in during 'speaking'. All limits are in milliseconds
     // so they do not depend on the mic chunk size.
@@ -1876,16 +2338,112 @@ function liveSend(msg) {
     try { LT.ws.send(JSON.stringify(msg)); return true; } catch (_) { return false; }
 }
 
-function appendLiveMsg(role, text) {
+// `speaker` ({id, name, color}) is who the server recognised; without it a user
+// bubble is headed "You".
+function appendLiveMsg(role, text, speaker) {
     const area = $('liveTalkMessages');
     const hint = area.querySelector('.empty-hint');
     if (hint) hint.remove();
     const msg = el('div', 'live-msg ' + role);
     msg.appendChild(el('div', 'live-msg-sender', role === 'user' ? 'You' : 'Vox'));
     msg.appendChild(el('div', 'live-msg-text', text));
+    if (role === 'user' && speaker) setLiveSpeaker(msg, speaker);
     area.appendChild(msg);
     area.scrollTop = area.scrollHeight;
     return msg;
+}
+
+// Heads a user bubble with the speaker's badge. The badge opens that person in
+// the People dialog (rename, memory, forget).
+function setLiveSpeaker(msg, speaker) {
+    const sender = msg.querySelector('.live-msg-sender');
+    const name = speaker.name || 'Speaker';
+    LT.colors[speaker.id] = safeColor(speaker.color);
+    msg.dataset.speaker = speaker.id;
+    sender.textContent = '';
+    const badge = speakerBadge(name, speaker.color, 'button');
+    badge.title = 'Manage this person';
+    badge.addEventListener('click', () => openPeople(speaker.id));
+    sender.appendChild(badge);
+}
+
+// Enrollment. Talking never stores a voice: the server only does it on the
+// enroll_speaker command, and takes the voice from the newest utterance. So the
+// offer sits on the newest user bubble only and goes away with the next one.
+function clearEnrollUi(scope) {
+    (scope || $('liveTalkMessages')).querySelectorAll('.enroll-ui').forEach((n) => n.remove());
+}
+function offerEnroll(msg) {
+    const btn = el('button', 'link-btn enroll-ui', 'Who is this?');
+    btn.title = 'Save this voice under a name so vox recognises it next time';
+    btn.addEventListener('click', () => openEnrollForm(msg));
+    msg.querySelector('.live-msg-sender').appendChild(btn);
+    return btn;
+}
+function openEnrollForm(msg) {
+    clearEnrollUi();
+    const sender = msg.querySelector('.live-msg-sender');
+    const row = el('span', 'enroll-row enroll-ui');
+    const input = el('input');
+    input.maxLength = 64;
+    input.placeholder = 'Name';
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', 'Name for this voice');
+    const save = el('button', 'btn btn-sm', 'Save voice');
+    const cancel = el('button', 'btn btn-ghost btn-sm', 'Cancel');
+    row.appendChild(input);
+    row.appendChild(save);
+    row.appendChild(cancel);
+    sender.appendChild(row);
+    input.focus();
+    const close = () => { clearEnrollUi(); offerEnroll(msg).focus(); };
+    const submit = () => {
+        const name = input.value.trim();
+        if (!name) { input.focus(); return; }
+        // Storing a voiceprint is the biometric opt-in; the server refuses without it.
+        requestDiarizationConsent(async () => {
+            await recordServerConsent();
+            // A newer utterance arrived meanwhile: the voice would be the wrong one.
+            if (!row.isConnected) return;
+            if (!liveSend({ type: 'enroll_speaker', name })) {
+                showToast('Live Talk is not connected', 'warning');
+                return;
+            }
+            LT.enroll = { msg };
+            clearEnrollUi();
+            sender.appendChild(el('span', 'enroll-ui', 'Saving voice...'));
+        }, null, input);
+    };
+    save.addEventListener('click', submit);
+    cancel.addEventListener('click', close);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); submit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+}
+// The pending enroll_speaker was refused (a non-fatal error): offer it again if
+// that bubble is still the newest.
+function enrollFailed() {
+    const pending = LT.enroll;
+    LT.enroll = null;
+    if (!pending || !pending.msg.isConnected) return;
+    clearEnrollUi(pending.msg);
+    const users = $('liveTalkMessages').querySelectorAll('.live-msg.user');
+    if (LT.diarization && users[users.length - 1] === pending.msg) offerEnroll(pending.msg);
+}
+
+function syncLiveDiarize() {
+    const toggle = $('liveDiarizeToggle');
+    const cbx = $('liveDiarizeCheckbox');
+    const available = S.peopleAvailable === true;
+    const on = available && LT.wantDiarization;
+    cbx.disabled = !available;
+    cbx.checked = on;
+    toggle.classList.toggle('disabled', !available);
+    toggle.classList.toggle('on', on);
+    toggle.title = available
+        ? 'Label who is speaking and tell the model. Talking never stores a voice.'
+        : 'Speaker recognition is not available on this server';
 }
 
 // Latency chips.
@@ -2173,6 +2731,10 @@ function handleLiveEvent(data) {
                 LT.sessionId = data.session_id;
                 try { sessionStorage.setItem(LIVE_SESSION_KEY, data.session_id); } catch (_) { /* kept in LT only */ }
             }
+            LT.diarization = !!data.diarization;
+            if (LT.wantDiarization && S.peopleAvailable && !LT.diarization) {
+                showToast('This server is not identifying speakers in Live Talk. The conversation goes on without names.', 'warning');
+            }
             if (LT.active) setLiveState('listening');
             break;
         case 'speech_start':
@@ -2201,8 +2763,13 @@ function handleLiveEvent(data) {
             cancelLivePlayback();
             dropLiveDraft();
             markSentence(-1, 'done');
+            clearEnrollUi();
             if (data.text && data.text.trim()) {
-                appendLiveMsg('user', data.text);
+                // Speaker fields are present only when the server recognised the voice.
+                const speaker = data.speaker_id
+                    ? { id: data.speaker_id, name: data.speaker_name, color: data.speaker_color } : null;
+                const msg = appendLiveMsg('user', data.text, speaker);
+                if (!speaker && LT.diarization) offerEnroll(msg);
             }
             LT.turnId = tid !== null ? tid : LT.turnId + 1;
             beginTurnMeta(LT.turnId, data.processing_time_ms);
@@ -2280,6 +2847,22 @@ function handleLiveEvent(data) {
         case 'memory':
             renderMemory(data);
             break;
+        case 'speaker_enrolled': {
+            // Answer to enroll_speaker. created:false means the voice was already known.
+            const pending = LT.enroll;
+            LT.enroll = null;
+            if (typeof data.speaker_id !== 'string' || !data.speaker_id) break;
+            const speaker = { id: data.speaker_id, name: data.speaker_name || 'Speaker', color: data.speaker_color };
+            if (pending && pending.msg.isConnected) {
+                clearEnrollUi(pending.msg);
+                setLiveSpeaker(pending.msg, speaker);
+            }
+            showToast(data.created === false
+                ? 'This voice is already known as ' + speaker.name + '.'
+                : 'Voice saved as ' + speaker.name + '. Memory stays off until you switch it on under People.');
+            loadPeople();
+            break;
+        }
         case 'error':
             if (data.fatal) {
                 showToast(data.message || 'Live Talk error', 'error');
@@ -2288,6 +2871,8 @@ function handleLiveEvent(data) {
             }
             // Non-fatal: the turn it names is over, the session goes on.
             showToast(data.message || 'Live Talk warning', 'warning');
+            // A refused enroll_speaker arrives as an error without a turn.
+            if (tid === null && LT.enroll) enrollFailed();
             if (tid === null) break;
             if (tid === LT.turnId) endLiveTurn();
             else if (LT.active && LT.state === 'transcribing') setLiveState('listening');
@@ -2315,7 +2900,8 @@ function resetPttButton() {
 // The config the selectors describe. `mode` is always included: the server
 // reads a config without it as a switch back to automatic turn taking.
 function liveConfigMsg() {
-    const cfg = { type: 'config', mode: LT.mode };
+    // `diarization` likewise: left out, the server reads it as off.
+    const cfg = { type: 'config', mode: LT.mode, diarization: LT.wantDiarization && S.peopleAvailable !== false };
     const model = $('liveTalkModel').value;
     const voice = $('liveTalkVoice').value;
     if (model) cfg.model = model;
@@ -2419,6 +3005,9 @@ function stopLiveTalk() {
     LT.turn = null;
     LT.currentAssistantEl = null;
     LT.forgetPending = false;
+    LT.diarization = false;
+    LT.enroll = null;
+    clearEnrollUi();
     LT.micRmsHistory.length = 0;
     MicManager.release('live');
     if (LT.ws) {
@@ -2533,7 +3122,15 @@ function renderMemory(data) {
     }
     turns.forEach((t) => {
         const li = document.createElement('li');
-        li.appendChild(el('div', 'mem-u', t.user));
+        const u = el('div', 'mem-u');
+        if (t.speaker_id) {
+            // Current name if the person is still stored, else the name at the time.
+            const p = personById(t.speaker_id);
+            u.appendChild(speakerBadge(p ? p.name : (t.speaker_name || 'Speaker'), p ? p.color : LT.colors[t.speaker_id]));
+            u.appendChild(document.createTextNode(' '));
+        }
+        u.appendChild(document.createTextNode(t.user));
+        li.appendChild(u);
         const a = el('div', 'mem-a');
         if (t.assistant) a.textContent = t.assistant;
         else a.appendChild(el('em', null, 'No reply was heard.'));
@@ -2673,6 +3270,61 @@ async function fetchStats() {
     }
 }
 
+// GET /v1/privacy/ledger: every outbound connection the server process made
+// (requests to Ollama, model downloads). null on a server without the endpoint.
+async function fetchLedger() {
+    try {
+        const res = await fetch('/v1/privacy/ledger');
+        if (!res.ok) return null;
+        return await res.json();
+    } catch (_) {
+        return null;
+    }
+}
+
+function renderLedger(data, failed) {
+    const card = $('dashPrivacyCard');
+    if (!data || !data.totals) {
+        // Keep the last answer on screen through a failed poll; never show a
+        // card for an endpoint that was never there.
+        if (!failed) card.hidden = true;
+        return;
+    }
+    card.hidden = false;
+    const t = data.totals;
+    const outside = Number(t.non_loopback_connections) || 0;
+    const blocked = Number(t.blocked) || 0;
+    const value = $('dashPrivacyValue');
+    value.textContent = outside === 0
+        ? 'No connections outside the server machine'
+        : fmtInt(outside) + ' connection' + (outside === 1 ? '' : 's') + ' outside the server machine';
+    value.className = 'dash-card-value text ' + (outside === 0 ? 'ok' : 'warn');
+
+    const box = $('dashPrivacy');
+    box.textContent = '';
+    box.appendChild(dashRow('offline mode', data.offline ? 'on' : 'off'));
+    if (data.ollama_host) {
+        box.appendChild(dashRow('language model at', data.ollama_host + (data.ollama_host_loopback ? ' (same machine)' : ' (another machine)')));
+    }
+    box.appendChild(dashRow('connections', fmtInt(t.connections)));
+    if (blocked) box.appendChild(dashRow('refused by offline mode', fmtInt(blocked)));
+    box.appendChild(dashRow('sent / received', fmtBytes(t.bytes_sent) + ' / ' + fmtBytes(t.bytes_received)));
+    box.appendChild(dashRow('sent outside', fmtBytes(t.non_loopback_bytes_sent)));
+
+    const dests = Array.isArray(data.destinations) ? data.destinations : [];
+    if (dests.length) box.appendChild(el('div', 'dash-sub-title', 'Destinations'));
+    dests.forEach((d) => {
+        const n = Number(d.connections) || 0;
+        const b = Number(d.blocked) || 0;
+        let detail = fmtInt(n) + '×, ' + fmtBytes(d.bytes_sent) + ' out, ' + fmtBytes(d.bytes_received) + ' in';
+        if (b) detail += ', ' + fmtInt(b) + ' refused';
+        const row = dashRow(String(d.destination) + (d.loopback ? '' : ' (outside)') + ' · ' + String(d.purpose), detail);
+        box.appendChild(row);
+    });
+    box.appendChild(el('div', 'dash-note',
+        'Counts HTTP body bytes of requests to the language model and of model downloads made by this server process.'));
+}
+
 function renderLatency() {
     const m = LT.metrics;
     const box = $('dashLatency');
@@ -2690,7 +3342,9 @@ function renderLatency() {
 }
 
 async function refreshDashboard() {
-    const [, models, stats] = await Promise.all([fetchHealth(), fetchModels(), fetchStats()]);
+    const [, models, stats, ledger] = await Promise.all([fetchHealth(), fetchModels(), fetchStats(), fetchLedger()]);
+    renderLedger(ledger, S.ledgerSeen);
+    if (ledger) S.ledgerSeen = true;
 
     if (models) {
         let html = '';
@@ -2841,7 +3495,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 toggle.classList.add('on');
                 enableDiarization();
                 renderSpeakersSidebar(true);
-            });
+            }, () => {
+                // Declined: leave the switch off.
+                cbx.checked = false;
+                toggle.classList.remove('on');
+                S.diarizationOn = false;
+            }, cbx);
         } else {
             S.diarizationOn = false;
             toggle.classList.remove('on');
@@ -2886,6 +3545,27 @@ document.addEventListener('DOMContentLoaded', () => {
     LT.pref.voice = readLivePref('voice');
     $('liveTalkModel').addEventListener('change', (e) => { saveLivePref('model', e.target.value); liveSend(liveConfigMsg()); });
     $('liveTalkVoice').addEventListener('change', (e) => { saveLivePref('voice', e.target.value); liveSend(liveConfigMsg()); });
+
+    // Identify speakers: remembered per browser, applied to an open session from the next turn on.
+    LT.wantDiarization = readLivePref('diarization') === '1';
+    $('liveDiarizeCheckbox').addEventListener('change', (e) => {
+        LT.wantDiarization = e.target.checked;
+        try { localStorage.setItem(LIVE_PREF_KEYS.diarization, LT.wantDiarization ? '1' : '0'); } catch (_) { /* kept for this page only */ }
+        syncLiveDiarize();
+        if (liveSend(liveConfigMsg())) LT.diarization = LT.wantDiarization;
+        if (!LT.diarization) clearEnrollUi();
+    });
+
+    // People dialog
+    $('livePeopleBtn').addEventListener('click', () => openPeople());
+    $('listenPeopleBtn').addEventListener('click', () => openPeople());
+    $('dashPeopleBtn').addEventListener('click', () => openPeople());
+    $('peopleClose').addEventListener('click', () => $('peopleDialog').close());
+    $('peopleNoticeKeep').addEventListener('click', () => { $('peopleNotice').hidden = true; });
+    $('peopleNoticeForget').addEventListener('click', () => { $('peopleNotice').hidden = true; forgetLiveMemory(); });
+    $('peopleForgetAllBtn').addEventListener('click', () => { $('peopleForgetAllConfirm').hidden = false; $('peopleForgetAllYes').focus(); });
+    $('peopleForgetAllNo').addEventListener('click', () => { $('peopleForgetAllConfirm').hidden = true; $('peopleForgetAllBtn').focus(); });
+    $('peopleForgetAllYes').addEventListener('click', forgetEveryone);
 
     // Memory panel. The session id lives in sessionStorage so a reload or a mic
     // toggle in this tab continues the same conversation.
@@ -2964,6 +3644,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderSpeakersSidebar(true);
     Object.values(TAPES).forEach((t) => t.resize());
     refreshDashboard();
+    loadPeople();
     loadLiveTalkSelectors().catch(() => {});
 
     // Status bar: poll server every 30s, tick uptime every 1s
