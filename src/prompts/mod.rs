@@ -49,6 +49,28 @@ pub fn build_system_prompt_for_language(mode: VoicePromptMode, language: Option<
     )
 }
 
+/// Explains the `[Name] ` tags and recall blocks that a speaker-aware
+/// session puts into user messages. Appended to the system prompt by
+/// [`with_speaker_awareness`].
+const SPEAKER_AWARE_ADDENDUM: &str = "\
+More than one person may talk to you. A user message can start with a name in \
+square brackets, like [Alex]. That tag says who is speaking; it is not part of \
+what they said. A message without a tag comes from someone who was not \
+recognized, often the same person as before. Address people by name when it is \
+natural. Never say a tag aloud and never start your reply with one.
+A user message can also start with a block that begins with [Memory. It holds \
+notes from earlier conversations with the person speaking. Use it when it \
+helps, do not read it out, and do not mention that you were given notes.";
+
+/// Extend a system prompt for a session in which user messages carry speaker
+/// tags (`[Name] text`) and recalled memory.
+///
+/// The result is `prompt` followed by a fixed paragraph, so it is the same
+/// bytes for the same `prompt` every time and its cached prefix stays valid.
+pub fn with_speaker_awareness(prompt: &str) -> String {
+    format!("{}\n\n{SPEAKER_AWARE_ADDENDUM}", prompt.trim_end())
+}
+
 /// Build a system prompt with environment facts injected.
 ///
 /// Used when the server/CLI has an environment-aware `CapabilityRegistry`
@@ -137,6 +159,16 @@ mod tests {
         assert!(prompt.starts_with(&base));
         assert!(prompt.contains("\"tr\""));
         assert!(prompt.contains("reply in that language"));
+    }
+
+    #[test]
+    fn speaker_awareness_extends_the_prompt_without_changing_it() {
+        let base = build_system_prompt(VoicePromptMode::Voice);
+        let aware = with_speaker_awareness(&base);
+        assert!(aware.starts_with(&base));
+        assert!(aware.contains("[Alex]"));
+        assert!(aware.contains("[Memory"));
+        assert_eq!(aware, with_speaker_awareness(&base));
     }
 
     #[test]

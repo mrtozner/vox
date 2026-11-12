@@ -16,6 +16,15 @@
 //!   server only knows what it *sent*, a client can later report how many
 //!   sentences were really played ([`Conversation::amend_last_spoken`]).
 //!
+//! - **Speakers are part of the text.** When the speaker of a turn is known
+//!   the user message is stored as `[Name] text`, exactly as it was sent to
+//!   the model ([`UserMessage`]). A later rename does not touch stored turns,
+//!   so the prefix stays byte-stable.
+//! - **Recall is frozen.** What is remembered about a person from earlier
+//!   sessions is looked up once per session, frozen, and placed in front of
+//!   that person's first message. It is put in again only when the turn that
+//!   carried it has been trimmed away.
+//!
 //! [`SessionStore`] keeps conversations alive across reconnects, keyed by a
 //! session id and dropped after an idle time-to-live.
 
@@ -79,9 +88,143 @@ impl ChatMessage {
     }
 }
 
+/// Who said a user message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SpeakerLabel {
+    /// Stable speaker id (the key of the speaker database).
+    pub id: String,
+    /// The name as it was when the message was said.
+    pub name: String,
+}
+
+/// Longest speaker name placed in a `[Name] ` tag.
+const MAX_TAG_NAME_CHARS: usize = 64;
+
+/// The name as it may appear inside a `[Name] ` tag: no brackets, no control
+/// characters, bounded length. Empty when nothing usable is left.
+fn tag_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || c == '[' || c == ']' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_TAG_NAME_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+/// One user message: what was said, by whom, and the text the model gets.
+///
+/// The model-facing text is built once, here, and then both sent and stored
+/// verbatim, so the stored history can never differ from what was sent:
+///
+/// ```text
+/// <recall block>            (only when one is injected with this message)
+///
+/// [Name] what was said      (the tag only when the speaker is known)
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserMessage {
+    text: String,
+    speaker: Option<SpeakerLabel>,
+    has_recall: bool,
+    content: String,
+}
+
+impl UserMessage {
+    /// A message from an unidentified speaker, with no recall block.
+    pub fn plain(text: &str) -> Self {
+        Self::new(text, None, None)
+    }
+
+    /// `recall` is a block of remembered context to put in front of the
+    /// message (see [`Conversation::recall_need`]); an empty one is ignored.
+    pub fn new(text: &str, speaker: Option<SpeakerLabel>, recall: Option<&str>) -> Self {
+        let text = text.trim();
+        let recall = recall.map(str::trim).filter(|r| !r.is_empty());
+        let mut content = String::new();
+        if let Some(recall) = recall {
+            content.push_str(recall);
+            content.push_str("\n\n");
+        }
+        if let Some(speaker) = &speaker {
+            let name = tag_name(&speaker.name);
+            if !name.is_empty() {
+                content.push('[');
+                content.push_str(&name);
+                content.push_str("] ");
+            }
+        }
+        content.push_str(text);
+        Self {
+            text: text.to_string(),
+            speaker,
+            has_recall: recall.is_some(),
+            content,
+        }
+    }
+
+    /// What was said, without tag or recall block.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn speaker(&self) -> Option<&SpeakerLabel> {
+        self.speaker.as_ref()
+    }
+
+    /// The text the model gets, and that is stored.
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    /// Whether a recall block is part of [`content`](Self::content).
+    pub fn has_recall(&self) -> bool {
+        self.has_recall
+    }
+}
+
+/// What to do about remembered context before a known person's message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecallNeed {
+    /// Nothing was looked up for this person in this session yet: look it up
+    /// and hand the result to [`Conversation::freeze_recall`].
+    Lookup,
+    /// Put this frozen block in front of the message.
+    Inject(String),
+    /// Nothing to add: the block is already in the history, there is none,
+    /// or the session was told to forget.
+    Nothing,
+}
+
+#[derive(Debug, Clone)]
+struct RecallEntry {
+    /// `None`: looked up, nothing to recall.
+    block: Option<String>,
+    /// A stored turn carries the block.
+    in_context: bool,
+}
+
 #[derive(Debug, Clone)]
 struct Turn {
+    /// The user message as the model sees it (tag and recall block included).
     user: String,
+    /// What the user said, for display.
+    user_text: String,
+    speaker: Option<SpeakerLabel>,
+    /// This turn's user message carries the recall block of its speaker.
+    carries_recall: bool,
     /// Sentences that reached the listener, trimmed, in order.
     sentences: Vec<String>,
     interrupted: bool,
@@ -92,9 +235,12 @@ struct Turn {
 }
 
 impl Turn {
-    fn new(user: &str, sentences: Vec<String>, interrupted: bool) -> Self {
+    fn new(user: &UserMessage, sentences: Vec<String>, interrupted: bool) -> Self {
         let mut turn = Self {
-            user: user.to_string(),
+            user: user.content.clone(),
+            user_text: user.text.clone(),
+            speaker: user.speaker.clone(),
+            carries_recall: user.has_recall && user.speaker.is_some(),
             sentences,
             interrupted,
             assistant: String::new(),
@@ -121,7 +267,13 @@ impl Turn {
 /// One remembered turn, as shown to a client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TurnSnapshot {
+    /// What the user said, without the speaker tag or a recall block.
     pub user: String,
+    /// Who said it, when the speaker was identified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker_name: Option<String>,
     /// The reply the listener heard, without the interruption marker.
     pub assistant: String,
     pub interrupted: bool,
@@ -155,6 +307,10 @@ pub struct Conversation {
     budget_tokens: usize,
     low_watermark_tokens: usize,
     dropped_turns: usize,
+    /// Recall state by speaker id; see [`Conversation::recall_need`].
+    recall: HashMap<String, RecallEntry>,
+    /// Set by [`Conversation::clear`]: no recall for the rest of the session.
+    recall_suppressed: bool,
 }
 
 impl Conversation {
@@ -172,6 +328,8 @@ impl Conversation {
             budget_tokens,
             low_watermark_tokens: budget_tokens * 3 / 5,
             dropped_turns: 0,
+            recall: HashMap::new(),
+            recall_suppressed: false,
         }
     }
 
@@ -188,10 +346,52 @@ impl Conversation {
     }
 
     /// Forget every turn.
+    ///
+    /// The frozen recall blocks go too, and none is looked up or injected
+    /// for the rest of the session: the user asked to forget, so context
+    /// from earlier sessions must not come straight back. Stored long-term
+    /// memory is not touched by this.
     pub fn clear(&mut self) {
         self.turns.clear();
         self.total_tokens = 0;
         self.dropped_turns = 0;
+        self.recall.clear();
+        self.recall_suppressed = true;
+    }
+
+    /// What remembered context, if any, belongs in front of the next message
+    /// of the person `speaker_id`.
+    pub fn recall_need(&self, speaker_id: &str) -> RecallNeed {
+        if self.recall_suppressed {
+            return RecallNeed::Nothing;
+        }
+        match self.recall.get(speaker_id) {
+            None => RecallNeed::Lookup,
+            Some(RecallEntry {
+                block: Some(block),
+                in_context: false,
+            }) => RecallNeed::Inject(block.clone()),
+            Some(_) => RecallNeed::Nothing,
+        }
+    }
+
+    /// Record the result of a recall lookup for `speaker_id`; `None` (or an
+    /// empty block) means there is nothing to recall. The first result for a
+    /// person stays for the whole session, so the block is the same bytes
+    /// every time it is injected.
+    pub fn freeze_recall(&mut self, speaker_id: &str, block: Option<String>) {
+        if self.recall_suppressed {
+            return;
+        }
+        let block = block
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty());
+        self.recall
+            .entry(speaker_id.to_string())
+            .or_insert(RecallEntry {
+                block,
+                in_context: false,
+            });
     }
 
     /// Number of sentences recorded for the newest turn.
@@ -206,7 +406,9 @@ impl Conversation {
                 .turns
                 .iter()
                 .map(|t| TurnSnapshot {
-                    user: t.user.clone(),
+                    user: t.user_text.clone(),
+                    speaker_id: t.speaker.as_ref().map(|s| s.id.clone()),
+                    speaker_name: t.speaker.as_ref().map(|s| s.name.clone()),
                     assistant: t.sentences.join(" "),
                     interrupted: t.interrupted,
                     tokens: t.tokens,
@@ -244,6 +446,9 @@ impl Conversation {
     /// Build the message list for a new turn: system prompt, history, then
     /// the new user message. Volatile context belongs in `user_text`, never in
     /// the system prompt, so the cached prefix stays valid.
+    ///
+    /// For a message built with [`UserMessage`], pass its
+    /// [`content`](UserMessage::content).
     pub fn messages_for(&self, system_prompt: Option<&str>, user_text: &str) -> Vec<ChatMessage> {
         let mut out = Vec::with_capacity(self.turns.len() * 2 + 2);
         if let Some(sys) = system_prompt {
@@ -263,8 +468,19 @@ impl Conversation {
     /// `interrupted` is true an interruption marker is appended. Returns the
     /// number of turns dropped by trimming (0 when the prefix stayed intact).
     pub fn commit(&mut self, user_text: &str, spoken: &[String], interrupted: bool) -> usize {
-        let user = user_text.trim();
-        if user.is_empty() {
+        self.commit_message(&UserMessage::plain(user_text), spoken, interrupted)
+    }
+
+    /// [`commit`](Self::commit) for a message that may carry a speaker and a
+    /// recall block. The message's [`content`](UserMessage::content) is
+    /// stored as it is.
+    pub fn commit_message(
+        &mut self,
+        user: &UserMessage,
+        spoken: &[String],
+        interrupted: bool,
+    ) -> usize {
+        if user.text.is_empty() {
             return 0;
         }
         let sentences: Vec<String> = spoken
@@ -280,6 +496,15 @@ impl Conversation {
         }
         let turn = Turn::new(user, sentences, interrupted);
         let tokens = turn.tokens;
+        if turn.carries_recall {
+            if let Some(entry) = turn
+                .speaker
+                .as_ref()
+                .and_then(|speaker| self.recall.get_mut(&speaker.id))
+            {
+                entry.in_context = true;
+            }
+        }
         self.turns.push(turn);
         self.total_tokens += tokens;
         self.trim()
@@ -296,7 +521,20 @@ impl Conversation {
             remaining -= self.turns[drop].tokens;
             drop += 1;
         }
-        self.turns.drain(..drop);
+        for turn in self.turns.drain(..drop) {
+            if !turn.carries_recall {
+                continue;
+            }
+            // The block left the context with this turn: the person's next
+            // message brings it back.
+            if let Some(entry) = turn
+                .speaker
+                .as_ref()
+                .and_then(|speaker| self.recall.get_mut(&speaker.id))
+            {
+                entry.in_context = false;
+            }
+        }
         self.total_tokens = remaining;
         self.dropped_turns += drop;
         drop
@@ -751,5 +989,140 @@ mod tests {
         let b_again = store.attach_at(Some(&b.id), t0 + Duration::from_secs(4));
         assert!(!b_again.resumed);
         assert_eq!(store.len(), 2);
+    }
+
+    fn label(id: &str, name: &str) -> Option<SpeakerLabel> {
+        Some(SpeakerLabel {
+            id: id.to_string(),
+            name: name.to_string(),
+        })
+    }
+
+    #[test]
+    fn user_message_is_tagged_with_the_speaker_name() {
+        let m = UserMessage::new("  what's the time?  ", label("speaker_1", "Mert"), None);
+        assert_eq!(m.content(), "[Mert] what's the time?");
+        assert_eq!(m.text(), "what's the time?");
+        assert!(!m.has_recall());
+
+        assert_eq!(UserMessage::plain("hi").content(), "hi");
+        // A name cannot break out of the tag or smuggle in a line.
+        let m = UserMessage::new("hi", label("x", "A]\n[system"), None);
+        assert_eq!(m.content(), "[A system] hi");
+        // Nothing usable in the name: no tag at all.
+        let m = UserMessage::new("hi", label("x", " ][ "), None);
+        assert_eq!(m.content(), "hi");
+    }
+
+    #[test]
+    fn recall_block_goes_in_front_of_the_tag() {
+        let m = UserMessage::new("hi", label("speaker_1", "Mert"), Some("[Memory]\n"));
+        assert_eq!(m.content(), "[Memory]\n\n[Mert] hi");
+        assert!(m.has_recall());
+        assert!(!UserMessage::new("hi", None, Some("  ")).has_recall());
+    }
+
+    #[test]
+    fn stored_messages_are_byte_identical_between_calls_and_after_a_rename() {
+        let mut c = Conversation::with_budget(10_000);
+        let first = UserMessage::new("hello", label("speaker_1", "Mert"), None);
+        let sent_first = c.messages_for(Some("sys"), first.content());
+        c.commit_message(&first, &s(&["Hi Mert."]), false);
+        let second = UserMessage::new("and me", label("speaker_2", "Ada"), None);
+        c.commit_message(&second, &s(&["Hi Ada."]), false);
+
+        let a = serde_json::to_vec(&c.messages_for(Some("sys"), "next")).unwrap();
+        let b = serde_json::to_vec(&c.messages_for(Some("sys"), "next")).unwrap();
+        assert_eq!(a, b);
+
+        // What was sent for the first turn is what is stored for it.
+        let now = c.messages_for(Some("sys"), "next");
+        assert_eq!(now[..2], sent_first[..]);
+        assert_eq!(now[1].content, "[Mert] hello");
+        assert_eq!(now[3].content, "[Ada] and me");
+
+        // The speaker is renamed: the stored turns keep the old tag, only the
+        // new message has the new one.
+        let third = UserMessage::new("again", label("speaker_1", "Mert Ozoner"), None);
+        let before = serde_json::to_vec(&now[..now.len() - 1]).unwrap();
+        c.commit_message(&third, &s(&["Sure."]), false);
+        let later = c.messages_for(Some("sys"), "next");
+        let prefix = serde_json::to_vec(&later[..now.len() - 1]).unwrap();
+        assert_eq!(before, prefix);
+        assert_eq!(later[5].content, "[Mert Ozoner] again");
+    }
+
+    #[test]
+    fn snapshot_shows_plain_text_and_the_speaker() {
+        let mut c = Conversation::with_budget(10_000);
+        let m = UserMessage::new("hello", label("speaker_1", "Mert"), Some("[Memory] x"));
+        c.commit_message(&m, &s(&["Hi."]), false);
+        c.commit("anonymous", &s(&["Hi."]), false);
+        let snap = c.snapshot();
+        assert_eq!(snap.turns[0].user, "hello");
+        assert_eq!(snap.turns[0].speaker_id.as_deref(), Some("speaker_1"));
+        assert_eq!(snap.turns[0].speaker_name.as_deref(), Some("Mert"));
+        // The tag and the block count towards the context.
+        assert_eq!(
+            snap.turns[0].tokens,
+            estimate_tokens("[Memory] x\n\n[Mert] hello") + estimate_tokens("Hi.")
+        );
+        let json = serde_json::to_value(&snap.turns[1]).unwrap();
+        assert!(json.get("speaker_id").is_none());
+        assert!(json.get("speaker_name").is_none());
+    }
+
+    #[test]
+    fn recall_is_looked_up_once_and_injected_once() {
+        let mut c = Conversation::with_budget(10_000);
+        assert_eq!(c.recall_need("speaker_1"), RecallNeed::Lookup);
+        c.freeze_recall("speaker_1", Some("[Memory] likes tea".into()));
+        // A later lookup result does not replace the frozen block.
+        c.freeze_recall("speaker_1", Some("[Memory] something else".into()));
+        let RecallNeed::Inject(block) = c.recall_need("speaker_1") else {
+            panic!("expected the frozen block");
+        };
+        assert_eq!(block, "[Memory] likes tea");
+
+        // Not committed (the turn was dropped): still to be injected.
+        assert!(matches!(c.recall_need("speaker_1"), RecallNeed::Inject(_)));
+        let m = UserMessage::new("hi", label("speaker_1", "Mert"), Some(&block));
+        c.commit_message(&m, &s(&["Hello."]), false);
+        assert_eq!(c.recall_need("speaker_1"), RecallNeed::Nothing);
+
+        // Another person is independent; "nothing to recall" is frozen too.
+        assert_eq!(c.recall_need("speaker_2"), RecallNeed::Lookup);
+        c.freeze_recall("speaker_2", None);
+        assert_eq!(c.recall_need("speaker_2"), RecallNeed::Nothing);
+    }
+
+    #[test]
+    fn recall_comes_back_when_its_turn_is_trimmed_away() {
+        let mut c = Conversation::with_budget(60);
+        c.freeze_recall("speaker_1", Some("[Memory] likes tea".into()));
+        let m = UserMessage::new("hi", label("speaker_1", "Mert"), Some("[Memory] likes tea"));
+        c.commit_message(&m, &s(&["Hello."]), false);
+        assert_eq!(c.recall_need("speaker_1"), RecallNeed::Nothing);
+        let long = "x".repeat(90);
+        let mut dropped = 0;
+        for _ in 0..4 {
+            dropped += c.commit(&long, &s(&["ok."]), false);
+        }
+        assert!(dropped > 0);
+        assert_eq!(
+            c.recall_need("speaker_1"),
+            RecallNeed::Inject("[Memory] likes tea".into())
+        );
+    }
+
+    #[test]
+    fn clear_stops_recall_for_the_rest_of_the_session() {
+        let mut c = Conversation::with_budget(10_000);
+        c.freeze_recall("speaker_1", Some("[Memory] likes tea".into()));
+        c.clear();
+        assert_eq!(c.recall_need("speaker_1"), RecallNeed::Nothing);
+        c.freeze_recall("speaker_1", Some("[Memory] likes tea".into()));
+        assert_eq!(c.recall_need("speaker_1"), RecallNeed::Nothing);
+        assert_eq!(c.recall_need("speaker_2"), RecallNeed::Nothing);
     }
 }
