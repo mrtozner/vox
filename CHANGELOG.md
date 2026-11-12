@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: `GET /v1/models` now returns the OpenAI list shape. Vox's own model report moved to `GET /v1/vox/models`
+- **BREAKING**: the Cargo package is now `vox-voice` (the `vox` name on crates.io belongs to another project). The library crate is still `vox` and the binary is still `vox`, so `use vox::...` and the command line are unchanged. Depend on it with `vox = { package = "vox-voice", git = "..." }`
+- **Release binaries are GPL-3.0.** They are built with the new `dist` feature (`cli`, `server`, `kokoro`, `piper`), and Piper links espeak-ng. The source code stays MIT OR Apache-2.0. See `NOTICE`
+- Minimum supported Rust version is 1.88 (required by `ort` 2.0.0-rc.11)
+- Release builds use thin LTO, one codegen unit and stripped symbols
+- The web UI opens on the Live Talk tab and was redesigned
+- The server binds to loopback only and refuses a non-loopback `--host` unless `VOX_ALLOW_REMOTE=1`; cross-origin requests are rejected unless allow-listed (`VOX_ALLOWED_ORIGINS`, `VOX_ALLOWED_HOSTS`)
+- Speaker enrollment is opt-in: voiceprints are stored and adapted only after consent is recorded
+- The models directory is resolved at run time (`VOX_MODELS_DIR`, then a source checkout's `models/`, then the per-user data directory); nothing from the build machine is baked into the binary
+- Model downloads are pinned to a revision and verified by size and SHA-256
+- `vox chat` streams from Ollama `/api/chat` and keeps conversation memory
+- `vox speak` with an unknown `--backend` lists the backends the binary was actually built with
+
+### Added
+- OpenAI-compatible endpoints: `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`, `GET /v1/models`, `GET /v1/models/{id}`
+- Live Talk protocol v2: `protocol_version` and `session_id` in `ready`, `turn_id` on turn-scoped events, `turn_metrics`, `memory`, `playback_done`, `forget_memory`; memory survives a reconnect with the same `session_id`
+- Speaker REST API: list, rename, forget, merge, export, and enrollment consent under `/v1/speakers`
+- `GET /health/ready` readiness probe; graceful shutdown; request, text-length and concurrent-inference limits
+- `vox doctor`: explains which models directory is used and which models are missing or corrupt
+- `vox serve --download`, `--language`, `--stt-model`, `--piper-voice`, `--ollama-host`; `vox listen --language`; `vox chat --language`
+- Multilingual Whisper models, Whisper large-v3-turbo (including quantized variants) and a Turkish Piper voice in the model registry
+- Release archives for Linux aarch64, plus `SHA256SUMS` and build provenance attestations for every archive
+- `NOTICE`, `LICENSE-GPL-3.0`, and `docs/raspberry_pi.md`
+
+### Fixed
+- Microphone capture resamples from the device's real sample rate and feeds the VAD whole frames
+- Silero VAD receives the context samples the v5 model expects; utterance length is capped
+- Whisper honours the configured language instead of always assuming English
+- Speakers are no longer wiped at startup; speaker IDs are not reused after a delete
+- Kokoro reads numbers aloud and no longer truncates long text; the voices file is the one `kokoro-tts` reads
+- Piper selects the speaker per request instead of sharing mutable state across requests
+- Qwen3 inference no longer blocks the async runtime
+- Converse keeps reading its socket while a turn is in progress
+- README: CLI examples, model table, storage paths, Python instructions and the speaker model description now match the code
+
+### Removed
+- `Formula/vox.rb`: it pointed at a v0.2.0 source tarball with a placeholder checksum
+- `Dockerfile.static`, `scripts/build_static.sh`, `scripts/build_for_raspberry_pi.sh` and `.cargo/config.toml`: the static-musl and cross-compile recipes did not build the current crate (missing vendored manifests, a `quantized` feature that does not exist, invalid `[target.*.env]` tables). Use the release archives or see `docs/raspberry_pi.md`
+- No prebuilt binary for Intel macOS: `ort` 2.0.0-rc.11 ships no ONNX Runtime for that target
+- Unused `ModelCache`, `StreamingPipeline` and `intelligence` modules
+
 ## [0.6.0] - 2026-04-12
 
 ### Added
