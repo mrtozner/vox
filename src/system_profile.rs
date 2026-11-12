@@ -123,25 +123,91 @@ impl SystemProfile {
         self.class == HardwareClass::Tiny
     }
 
-    /// Recommended whisper.cpp model file name for this hardware. Always
-    /// falls back to something the user might reasonably have downloaded,
-    /// even if tighter.
+    /// Recommended whisper.cpp model file name for this hardware when
+    /// transcribing English. Equivalent to the first entry of
+    /// [`recommended_whisper_candidates`](Self::recommended_whisper_candidates)
+    /// for English.
     pub fn recommended_whisper_model(&self) -> &'static str {
+        self.recommended_whisper_candidates(Some("en"))[0]
+    }
+
+    /// Whisper model sizes in order of preference for this hardware class.
+    /// Every size is listed, so whatever the user has downloaded can still
+    /// be picked up; only the order changes.
+    fn whisper_size_preference(&self) -> [&'static str; 4] {
         match self.class {
-            HardwareClass::Tiny => "ggml-tiny.en.bin",
-            HardwareClass::Constrained => "ggml-tiny.en.bin",
-            HardwareClass::Small => "ggml-base.en.bin",
-            HardwareClass::Medium => "ggml-base.en.bin",
-            HardwareClass::Large => "ggml-small.en.bin",
+            HardwareClass::Tiny | HardwareClass::Constrained => ["tiny", "base", "small", "medium"],
+            HardwareClass::Small | HardwareClass::Medium => ["base", "tiny", "small", "medium"],
+            HardwareClass::Large => ["small", "base", "tiny", "medium"],
+        }
+    }
+
+    /// Whisper GGML file names to try, best first, for this hardware and
+    /// the requested spoken language.
+    ///
+    /// - English (`None` or `"en"`): English-only models first, then the
+    ///   multilingual ones (which also handle English), then turbo.
+    /// - `"auto"`: multilingual models first (they can detect the language),
+    ///   English-only models as a last resort.
+    /// - Any other language (e.g. `"tr"`): multilingual models only; an
+    ///   English-only model would produce garbage and is never returned.
+    ///
+    /// Large-v3-turbo comes last (first among the big models on `Large`
+    /// hardware): it is the most accurate but far slower on CPU.
+    pub fn recommended_whisper_candidates(&self, language: Option<&str>) -> Vec<&'static str> {
+        const EN: &[(&str, &str)] = &[
+            ("tiny", "ggml-tiny.en.bin"),
+            ("base", "ggml-base.en.bin"),
+            ("small", "ggml-small.en.bin"),
+            ("medium", "ggml-medium.en.bin"),
+        ];
+        const MULTI: &[(&str, &[&str])] = &[
+            ("tiny", &["ggml-tiny.bin"]),
+            ("base", &["ggml-base.bin"]),
+            ("small", &["ggml-small.bin", "ggml-small-q5_1.bin"]),
+            ("medium", &["ggml-medium-q5_0.bin", "ggml-medium.bin"]),
+        ];
+        const TURBO: &[&str] = &[
+            "ggml-large-v3-turbo-q5_0.bin",
+            "ggml-large-v3-turbo-q8_0.bin",
+            "ggml-large-v3-turbo.bin",
+        ];
+
+        let sizes = self.whisper_size_preference();
+        let english: Vec<&'static str> = sizes
+            .iter()
+            .filter_map(|size| EN.iter().find(|(s, _)| s == size).map(|(_, f)| *f))
+            .collect();
+        let mut multilingual: Vec<&'static str> = Vec::new();
+        for size in sizes {
+            // On roomy hardware prefer turbo over the (slow and less
+            // accurate) full-precision medium model.
+            if size == "medium" && self.class == HardwareClass::Large {
+                multilingual.extend_from_slice(TURBO);
+            }
+            if let Some((_, files)) = MULTI.iter().find(|(s, _)| *s == size) {
+                multilingual.extend_from_slice(files);
+            }
+        }
+        if self.class != HardwareClass::Large {
+            multilingual.extend_from_slice(TURBO);
+        }
+
+        let lang = language.map(|l| l.trim().to_ascii_lowercase());
+        match lang.as_deref() {
+            None | Some("") | Some("en") => english.into_iter().chain(multilingual).collect(),
+            Some("auto") => multilingual.into_iter().chain(english).collect(),
+            Some(_) => multilingual,
         }
     }
 
     /// Recommended number of CPU threads for native inference on this
     /// system. Leaves at least one core free on small systems so the audio
-    /// thread doesn't starve.
+    /// thread doesn't starve, and is capped at 8 because whisper.cpp stops
+    /// scaling (and often regresses) beyond that.
     pub fn recommended_inference_threads(&self) -> i32 {
         let n = self.num_cpus as i32;
-        if n <= 2 { n } else { n - 1 }
+        if n <= 2 { n.max(1) } else { (n - 1).min(8) }
     }
 
     /// One-line human-readable summary for startup logs.
@@ -436,5 +502,98 @@ mod tests {
             ..profile
         };
         assert_eq!(tiny.recommended_inference_threads(), 2);
+    }
+
+    fn profile_of(class: HardwareClass, num_cpus: usize) -> SystemProfile {
+        SystemProfile {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+            device: Device::LinuxDesktop,
+            total_ram_mb: 0,
+            available_ram_mb: 0,
+            num_cpus,
+            class,
+        }
+    }
+
+    #[test]
+    fn recommend_threads_is_capped() {
+        assert_eq!(
+            profile_of(HardwareClass::Large, 16).recommended_inference_threads(),
+            8
+        );
+        assert_eq!(
+            profile_of(HardwareClass::Tiny, 1).recommended_inference_threads(),
+            1
+        );
+    }
+
+    #[test]
+    fn english_candidates_start_with_the_class_recommendation() {
+        for (class, first) in [
+            (HardwareClass::Tiny, "ggml-tiny.en.bin"),
+            (HardwareClass::Constrained, "ggml-tiny.en.bin"),
+            (HardwareClass::Small, "ggml-base.en.bin"),
+            (HardwareClass::Medium, "ggml-base.en.bin"),
+            (HardwareClass::Large, "ggml-small.en.bin"),
+        ] {
+            let p = profile_of(class, 4);
+            assert_eq!(p.recommended_whisper_model(), first);
+            assert_eq!(p.recommended_whisper_candidates(None)[0], first);
+            assert_eq!(p.recommended_whisper_candidates(Some("en"))[0], first);
+        }
+    }
+
+    #[test]
+    fn english_candidates_also_cover_multilingual_and_turbo() {
+        let c = profile_of(HardwareClass::Medium, 8).recommended_whisper_candidates(None);
+        for expected in [
+            "ggml-tiny.en.bin",
+            "ggml-small.en.bin",
+            "ggml-base.bin",
+            "ggml-small.bin",
+            "ggml-large-v3-turbo.bin",
+            "ggml-large-v3-turbo-q5_0.bin",
+        ] {
+            assert!(c.contains(&expected), "missing {expected} in {c:?}");
+        }
+        let first_multi = c.iter().position(|f| !f.contains(".en")).unwrap();
+        let last_en = c.iter().rposition(|f| f.contains(".en")).unwrap();
+        assert!(last_en < first_multi, "English-only models must come first");
+    }
+
+    #[test]
+    fn non_english_language_never_gets_an_english_only_model() {
+        for class in [
+            HardwareClass::Tiny,
+            HardwareClass::Small,
+            HardwareClass::Large,
+        ] {
+            let c = profile_of(class, 8).recommended_whisper_candidates(Some("tr"));
+            assert!(!c.is_empty());
+            assert!(c.iter().all(|f| !f.contains(".en")), "{c:?}");
+        }
+        let large = profile_of(HardwareClass::Large, 8).recommended_whisper_candidates(Some("TR"));
+        assert_eq!(large[0], "ggml-small.bin");
+        let tiny = profile_of(HardwareClass::Tiny, 4).recommended_whisper_candidates(Some("tr"));
+        assert_eq!(tiny[0], "ggml-tiny.bin");
+    }
+
+    #[test]
+    fn auto_language_prefers_multilingual_but_keeps_english_fallback() {
+        let c = profile_of(HardwareClass::Small, 4).recommended_whisper_candidates(Some("auto"));
+        assert_eq!(c[0], "ggml-base.bin");
+        assert!(c.last().unwrap().contains(".en"));
+    }
+
+    #[test]
+    fn candidates_have_no_duplicates() {
+        for lang in [None, Some("auto"), Some("tr")] {
+            let c = profile_of(HardwareClass::Large, 8).recommended_whisper_candidates(lang);
+            let mut sorted = c.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), c.len(), "{c:?}");
+        }
     }
 }
