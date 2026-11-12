@@ -7,7 +7,7 @@
 //! | `PATCH` | `/v1/speakers/{id}` | rename (`{"name": "..."}`) |
 //! | `DELETE` | `/v1/speakers/{id}` | forget one speaker and their data |
 //! | `POST` | `/v1/speakers/merge` | merge `{"source": "...", "target": "..."}` |
-//! | `GET` | `/v1/speakers/{id}/export` | everything stored about a speaker |
+//! | `GET` | `/v1/speakers/{id}/export` | everything stored about a speaker, long-term memory included |
 //! | `GET` / `PUT` | `/v1/speakers/consent` | read / set enrollment consent |
 //!
 //! Embeddings never leave the server except through `export` with
@@ -193,6 +193,11 @@ async fn export(
             "embedding_version".into(),
             json!(vox::diarization::EMBEDDING_VERSION),
         );
+        // Long-term memory is part of what is stored about a person.
+        if let Some(db) = ctx.db.as_deref() {
+            let memory = vox::memory::MemoryStore::new(db).export(&id).await?;
+            object.insert("memory".into(), json!(memory));
+        }
     }
 
     // Offer it as a download. IDs are free-form, so the file name is built
@@ -522,9 +527,14 @@ mod tests {
                 "conversations",
                 "embedding_version",
                 "format",
+                "memory",
                 "preferences",
                 "speaker"
             ]
+        );
+        assert_eq!(
+            json["memory"],
+            json!({ "enabled": false, "enabled_at": null, "memories": [] })
         );
         assert_eq!(json["format"], EXPORT_FORMAT);
         assert_eq!(json["speaker"]["name"], "Alice");
@@ -545,6 +555,19 @@ mod tests {
         .await;
         let embedding = json["embedding"].as_array().unwrap();
         assert_eq!(embedding.len(), 2);
+
+        // What is remembered about the speaker is part of the export.
+        let memory = vox::memory::MemoryStore::new(db);
+        memory.set_enabled("speaker_1", true).await.unwrap();
+        memory
+            .record_exchange("speaker_1", "I like tea", Some("Noted."), false)
+            .await
+            .unwrap();
+        let (_, _, json) = call(&ctx, Method::GET, "/v1/speakers/speaker_1/export", None).await;
+        assert_eq!(json["memory"]["enabled"], true);
+        assert_eq!(json["memory"]["memories"][0]["role"], "user");
+        assert_eq!(json["memory"]["memories"][0]["content"], "I like tea");
+        assert_eq!(json["memory"]["memories"][1]["content"], "Noted.");
 
         let (status, _, _) = call(&ctx, Method::GET, "/v1/speakers/ghost/export", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);

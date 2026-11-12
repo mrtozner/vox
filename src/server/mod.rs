@@ -10,6 +10,7 @@ pub mod error;
 pub mod handlers;
 pub mod live_talk;
 mod loaders;
+mod memory_api;
 pub mod middleware;
 pub mod models;
 pub mod openai;
@@ -80,6 +81,7 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/v1/live-talk", get(live_talk::live_talk_ws))
         // Speaker management
         .merge(speakers_api::routes())
+        .merge(memory_api::routes())
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,

@@ -28,12 +28,26 @@
 //!   [`SessionStore`](vox::conversation::SessionStore), keyed by the
 //!   `session_id` from `ready`, so closing the socket (for example by
 //!   toggling the microphone) does not lose the conversation.
+//! - **Speakers.** With `config.diarization` on, the speaker of an utterance
+//!   is looked up while it is being transcribed ([`SpeakerService`]). The
+//!   lookup is read-only: talking never enrolls or adapts a voiceprint, so
+//!   the assistant's own voice or a television cannot end up in the speaker
+//!   database. It gets a short grace period after the transcript is ready;
+//!   if it is not done by then the turn goes on unlabelled. A known speaker
+//!   is named in `transcript` and in the message the model gets
+//!   (`[Name] text`, stored exactly like that). A voice is enrolled only by
+//!   the explicit `enroll_speaker` command.
+//! - **Long-term memory.** For a person who switched memory on, each stored
+//!   turn is also written to the [`MemoryStore`], and the first message of
+//!   theirs in a session carries a block of what is remembered about them.
+//!   Unidentified speakers are never written.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
@@ -42,7 +56,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use vox::conversation::{SessionStore, SharedConversation};
+use vox::conversation::{RecallNeed, SessionStore, SharedConversation, SpeakerLabel, UserMessage};
+use vox::diarization::IdentifyMode;
+use vox::memory::{ExchangeRef, MemoryStore};
 use vox::streaming_chat::{StopReason, StreamOptions};
 
 use super::ServerState;
@@ -51,6 +67,7 @@ use super::models::{
     CancelReason, LIVE_TALK_PROTOCOL_VERSION, LiveTalkClientMsg, LiveTalkConfig, LiveTalkMode,
     LiveTalkWsEvent,
 };
+use super::speakers::{self, SpeakerCtx};
 
 /// Sample rate of the microphone stream.
 const MIC_SAMPLE_RATE: u64 = 16_000;
@@ -75,12 +92,117 @@ const CANCEL_JOIN: Duration = Duration::from_millis(250);
 /// Default for [`LiveTalkDeps::playback_grace`].
 pub const DEFAULT_PLAYBACK_GRACE: Duration = Duration::from_millis(800);
 
+/// Default for [`LiveTalkDeps::identify_grace`].
+pub const DEFAULT_IDENTIFY_GRACE: Duration = Duration::from_millis(150);
+
+/// Longest wait for the lookup of what is remembered about a speaker. It is
+/// a local database read; when it takes longer the turn goes on without.
+const RECALL_TIMEOUT: Duration = Duration::from_millis(250);
+
 /// Model used when the client names none.
 const DEFAULT_MODEL: &str = "llama3.2";
 
 const PHASE_STT: u8 = 0;
 const PHASE_THINKING: u8 = 1;
 const PHASE_SPEAKING: u8 = 2;
+
+/// A speaker as Live Talk reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpeakerTag {
+    pub id: String,
+    pub name: String,
+    /// Hex color for the UI.
+    pub color: String,
+}
+
+/// Outcome of an explicit enrollment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Enrollment {
+    pub speaker: SpeakerTag,
+    /// `false` when the voice was already known: nothing new was stored and
+    /// `speaker` is who it belongs to.
+    pub created: bool,
+}
+
+/// What a Live Talk session needs from the speaker subsystem.
+#[async_trait]
+pub trait SpeakerService: Send + Sync {
+    /// Who spoke `audio`, if it is a known voice. Must not change anything:
+    /// no enrollment, no adaptation.
+    async fn identify(&self, audio: &vox::AudioChunk) -> Option<SpeakerTag>;
+
+    /// Store the voice in `audio` as a speaker, on the user's explicit
+    /// request. A new speaker gets `name` when one is given. The error is a
+    /// message for the user.
+    async fn enroll(
+        &self,
+        audio: &vox::AudioChunk,
+        name: Option<&str>,
+    ) -> Result<Enrollment, String>;
+}
+
+/// The server's speaker pipeline and database behind [`SpeakerService`].
+struct ServerSpeakers(SpeakerCtx);
+
+#[async_trait]
+impl SpeakerService for ServerSpeakers {
+    async fn identify(&self, audio: &vox::AudioChunk) -> Option<SpeakerTag> {
+        let found = speakers::identify_speaker(&self.0, audio, IdentifyMode::IdentifyOnly).await?;
+        Some(SpeakerTag {
+            id: found.id,
+            name: found.name,
+            color: found.color,
+        })
+    }
+
+    async fn enroll(
+        &self,
+        audio: &vox::AudioChunk,
+        name: Option<&str>,
+    ) -> Result<Enrollment, String> {
+        let name = match name.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => {
+                Some(vox::diarization::validate_speaker_name(name).map_err(|e| e.to_string())?)
+            }
+            None => None,
+        };
+        // The same gate as everywhere else: no voiceprint without consent.
+        if !speakers::enrollment_consent(&self.0).await.granted {
+            return Err(
+                "Speaker enrollment consent is not recorded on the server. Grant it with \
+                 PUT /v1/speakers/consent {\"granted\": true} and try again."
+                    .to_string(),
+            );
+        }
+        let found = speakers::identify_speaker(&self.0, audio, IdentifyMode::AdaptAndEnroll)
+            .await
+            .ok_or_else(|| {
+                format!(
+                    "The voice could not be stored: the last utterance is shorter than {} ms \
+                     or could not be analysed.",
+                    vox::diarization::MIN_SPEAKER_AUDIO_MS
+                )
+            })?;
+        let created = found.new_speaker.is_some();
+        let mut speaker = SpeakerTag {
+            id: found.id,
+            name: found.name,
+            color: found.color,
+        };
+        // Only a speaker made by this call is named here. A voice that was
+        // already known keeps its name: a wrong match must not rename
+        // someone else.
+        if let (true, Some(name)) = (created, name) {
+            match speakers::rename(&self.0, &speaker.id, &name).await {
+                Ok(detail) => speaker.name = detail.name,
+                Err(e) => {
+                    tracing::warn!(error = %e, speaker_id = %speaker.id, "enrolled speaker could not be named");
+                }
+            }
+        }
+        Ok(Enrollment { speaker, created })
+    }
+}
 
 /// Everything a Live Talk session needs. The transport is passed separately
 /// so the session can be driven without a real socket.
@@ -98,6 +220,16 @@ pub struct LiveTalkDeps {
     /// How long after the expected end of playback the microphone gate
     /// opens by itself, for a client that sends no `playback_done`.
     pub playback_grace: Duration,
+    /// Speaker identification and enrollment; `None` when the server has no
+    /// speaker model.
+    pub speakers: Option<Arc<dyn SpeakerService>>,
+    /// Long-term memory of known speakers; `None` when there is no speaker
+    /// database.
+    pub memory: Option<MemoryStore>,
+    /// How long a turn waits for the speaker lookup after the transcript is
+    /// ready. The lookup runs alongside transcription, so this is extra
+    /// latency only when identification is the slower of the two.
+    pub identify_grace: Duration,
 }
 
 /// Upgrade HTTP connection to Live Talk WebSocket. Returns 503 if STT/TTS/VAD unavailable.
@@ -168,6 +300,13 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
     // the 1001 close frame.
     let (sink, stream) = socket.split();
     let (sink, stream, relay) = super::ws::with_shutdown(sink, stream, state.shutdown.clone());
+    let speaker_ctx = SpeakerCtx::from_state(&state);
+    let speakers: Option<Arc<dyn SpeakerService>> =
+        if speaker_ctx.pipeline.is_some() && speaker_ctx.db.is_some() {
+            Some(Arc::new(ServerSpeakers(speaker_ctx)))
+        } else {
+            None
+        };
     run_live_talk(
         sink,
         stream,
@@ -180,6 +319,9 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
             sessions: Arc::clone(&state.sessions),
             stream_options: StreamOptions::default(),
             playback_grace: DEFAULT_PLAYBACK_GRACE,
+            speakers,
+            memory: state.speaker_db.as_deref().map(MemoryStore::new),
+            identify_grace: DEFAULT_IDENTIFY_GRACE,
         },
     )
     .await;
@@ -303,7 +445,83 @@ struct TurnShared {
 struct TurnConfig {
     model: String,
     voice: Option<String>,
+    /// The prompt as sent: with the speaker paragraph when `diarization`.
     system_prompt: String,
+    /// Identify the speaker of each turn. Only `true` when the server can.
+    diarization: bool,
+}
+
+/// The system prompt for a session: `base`, plus the explanation of speaker
+/// tags and recall blocks when speakers are identified.
+fn effective_prompt(base: &str, diarization: bool) -> String {
+    if diarization {
+        vox::prompts::with_speaker_awareness(base)
+    } else {
+        base.to_string()
+    }
+}
+
+/// A write to long-term memory, done in order by [`memory_worker`].
+enum MemoryOp {
+    /// A turn was stored in the conversation.
+    Record {
+        turn_id: u64,
+        speaker_id: String,
+        user_text: String,
+        sentences: Vec<String>,
+        interrupted: bool,
+    },
+    /// Only the first `heard` sentences of that turn were played.
+    Amend { turn_id: u64, heard: usize },
+}
+
+/// Apply memory writes one after the other, off the turn task. Ends when the
+/// session and its turns are gone.
+async fn memory_worker(store: MemoryStore, mut rx: mpsc::UnboundedReceiver<MemoryOp>) {
+    // The newest stored turn; the only one that can still be corrected.
+    let mut last: Option<(u64, ExchangeRef, Vec<String>)> = None;
+    while let Some(op) = rx.recv().await {
+        match op {
+            MemoryOp::Record {
+                turn_id,
+                speaker_id,
+                user_text,
+                sentences,
+                interrupted,
+            } => {
+                let reply = sentences.join(" ");
+                last = match store
+                    .record_exchange(&speaker_id, &user_text, Some(&reply), interrupted)
+                    .await
+                {
+                    // `None`: memory is off for this person; nothing written.
+                    Ok(stored) => stored.map(|exchange| (turn_id, exchange, sentences)),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "live_talk: turn not written to long-term memory");
+                        None
+                    }
+                };
+            }
+            MemoryOp::Amend { turn_id, heard } => {
+                let Some((id, exchange, sentences)) = last.as_mut() else {
+                    continue;
+                };
+                if *id != turn_id || heard >= sentences.len() {
+                    continue;
+                }
+                sentences.truncate(heard);
+                match store
+                    .amend_exchange(*exchange, Some(&sentences.join(" ")))
+                    .await
+                {
+                    Ok(amended) => *exchange = amended,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "live_talk: long-term memory not corrected");
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Per-connection state shared with turn tasks.
@@ -318,19 +536,45 @@ struct TurnCtx {
     /// The turn of this connection that is the newest entry in
     /// `conversation`, if any. Locked only while `conversation` is locked.
     last_committed: std::sync::Mutex<Option<u64>>,
+    /// Counts `forget_memory` commands. A turn that started before one does
+    /// not get recorded after it. Changed only while `conversation` is
+    /// locked.
+    forget_epoch: AtomicU64,
+    speakers: Option<Arc<dyn SpeakerService>>,
+    identify_grace: Duration,
+    memory: Option<MemoryStore>,
+    /// Queue of [`memory_worker`]; `None` without a memory store.
+    memory_tx: Option<mpsc::UnboundedSender<MemoryOp>>,
 }
 
 impl TurnCtx {
     /// Store a turn and tell the client what memory looks like now.
-    fn commit(&self, turn_id: u64, user_text: &str, spoken: &[String], interrupted: bool) {
-        let stored = !user_text.trim().is_empty()
-            && (interrupted || spoken.iter().any(|s| !s.trim().is_empty()));
+    ///
+    /// `epoch` is the value of `forget_epoch` when the turn started: if the
+    /// user said "forget" in between, the turn is not stored.
+    fn commit(
+        &self,
+        turn_id: u64,
+        epoch: u64,
+        user: &UserMessage,
+        spoken: &[String],
+        interrupted: bool,
+    ) {
+        let stored =
+            !user.text().is_empty() && (interrupted || spoken.iter().any(|s| !s.trim().is_empty()));
         if !stored {
             return;
         }
         let snapshot = {
             let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
-            let dropped = conv.commit(user_text, spoken, interrupted);
+            if self.forget_epoch.load(Ordering::SeqCst) != epoch {
+                debug!(
+                    turn_id,
+                    "live_talk: turn not stored, memory was cleared meanwhile"
+                );
+                return;
+            }
+            let dropped = conv.commit_message(user, spoken, interrupted);
             *self
                 .last_committed
                 .lock()
@@ -346,6 +590,62 @@ impl TurnCtx {
             conv.snapshot()
         };
         self.out.send(LiveTalkWsEvent::Memory(snapshot));
+
+        // Long-term memory: only for an identified speaker. Whether that
+        // person switched memory on is checked by the store when it writes.
+        if let (Some(tx), Some(speaker)) = (&self.memory_tx, user.speaker()) {
+            let _ = tx.send(MemoryOp::Record {
+                turn_id,
+                speaker_id: speaker.id.clone(),
+                user_text: user.text().to_string(),
+                sentences: spoken
+                    .iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+                interrupted,
+            });
+        }
+    }
+
+    /// The block of remembered context to put in front of this speaker's
+    /// message, if one is due (see [`RecallNeed`]).
+    async fn recall_block(&self, speaker: &SpeakerTag, said: &str) -> Option<String> {
+        let memory = self.memory.as_ref()?;
+        let need = || {
+            self.conversation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recall_need(&speaker.id)
+        };
+        match need() {
+            RecallNeed::Inject(block) => return Some(block),
+            RecallNeed::Nothing => return None,
+            RecallNeed::Lookup => {}
+        }
+        let lookup = memory.recall_block(&speaker.id, &speaker.name, Some(said));
+        match tokio::time::timeout(RECALL_TIMEOUT, lookup).await {
+            Ok(Ok(block)) => {
+                // Frozen for the session, "nothing" included: later turns of
+                // this person do not look again.
+                self.conversation
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .freeze_recall(&speaker.id, block);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "live_talk: recall failed, continuing without");
+                return None;
+            }
+            Err(_) => {
+                debug!("live_talk: recall not ready in time, continuing without");
+                return None;
+            }
+        }
+        match need() {
+            RecallNeed::Inject(block) => Some(block),
+            _ => None,
+        }
     }
 
     /// Cut the stored turn `turn_id` down to the `heard` sentences that were
@@ -366,6 +666,9 @@ impl TurnCtx {
         };
         debug!(turn_id, heard, "live_talk: memory cut to what was heard");
         self.out.send(LiveTalkWsEvent::Memory(snapshot));
+        if let Some(tx) = &self.memory_tx {
+            let _ = tx.send(MemoryOp::Amend { turn_id, heard });
+        }
         true
     }
 
@@ -373,6 +676,7 @@ impl TurnCtx {
         let snapshot = {
             let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
             conv.clear();
+            self.forget_epoch.fetch_add(1, Ordering::SeqCst);
             *self
                 .last_committed
                 .lock()
@@ -407,6 +711,21 @@ async fn run_turn(
     shared: Arc<TurnShared>,
 ) {
     let out = &ctx.out;
+    let epoch = ctx.forget_epoch.load(Ordering::SeqCst);
+
+    // Who is speaking is looked up while the utterance is transcribed. The
+    // lookup is read-only, so it is simply left to finish if the turn ends
+    // first.
+    let identify = match (&ctx.speakers, cfg.diarization) {
+        (Some(service), true) => {
+            let service = Arc::clone(service);
+            let utterance = Arc::clone(&utterance);
+            Some(tokio::spawn(async move {
+                service.identify(&utterance.audio).await
+            }))
+        }
+        _ => None,
+    };
 
     // Transcription is raced against the cancel token: a backend that takes
     // seconds must not hold a cancelled turn.
@@ -447,6 +766,33 @@ async fn run_turn(
         return;
     }
 
+    // The lookup had the whole transcription to finish and gets a short
+    // grace period on top. Not done by then: the turn goes on unlabelled.
+    let speaker = match identify {
+        Some(lookup) => {
+            let waited = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return,
+                r = tokio::time::timeout(ctx.identify_grace, lookup) => r,
+            };
+            match waited {
+                Ok(Ok(speaker)) => speaker,
+                Ok(Err(e)) => {
+                    debug!(turn_id, error = %e, "live_talk: speaker lookup failed");
+                    None
+                }
+                Err(_) => {
+                    debug!(
+                        turn_id,
+                        "live_talk: speaker lookup not ready, turn is unlabelled"
+                    );
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
     out.send_turn(
         turn_id,
         LiveTalkWsEvent::Transcript {
@@ -454,9 +800,9 @@ async fn run_turn(
             text: user_text.clone(),
             duration_ms: stt_result.duration_ms,
             processing_time_ms: stt_result.processing_time_ms,
-            speaker_id: None,
-            speaker_name: None,
-            speaker_color: None,
+            speaker_id: speaker.as_ref().map(|s| s.id.clone()),
+            speaker_name: speaker.as_ref().map(|s| s.name.clone()),
+            speaker_color: speaker.as_ref().map(|s| s.color.clone()),
         },
     );
     shared.phase.store(PHASE_THINKING, Ordering::SeqCst);
@@ -464,11 +810,30 @@ async fn run_turn(
         return;
     }
 
+    let recall = match &speaker {
+        Some(speaker) => tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return,
+            block = ctx.recall_block(speaker, &user_text) => block,
+        },
+        None => None,
+    };
+    // Built once: these exact bytes go to the model now and into the
+    // history afterwards.
+    let user = UserMessage::new(
+        &user_text,
+        speaker.map(|s| SpeakerLabel {
+            id: s.id,
+            name: s.name,
+        }),
+        recall.as_deref(),
+    );
+
     let messages = ctx
         .conversation
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .messages_for(Some(&cfg.system_prompt), &user_text);
+        .messages_for(Some(&cfg.system_prompt), user.content());
 
     let llm_started = Instant::now();
     let first_token_ms = Arc::new(AtomicU64::new(u64::MAX));
@@ -600,7 +965,7 @@ async fn run_turn(
         interrupted = interrupted.map(|_| true);
     }
     if let Some(interrupted) = interrupted {
-        ctx.commit(turn_id, &user_text, &spoken, interrupted);
+        ctx.commit(turn_id, epoch, &user, &spoken, interrupted);
     }
 
     let metrics = LiveTalkWsEvent::TurnMetrics {
@@ -665,8 +1030,12 @@ struct Session {
     playback_grace: Duration,
 
     cfg: TurnConfig,
+    /// The system prompt without the speaker paragraph.
+    base_prompt: String,
     mode: LiveTalkMode,
     barge_in_enabled: bool,
+    /// The utterance of the newest turn, for `enroll_speaker`.
+    last_utterance: Option<Arc<vox::Utterance>>,
 
     /// Samples waiting for a full VAD frame.
     residual: Vec<f32>,
@@ -889,6 +1258,7 @@ impl Session {
             heard_limit: AtomicUsize::new(usize::MAX),
         });
         let utterance = Arc::new(utterance);
+        self.last_utterance = Some(Arc::clone(&utterance));
         let handle = tokio::spawn(run_turn(
             Arc::clone(&self.ctx),
             self.cfg.clone(),
@@ -969,8 +1339,10 @@ impl Session {
             self.cfg.voice = Some(voice);
         }
         if let Some(prompt) = new.system_prompt_override {
-            self.cfg.system_prompt = prompt;
+            self.base_prompt = prompt;
         }
+        self.cfg.diarization = new.diarization && self.ctx.speakers.is_some();
+        self.cfg.system_prompt = effective_prompt(&self.base_prompt, self.cfg.diarization);
         self.barge_in_enabled = new.barge_in_enabled;
         let mode: LiveTalkMode = new.mode.into();
         if mode != self.mode {
@@ -987,8 +1359,53 @@ impl Session {
             voice = ?self.cfg.voice,
             mode = ?self.mode,
             barge_in = self.barge_in_enabled,
+            diarization = self.cfg.diarization,
             "live_talk: config updated"
         );
+    }
+
+    /// Store the voice of the last utterance as a speaker. The work runs on
+    /// its own task (extracting a voiceprint takes a moment) and answers
+    /// with `speaker_enrolled` or a non-fatal error.
+    fn on_enroll(&mut self, name: Option<String>) {
+        let refuse = |message: &str| {
+            self.out.send(LiveTalkWsEvent::Error {
+                message: message.to_string(),
+                fatal: false,
+                turn_id: None,
+            });
+        };
+        let Some(service) = self.ctx.speakers.clone() else {
+            return refuse("Speaker recognition is not available on this server.");
+        };
+        let Some(utterance) = self.last_utterance.clone() else {
+            return refuse("Say something first: the voice is taken from the last utterance.");
+        };
+        let out = self.out.clone();
+        tokio::spawn(async move {
+            match service.enroll(&utterance.audio, name.as_deref()).await {
+                Ok(enrollment) => {
+                    info!(
+                        speaker_id = %enrollment.speaker.id,
+                        created = enrollment.created,
+                        "live_talk: speaker enrolled on request"
+                    );
+                    out.send(LiveTalkWsEvent::SpeakerEnrolled {
+                        speaker_id: enrollment.speaker.id,
+                        speaker_name: enrollment.speaker.name,
+                        speaker_color: enrollment.speaker.color,
+                        created: enrollment.created,
+                    });
+                }
+                Err(message) => {
+                    out.send(LiveTalkWsEvent::Error {
+                        message,
+                        fatal: false,
+                        turn_id: None,
+                    });
+                }
+            }
+        });
     }
 
     async fn on_ptt_start(&mut self) {
@@ -1041,6 +1458,7 @@ impl Session {
                 self.carry.clear();
                 self.ctx.forget();
             }
+            Ok(LiveTalkClientMsg::EnrollSpeaker { name }) => self.on_enroll(name),
             Ok(LiveTalkClientMsg::PttStart) => self.on_ptt_start().await,
             Ok(LiveTalkClientMsg::PttEnd) => self.on_ptt_end().await,
             Err(e) => debug!("live_talk: ignoring unknown text msg: {e}"),
@@ -1099,12 +1517,15 @@ where
 
     let session_handle = deps.sessions.attach(config.session_id.as_deref());
     let mode: LiveTalkMode = config.mode.into();
+    let base_prompt = config
+        .system_prompt_override
+        .unwrap_or_else(|| vox::build_system_prompt(vox::VoicePromptMode::Voice));
+    let diarization = config.diarization && deps.speakers.is_some();
     let cfg = TurnConfig {
         model: config.model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
         voice: config.voice,
-        system_prompt: config
-            .system_prompt_override
-            .unwrap_or_else(|| vox::build_system_prompt(vox::VoicePromptMode::Voice)),
+        system_prompt: effective_prompt(&base_prompt, diarization),
+        diarization,
     };
 
     info!(
@@ -1113,6 +1534,7 @@ where
         voice = ?cfg.voice,
         mode = ?mode,
         barge_in = config.barge_in_enabled,
+        diarization,
         session = %session_handle.id,
         resumed = session_handle.resumed,
         "live_talk: client connected"
@@ -1124,6 +1546,7 @@ where
         mode,
         protocol_version: LIVE_TALK_PROTOCOL_VERSION,
         session_id: session_handle.id.clone(),
+        diarization,
     });
     let snapshot = session_handle
         .conversation
@@ -1131,6 +1554,12 @@ where
         .unwrap_or_else(|e| e.into_inner())
         .snapshot();
     out.send(LiveTalkWsEvent::Memory(snapshot));
+
+    let memory_tx = deps.memory.clone().map(|store| {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(memory_worker(store, rx));
+        tx
+    });
 
     let frame_size = deps.vad.frame_size().max(1);
     let mut session = Session {
@@ -1143,14 +1572,21 @@ where
             out: out.clone(),
             conversation: session_handle.conversation,
             last_committed: std::sync::Mutex::new(None),
+            forget_epoch: AtomicU64::new(0),
+            speakers: deps.speakers,
+            identify_grace: deps.identify_grace,
+            memory: deps.memory,
+            memory_tx,
         }),
         out,
         vad: deps.vad,
         frame_size,
         playback_grace: deps.playback_grace,
         cfg,
+        base_prompt,
         mode,
         barge_in_enabled: config.barge_in_enabled,
+        last_utterance: None,
         residual: Vec::with_capacity(frame_size * 2),
         ring: VecDeque::with_capacity(RING_SAMPLES),
         was_gated: false,
@@ -1203,4 +1639,58 @@ where
     }
 
     info!(session = %session_handle.id, "live_talk: client disconnected");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use super::super::speakers::tests::{enroll, test_ctx};
+
+    fn two_seconds() -> vox::AudioChunk {
+        vox::AudioChunk {
+            samples: vec![0.1; 32_000],
+            sample_rate: 16_000,
+            channels: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_enrollment_is_refused_without_consent() {
+        let ctx = test_ctx().await;
+        let service = ServerSpeakers(ctx.clone());
+
+        let refused = service.enroll(&two_seconds(), Some("Mert")).await;
+        let message = refused.expect_err("no consent, no voiceprint");
+        assert!(message.contains("consent"), "{message}");
+        assert!(speakers::list_speakers(&ctx).await.unwrap().is_empty());
+
+        // A name that could not be stored is rejected before anything else.
+        let refused = service.enroll(&two_seconds(), Some("<b>")).await;
+        assert!(refused.is_err());
+
+        // With consent the request gets as far as the encoder, which this
+        // test context does not have: still nothing is stored.
+        speakers::set_enrollment_consent(&ctx, true).await.unwrap();
+        let refused = service.enroll(&two_seconds(), Some("Mert")).await;
+        let message = refused.expect_err("no encoder model");
+        assert!(message.contains("could not be stored"), "{message}");
+        assert!(speakers::list_speakers(&ctx).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn identification_without_an_encoder_labels_nobody() {
+        let ctx = test_ctx().await;
+        enroll(&ctx, "speaker_1", "Alice", &[1.0, 0.0]).await;
+        let service = ServerSpeakers(ctx);
+        assert_eq!(service.identify(&two_seconds()).await, None);
+    }
+
+    #[test]
+    fn the_speaker_paragraph_is_only_added_for_diarization() {
+        assert_eq!(effective_prompt("base", false), "base");
+        let aware = effective_prompt("base", true);
+        assert!(aware.starts_with("base\n\n"));
+        assert!(aware.contains("[Memory"));
+    }
 }

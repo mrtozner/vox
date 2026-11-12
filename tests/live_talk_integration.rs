@@ -22,13 +22,17 @@ use tokio::sync::mpsc;
 #[path = "../src/server/mod.rs"]
 mod server;
 
-use server::live_talk::{LiveTalkDeps, run_live_talk};
+use server::live_talk::{Enrollment, LiveTalkDeps, SpeakerService, SpeakerTag, run_live_talk};
 use server::models::{
     CancelReason, ConverseConfig, LIVE_TALK_PROTOCOL_VERSION, LiveTalkClientMsg, LiveTalkConfig,
     LiveTalkMode, LiveTalkModeConfig, LiveTalkWsEvent,
 };
 use server::ws_converse::{ConverseDeps, run_converse};
 use vox::conversation::{Conversation, SessionStore};
+use vox::diarization::{
+    DiarizationConfig, DiarizationPipeline, IdentifyMode, SpeakerDatabase, SpeakerRegistry,
+};
+use vox::memory::{MemoryRole, MemoryStore};
 use vox::streaming_chat::StreamOptions;
 
 // ─── Wire types ──────────────────────────────────────────────
@@ -41,6 +45,7 @@ fn ready_event_carries_protocol_version_and_session_id() {
         mode: LiveTalkMode::Vad,
         protocol_version: LIVE_TALK_PROTOCOL_VERSION,
         session_id: "abc12345".into(),
+        diarization: false,
     };
     let json: Value = serde_json::to_value(&ev).unwrap();
     assert_eq!(json["type"], "ready");
@@ -49,6 +54,7 @@ fn ready_event_carries_protocol_version_and_session_id() {
     assert_eq!(json["mode"], "vad");
     assert_eq!(json["protocol_version"], 2);
     assert_eq!(json["session_id"], "abc12345");
+    assert_eq!(json["diarization"], false);
 }
 
 #[test]
@@ -59,6 +65,7 @@ fn ready_event_push_to_talk_mode() {
         mode: LiveTalkMode::PushToTalk,
         protocol_version: LIVE_TALK_PROTOCOL_VERSION,
         session_id: "abc12345".into(),
+        diarization: false,
     };
     let json: Value = serde_json::to_value(&ev).unwrap();
     assert_eq!(json["mode"], "push_to_talk");
@@ -273,6 +280,8 @@ fn client_config_deserializes_with_defaults() {
             assert!(cfg.barge_in_enabled);
             assert!(cfg.system_prompt_override.is_none());
             assert!(cfg.session_id.is_none());
+            // Biometric: off unless asked for.
+            assert!(!cfg.diarization);
         }
         other => panic!("expected Config, got {:?}", other),
     }
@@ -366,6 +375,45 @@ fn playback_done_and_forget_memory_deserialize() {
 
     let msg: LiveTalkClientMsg = serde_json::from_str(r#"{"type":"forget_memory"}"#).unwrap();
     assert!(matches!(msg, LiveTalkClientMsg::ForgetMemory));
+}
+
+#[test]
+fn diarization_and_enroll_speaker_deserialize() {
+    let msg: LiveTalkClientMsg =
+        serde_json::from_str(r#"{"type":"config","diarization":true}"#).unwrap();
+    assert!(matches!(msg, LiveTalkClientMsg::Config(cfg) if cfg.diarization));
+
+    let msg: LiveTalkClientMsg = serde_json::from_str(r#"{"type":"enroll_speaker"}"#).unwrap();
+    assert!(matches!(
+        msg,
+        LiveTalkClientMsg::EnrollSpeaker { name: None }
+    ));
+    let msg: LiveTalkClientMsg =
+        serde_json::from_str(r#"{"type":"enroll_speaker","name":"Mert"}"#).unwrap();
+    assert!(matches!(
+        msg,
+        LiveTalkClientMsg::EnrollSpeaker { name: Some(name) } if name == "Mert"
+    ));
+}
+
+#[test]
+fn speaker_enrolled_event_is_flat() {
+    let ev = LiveTalkWsEvent::SpeakerEnrolled {
+        speaker_id: "speaker_3".into(),
+        speaker_name: "Mert".into(),
+        speaker_color: "#e15759".into(),
+        created: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&ev).unwrap(),
+        json!({
+            "type": "speaker_enrolled",
+            "speaker_id": "speaker_3",
+            "speaker_name": "Mert",
+            "speaker_color": "#e15759",
+            "created": true,
+        })
+    );
 }
 
 #[test]
@@ -628,6 +676,143 @@ async fn fake_ollama(scripts: Vec<Script>) -> (String, Arc<Mutex<Vec<Value>>>) {
     (host, requests)
 }
 
+// ─── Speakers ────────────────────────────────────────────────
+
+/// Loudness of the test voices. [`FakeSpeakers`] turns the level of an
+/// utterance into an embedding; the real registry decides who that is.
+const MERT_LEVEL: f32 = 0.9;
+const ADA_LEVEL: f32 = 0.75;
+const STRANGER_LEVEL: f32 = 0.6;
+
+/// A speaker service with a stand-in for the encoder model only: the
+/// embedding comes from the loudness of the audio, the decision from a real
+/// [`DiarizationPipeline`] in identify-only mode.
+struct FakeSpeakers {
+    pipeline: DiarizationPipeline,
+    /// Pause before answering `identify`.
+    delay: Mutex<Duration>,
+    identify_calls: AtomicUsize,
+    /// The `name` of every `enroll` call.
+    enroll_calls: Mutex<Vec<Option<String>>>,
+}
+
+impl FakeSpeakers {
+    /// A registry that knows Mert (`speaker_1`) and Ada (`speaker_2`).
+    fn new() -> Arc<Self> {
+        let mut registry = SpeakerRegistry::new();
+        registry
+            .enroll("speaker_1", "Mert", vec![1.0, 0.0])
+            .unwrap();
+        registry.enroll("speaker_2", "Ada", vec![0.0, 1.0]).unwrap();
+        Arc::new(Self {
+            pipeline: DiarizationPipeline::without_encoder(registry, DiarizationConfig::default()),
+            delay: Mutex::new(Duration::ZERO),
+            identify_calls: AtomicUsize::new(0),
+            enroll_calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn embedding(audio: &vox::AudioChunk) -> Vec<f32> {
+        let level =
+            audio.samples.iter().map(|s| s.abs()).sum::<f32>() / audio.samples.len().max(1) as f32;
+        if level > 0.85 {
+            vec![1.0, 0.0]
+        } else if level > 0.7 {
+            vec![0.0, 1.0]
+        } else {
+            vec![-1.0, -1.0]
+        }
+    }
+
+    fn speaker_count(&self) -> usize {
+        self.pipeline.with_registry(|r| r.speaker_count())
+    }
+}
+
+#[async_trait]
+impl SpeakerService for FakeSpeakers {
+    async fn identify(&self, audio: &vox::AudioChunk) -> Option<SpeakerTag> {
+        self.identify_calls.fetch_add(1, Ordering::SeqCst);
+        let delay = *self.delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
+        let id = self
+            .pipeline
+            .resolve_embedding(Self::embedding(audio), IdentifyMode::IdentifyOnly)
+            .unwrap()
+            .speaker_id?;
+        let name = self
+            .pipeline
+            .with_registry(|r| r.get_speaker(&id).map(|s| s.name.clone()))?;
+        Some(SpeakerTag {
+            color: format!("#{id}"),
+            id,
+            name,
+        })
+    }
+
+    async fn enroll(
+        &self,
+        _audio: &vox::AudioChunk,
+        name: Option<&str>,
+    ) -> Result<Enrollment, String> {
+        self.enroll_calls
+            .lock()
+            .unwrap()
+            .push(name.map(str::to_string));
+        Ok(Enrollment {
+            speaker: SpeakerTag {
+                id: "speaker_3".into(),
+                name: name.unwrap_or("Speaker 3").to_string(),
+                color: "#speaker_3".into(),
+            },
+            created: true,
+        })
+    }
+}
+
+fn diarization_config() -> Value {
+    json!({"type": "config", "model": "test-model", "diarization": true})
+}
+
+/// A speaker database that has Mert and Ada, as [`FakeSpeakers`] does.
+async fn speaker_db(path: &str) -> SpeakerDatabase {
+    let db = SpeakerDatabase::open(path).await.unwrap();
+    for (id, name) in [("speaker_1", "Mert"), ("speaker_2", "Ada")] {
+        if db.get_record(id).await.unwrap().is_none() {
+            db.store_speaker(&vox::Speaker {
+                id: id.into(),
+                name: name.into(),
+                embedding: vec![0.5, 0.5],
+            })
+            .await
+            .unwrap();
+        }
+    }
+    db
+}
+
+/// Wait until `count` memory rows are stored for a speaker. The write
+/// happens after the turn, off the turn task.
+async fn stored_rows(memory: &MemoryStore, speaker_id: &str, count: u64) {
+    for _ in 0..100 {
+        let status = memory.status(speaker_id).await.unwrap().unwrap();
+        if status.count == count {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("never saw {count} memory rows for {speaker_id}");
+}
+
+fn contents(request: &Value) -> Vec<String> {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["content"].as_str().unwrap().to_string())
+        .collect()
+}
+
 // ─── Test client ─────────────────────────────────────────────
 
 /// Everything a test wants to look at afterwards.
@@ -640,6 +825,9 @@ struct Rig {
     llm_requests: Arc<Mutex<Vec<Value>>>,
     stream_options: StreamOptions,
     playback_grace: Duration,
+    speakers: Option<Arc<FakeSpeakers>>,
+    memory: Option<MemoryStore>,
+    identify_grace: Duration,
 }
 
 impl Rig {
@@ -659,6 +847,9 @@ impl Rig {
             // Long, so a test that goes on after a spoken turn has to say
             // `playback_done` (or cancel) like a real client.
             playback_grace: Duration::from_secs(60),
+            speakers: None,
+            memory: None,
+            identify_grace: Duration::from_secs(5),
         }
     }
 
@@ -674,6 +865,9 @@ impl Rig {
             sessions: Arc::clone(&self.sessions),
             stream_options: self.stream_options,
             playback_grace: self.playback_grace,
+            speakers: self.speakers.clone().map(|s| s as Arc<dyn SpeakerService>),
+            memory: self.memory.clone(),
+            identify_grace: self.identify_grace,
         };
         tokio::spawn(run_live_talk(sink, stream, deps));
         client.send(config);
@@ -744,9 +938,26 @@ impl Client {
 
     /// Three loud frames and a quiet one: one utterance for [`FakeVad`].
     fn speak(&self) {
-        let mut samples = vec![0.9f32; FRAME * 3];
+        self.speak_at(MERT_LEVEL);
+    }
+
+    /// An utterance at `level`, which is what [`FakeSpeakers`] tells voices
+    /// apart by.
+    fn speak_at(&self, level: f32) {
+        let mut samples = vec![level; FRAME * 3];
         samples.extend(std::iter::repeat_n(0.0, FRAME));
         self.send_audio(&samples);
+    }
+
+    /// Speak, read the turn to its end and report playback as finished, so
+    /// the microphone is open for the next utterance.
+    async fn turn_at(&mut self, level: f32) -> Vec<Value> {
+        self.speak_at(level);
+        let events = self.until("turn_done").await;
+        let turn_id = events.last().unwrap()["turn_id"].clone();
+        self.send(json!({"type": "playback_done", "turn_id": turn_id}));
+        settle().await;
+        events
     }
 
     /// The next message. A binary frame comes back as
@@ -1750,4 +1961,400 @@ async fn precancelled_token_returns_immediately() {
         Ok(reason) => assert_eq!(reason, vox::streaming_chat::StopReason::Cancelled),
         Err(e) => panic!("expected Cancelled, got error: {e:?}"),
     }
+}
+
+// ─── Speaker-aware Live Talk ─────────────────────────────────
+
+#[tokio::test]
+async fn two_voices_get_two_speaker_ids_and_tagged_messages() {
+    let mut rig = Rig::new(vec![
+        reply(&["Hello Mert."]),
+        reply(&["Hello Ada."]),
+        reply(&["Hello again."]),
+        reply(&["Who is this?"]),
+    ])
+    .await;
+    let speakers = FakeSpeakers::new();
+    rig.speakers = Some(Arc::clone(&speakers));
+    let mut client = rig.live(diarization_config());
+    assert_eq!(client.expect("ready").await["diarization"], true);
+
+    let events = client.turn_at(MERT_LEVEL).await;
+    let first = of_type(&events, "transcript")[0].clone();
+    assert_eq!(first["speaker_id"], "speaker_1");
+    assert_eq!(first["speaker_name"], "Mert");
+    assert_eq!(first["speaker_color"], "#speaker_1");
+    let memory = of_type(&events, "memory");
+    let turn = &memory.last().unwrap()["turns"][0];
+    // The client is shown what was said and who said it, not the tag.
+    assert_eq!(turn["user"], "utterance 1");
+    assert_eq!(turn["speaker_id"], "speaker_1");
+    assert_eq!(turn["speaker_name"], "Mert");
+
+    let events = client.turn_at(ADA_LEVEL).await;
+    let second = of_type(&events, "transcript")[0].clone();
+    assert_eq!(second["speaker_id"], "speaker_2");
+    assert_eq!(second["speaker_name"], "Ada");
+    assert_ne!(first["speaker_id"], second["speaker_id"]);
+
+    client.turn_at(MERT_LEVEL).await;
+    // A voice nobody enrolled: no speaker fields, no tag.
+    let events = client.turn_at(STRANGER_LEVEL).await;
+    let stranger = of_type(&events, "transcript")[0].clone();
+    assert!(stranger.get("speaker_id").is_none());
+    assert!(stranger.get("speaker_name").is_none());
+
+    let requests = rig.llm_requests.lock().unwrap();
+    let system = contents(&requests[0])[0].clone();
+    assert!(system.contains("square brackets"), "{system}");
+    assert_eq!(contents(&requests[0])[1], "[Mert] utterance 1");
+    assert_eq!(
+        contents(&requests[3])[1..],
+        [
+            "[Mert] utterance 1",
+            "Hello Mert.",
+            "[Ada] utterance 2",
+            "Hello Ada.",
+            "[Mert] utterance 3",
+            "Hello again.",
+            "utterance 4",
+        ]
+    );
+    // The history is sent again byte for byte: every request starts with
+    // the whole message list of the one before it.
+    for pair in requests.windows(2) {
+        let earlier = pair[0]["messages"].as_array().unwrap();
+        let later = pair[1]["messages"].as_array().unwrap();
+        assert_eq!(
+            serde_json::to_string(earlier).unwrap(),
+            serde_json::to_string(&later[..earlier.len()]).unwrap()
+        );
+    }
+    // Talking never enrolls anyone.
+    assert_eq!(speakers.speaker_count(), 2);
+    assert!(speakers.enroll_calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn speakers_are_not_identified_unless_the_client_asks() {
+    let mut rig = Rig::new(vec![reply(&["Hello."])]).await;
+    let speakers = FakeSpeakers::new();
+    rig.speakers = Some(Arc::clone(&speakers));
+    let mut client = rig.live(vad_config());
+    assert_eq!(client.expect("ready").await["diarization"], false);
+
+    let events = client.turn_at(MERT_LEVEL).await;
+    assert!(
+        of_type(&events, "transcript")[0]
+            .get("speaker_id")
+            .is_none()
+    );
+    assert_eq!(speakers.identify_calls.load(Ordering::SeqCst), 0);
+    let requests = rig.llm_requests.lock().unwrap();
+    let sent = contents(&requests[0]);
+    assert_eq!(
+        sent[0],
+        vox::build_system_prompt(vox::VoicePromptMode::Voice)
+    );
+    assert_eq!(sent[1], "utterance 1");
+}
+
+#[tokio::test]
+async fn asking_for_diarization_without_a_speaker_model_changes_nothing() {
+    let rig = Rig::new(vec![reply(&["Hello."])]).await;
+    let mut client = rig.live(diarization_config());
+    assert_eq!(client.expect("ready").await["diarization"], false);
+    let events = client.turn_at(MERT_LEVEL).await;
+    assert!(
+        of_type(&events, "transcript")[0]
+            .get("speaker_id")
+            .is_none()
+    );
+    let requests = rig.llm_requests.lock().unwrap();
+    assert_eq!(
+        contents(&requests[0])[0],
+        vox::build_system_prompt(vox::VoicePromptMode::Voice)
+    );
+}
+
+#[tokio::test]
+async fn a_slow_speaker_lookup_leaves_the_turn_unlabelled() {
+    let mut rig = Rig::new(vec![reply(&["Hello."])]).await;
+    let speakers = FakeSpeakers::new();
+    *speakers.delay.lock().unwrap() = Duration::from_secs(30);
+    rig.speakers = Some(Arc::clone(&speakers));
+    rig.identify_grace = Duration::from_millis(40);
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    let started = std::time::Instant::now();
+    client.speak();
+    let events = client.until("turn_done").await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the turn waited for the speaker lookup"
+    );
+    assert_eq!(speakers.identify_calls.load(Ordering::SeqCst), 1);
+    let transcript = of_type(&events, "transcript")[0].clone();
+    assert_eq!(transcript["text"], "utterance 1");
+    assert!(transcript.get("speaker_id").is_none());
+    assert_eq!(of_type(&events, "sentence").len(), 1);
+    let requests = rig.llm_requests.lock().unwrap();
+    assert_eq!(contents(&requests[0])[1], "utterance 1");
+}
+
+#[tokio::test]
+async fn a_known_person_is_remembered_after_a_restart_and_nobody_else_is() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "vox-live-talk-memory-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("speakers.db").to_string_lossy().to_string();
+
+    // First run: Mert, who switched memory on, and Ada, who did not.
+    {
+        let db = speaker_db(&path).await;
+        let memory = MemoryStore::new(&db);
+        memory
+            .set_enabled("speaker_1", true)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut rig = Rig::new(vec![reply(&["Izmir is lovely."]), reply(&["Hello Ada."])]).await;
+        rig.speakers = Some(FakeSpeakers::new());
+        rig.memory = Some(memory.clone());
+        let mut client = rig.live(diarization_config());
+        client.expect("ready").await;
+        client.turn_at(MERT_LEVEL).await;
+        client.turn_at(ADA_LEVEL).await;
+        {
+            let requests = rig.llm_requests.lock().unwrap();
+            // Nothing was known yet: no block.
+            assert_eq!(contents(&requests[0])[1], "[Mert] utterance 1");
+        }
+        stored_rows(&memory, "speaker_1", 2).await;
+        stored_rows(&memory, "speaker_2", 0).await;
+        drop(client);
+        settle().await;
+        db.close().await;
+    }
+
+    // The server is started again: new database handle, new sessions.
+    let db = speaker_db(&path).await;
+    let memory = MemoryStore::new(&db);
+    let mut rig = Rig::new(vec![
+        reply(&["Hello Ada."]),
+        reply(&["Welcome back."]),
+        reply(&["Sure."]),
+    ])
+    .await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+    client.turn_at(ADA_LEVEL).await;
+    let events = client.turn_at(MERT_LEVEL).await;
+    client.turn_at(MERT_LEVEL).await;
+
+    {
+        let requests = rig.llm_requests.lock().unwrap();
+        // Ada: nothing of Mert's.
+        let ada = contents(&requests[0]);
+        assert_eq!(ada[1], "[Ada] utterance 1");
+        assert!(!ada.join("\n").contains("Izmir"));
+
+        // Mert's first message carries what was said last time.
+        let mert = contents(&requests[1]);
+        let message = mert.last().unwrap();
+        assert!(message.starts_with("[Memory: notes from earlier conversations with Mert."));
+        assert!(message.contains("- Mert: utterance 1"));
+        assert!(message.contains("- You: Izmir is lovely."));
+        assert!(message.ends_with("End of memory.]\n\n[Mert] utterance 2"));
+        // The client sees the plain text; the block counts as tokens.
+        let memory_event = of_type(&events, "memory");
+        let turn = &memory_event.last().unwrap()["turns"][1];
+        assert_eq!(turn["user"], "utterance 2");
+
+        // Once per session: his next message has no block, and the one that
+        // carried it is still in the history exactly as it was sent.
+        let again = contents(&requests[2]);
+        assert_eq!(again.last().unwrap(), "[Mert] utterance 3");
+        assert_eq!(&again[3], message);
+    }
+
+    drop(client);
+    settle().await;
+    db.close().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn nothing_is_stored_without_opt_in_or_for_an_unknown_voice() {
+    let db = speaker_db(":memory:").await;
+    let memory = MemoryStore::new(&db);
+    // Ada switched memory on; Mert did not.
+    memory
+        .set_enabled("speaker_2", true)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut rig = Rig::new(vec![reply(&["One."]), reply(&["Two."]), reply(&["Three."])]).await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    client.turn_at(MERT_LEVEL).await;
+    client.turn_at(STRANGER_LEVEL).await;
+    client.turn_at(ADA_LEVEL).await;
+
+    // Ada's turn is the last one, so once it is stored the two before it
+    // have been handled too.
+    stored_rows(&memory, "speaker_2", 2).await;
+    stored_rows(&memory, "speaker_1", 0).await;
+    let rows = memory.list("speaker_2", 10).await.unwrap();
+    assert_eq!(rows[1].role, MemoryRole::User);
+    assert_eq!(rows[1].content, "utterance 3");
+    assert_eq!(rows[0].role, MemoryRole::Assistant);
+    assert_eq!(rows[0].content, "Three.");
+    // Nothing belongs to anyone else: the stranger's words are nowhere.
+    let export = memory.export("speaker_1").await.unwrap().unwrap();
+    assert!(export.memories.is_empty());
+}
+
+#[tokio::test]
+async fn long_term_memory_keeps_only_what_was_heard() {
+    let db = speaker_db(":memory:").await;
+    let memory = MemoryStore::new(&db);
+    memory
+        .set_enabled("speaker_1", true)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut rig = Rig::new(vec![reply(&THREE_SENTENCES)]).await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    client.speak();
+    client.until("turn_done").await;
+    stored_rows(&memory, "speaker_1", 2).await;
+    // The user interrupts during the first sentence of the playback.
+    client.send(json!({"type": "cancel", "turn_id": 1, "heard_sentences": 1}));
+    client.until("cancelled").await;
+
+    for _ in 0..100 {
+        let rows = memory.list("speaker_1", 10).await.unwrap();
+        if rows[0].interrupted {
+            assert_eq!(rows[0].content, "Sentence one is here.");
+            assert_eq!(rows[1].content, "utterance 1");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the stored reply was never cut down");
+}
+
+#[tokio::test]
+async fn forget_memory_stops_recall_and_drops_a_running_turn() {
+    let db = speaker_db(":memory:").await;
+    let memory = MemoryStore::new(&db);
+    memory
+        .set_enabled("speaker_1", true)
+        .await
+        .unwrap()
+        .unwrap();
+    memory
+        .record_exchange("speaker_1", "I live in Izmir", Some("Noted."), false)
+        .await
+        .unwrap()
+        .unwrap();
+    let slow = Script {
+        tokens: vec!["A late reply."],
+        start_delay: Duration::from_millis(300),
+        ..Script::default()
+    };
+    let mut rig = Rig::new(vec![slow, reply(&["Fresh start."])]).await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    // "Forget" arrives while the model is still thinking about turn 1.
+    client.speak();
+    client.until("thinking").await;
+    for _ in 0..100 {
+        if !rig.llm_requests.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    client.send(json!({"type": "forget_memory"}));
+    let events = client.until("turn_done").await;
+    for memory_event in of_type(&events, "memory") {
+        assert_eq!(memory_event["turns"].as_array().unwrap().len(), 0);
+    }
+    client.send(json!({"type": "playback_done", "turn_id": 1}));
+    settle().await;
+
+    client.turn_at(MERT_LEVEL).await;
+    {
+        let requests = rig.llm_requests.lock().unwrap();
+        // Turn 1 was sent with the recall block...
+        assert!(contents(&requests[0])[1].contains("I live in Izmir"));
+        // ...and after "forget" neither that turn nor the block comes back.
+        let after = contents(&requests[1]);
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[1], "[Mert] utterance 2");
+    }
+    // The forgotten turn did not go to long-term memory either; the new
+    // one did (the stored memory itself is deleted through the REST API).
+    stored_rows(&memory, "speaker_1", 4).await;
+    let rows = memory.list("speaker_1", 10).await.unwrap();
+    assert!(rows.iter().all(|r| r.content != "utterance 1"));
+}
+
+#[tokio::test]
+async fn a_voice_is_enrolled_only_on_request() {
+    let mut rig = Rig::new(vec![reply(&["Hello."])]).await;
+    let speakers = FakeSpeakers::new();
+    rig.speakers = Some(Arc::clone(&speakers));
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    // Nothing was said yet: there is no voice to store.
+    client.send(json!({"type": "enroll_speaker", "name": "Deniz"}));
+    let error = client.expect("error").await;
+    assert_eq!(error["fatal"], false);
+    assert!(speakers.enroll_calls.lock().unwrap().is_empty());
+
+    client.turn_at(STRANGER_LEVEL).await;
+    assert!(speakers.enroll_calls.lock().unwrap().is_empty());
+
+    client.send(json!({"type": "enroll_speaker", "name": "Deniz"}));
+    let enrolled = client.expect("speaker_enrolled").await;
+    assert_eq!(enrolled["speaker_id"], "speaker_3");
+    assert_eq!(enrolled["speaker_name"], "Deniz");
+    assert_eq!(enrolled["created"], true);
+    assert_eq!(
+        *speakers.enroll_calls.lock().unwrap(),
+        [Some("Deniz".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn enroll_speaker_without_a_speaker_model_is_refused() {
+    let rig = Rig::new(vec![]).await;
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+    client.send(json!({"type": "enroll_speaker"}));
+    let error = client.expect("error").await;
+    assert_eq!(error["fatal"], false);
+    assert!(error["message"].as_str().unwrap().contains("not available"));
 }
