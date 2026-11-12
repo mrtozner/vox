@@ -11,6 +11,7 @@ pub mod live_talk;
 mod loaders;
 pub mod models;
 mod speakers;
+mod speakers_api;
 mod state;
 pub mod ws;
 pub mod ws_converse;
@@ -230,6 +231,7 @@ pub async fn run_with_options(
         .route("/v1/speak", get(ws_speak::speak_ws))
         .route("/v1/converse", get(ws_converse::converse_ws))
         .route("/v1/live-talk", get(live_talk::live_talk_ws))
+        .merge(speakers_api::routes())
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB max request body
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
