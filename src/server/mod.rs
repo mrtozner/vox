@@ -14,6 +14,7 @@ pub mod middleware;
 pub mod models;
 pub mod openai;
 mod speakers;
+mod speakers_api;
 mod state;
 pub mod ws;
 pub mod ws_converse;
@@ -77,6 +78,8 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/v1/speak", get(ws_speak::speak_ws))
         .route("/v1/converse", get(ws_converse::converse_ws))
         .route("/v1/live-talk", get(live_talk::live_talk_ws))
+        // Speaker management
+        .merge(speakers_api::routes())
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,

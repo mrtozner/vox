@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use tracing::info;
 
+use vox::diarization::{EMBEDDING_VERSION, EmbeddingVersionChange};
+
 /// Resolve the path for the persistent speaker database.
 ///
 /// Priority: `VOX_SPEAKER_DB` env var → OS data dir (`dirs::data_local_dir()/vox/speakers.db`)
@@ -15,16 +17,14 @@ fn speaker_db_path() -> std::path::PathBuf {
         return std::path::PathBuf::from(custom);
     }
     if let Some(data_dir) = dirs::data_local_dir() {
-        let vox_dir = data_dir.join("vox");
-        let _ = std::fs::create_dir_all(&vox_dir);
-        return vox_dir.join("speakers.db");
+        return data_dir.join("vox").join("speakers.db");
     }
     std::path::PathBuf::from("speakers.db")
 }
 
-/// Attempt to load the ECAPA-TDNN speaker encoder and hydrate the registry
-/// from SQLite. Returns `(None, None)` if the model is missing so the server
-/// keeps working with diarization disabled.
+/// Attempt to load the speaker encoder and hydrate the registry from SQLite.
+/// Returns `(None, None)` if the model is missing so the server keeps
+/// working with diarization disabled.
 #[cfg(feature = "diarization")]
 pub(super) async fn load_diarization(
     models_dir: &std::path::Path,
@@ -50,90 +50,95 @@ pub(super) async fn load_diarization(
     };
 
     let db_path = speaker_db_path();
-    let db_str = db_path.to_string_lossy().into_owned();
-    // Ensure the database file exists before sqlx tries to open it.
-    if !db_path.exists() {
-        if let Err(err) = std::fs::File::create(&db_path) {
-            tracing::warn!(
+    match open_and_hydrate(&db_path, embedding).await {
+        Ok((pipeline, db, speakers)) => {
+            info!(
+                model = %encoder_path.display(),
+                db = %db_path.display(),
+                speakers,
+                "loaded diarization pipeline"
+            );
+            (Some(Arc::new(pipeline)), Some(Arc::new(db)))
+        }
+        Err(err) => {
+            // Running with a registry that cannot be persisted would enroll
+            // voices that are gone (or worse, un-deletable) after a restart.
+            tracing::error!(
                 path = %db_path.display(),
                 error = %err,
-                "failed to create speaker database file, diarization disabled"
+                "speaker database is unusable, diarization disabled"
             );
-            return (None, None);
+            (None, None)
         }
     }
-    let db = match vox::SpeakerDatabase::open(db_str).await {
-        Ok(db) => db,
-        Err(err) => {
-            tracing::warn!(
-                path = %db_path.display(),
-                error = %err,
-                "failed to open speaker database, diarization disabled"
-            );
-            return (None, None);
-        }
-    };
+}
 
-    // Clear stale speakers if embedding pipeline version changed.
-    // Different preprocessing (CMVN, thresholds) produces incompatible embeddings.
-    const EMBEDDING_VERSION: &str = "v2-cmvn";
-    let stored_version = db
-        .get_system_preference("embedding_version")
-        .await
-        .unwrap_or_default()
-        .unwrap_or_default();
-    if stored_version != EMBEDDING_VERSION {
-        tracing::info!(
-            old = %stored_version,
+/// Open the speaker database (created owner-only if missing), reconcile the
+/// embedding version, and build a pipeline hydrated with the stored
+/// voiceprints. Returns the number of speakers loaded into the registry.
+///
+/// Any database failure is returned, not swallowed: in particular a failed
+/// version write must not silently repeat the invalidation on every start.
+#[cfg(feature = "diarization")]
+async fn open_and_hydrate(
+    db_path: &std::path::Path,
+    embedding: vox::SpeakerEmbedding,
+) -> Result<(vox::DiarizationPipeline, vox::SpeakerDatabase, usize), vox::VoxError> {
+    let db = vox::SpeakerDatabase::open(db_path.to_string_lossy()).await?;
+
+    // Embeddings from a different front end (CMVN, feature layout) are not
+    // comparable. Only the voiceprints are invalidated; names, history and
+    // preferences stay.
+    if let EmbeddingVersionChange::Updated {
+        previous,
+        invalidated,
+    } = db.apply_embedding_version(EMBEDDING_VERSION).await?
+    {
+        info!(
+            old = previous.as_deref().unwrap_or("none"),
             new = EMBEDDING_VERSION,
-            "embedding version changed, clearing stale speakers"
+            invalidated,
+            "embedding version recorded; voiceprints from other versions invalidated"
         );
-        if let Err(e) = db.clear_speakers().await {
-            tracing::warn!(error = %e, "failed to clear stale speakers");
-        }
-        let _ = db
-            .set_system_preference("embedding_version", EMBEDDING_VERSION)
-            .await;
     }
 
-    // Hydrate in-memory registry from persisted speakers.
+    // Hydrate the in-memory registry from the persisted voiceprints.
+    let model_dim = embedding.embedding_dim();
     let mut registry = vox::SpeakerRegistry::new();
-    match db.list_speakers().await {
-        Ok(speakers) => {
-            for speaker in speakers {
-                let id = speaker.id.clone();
-                let name = speaker.name.clone();
-                if let Err(err) = registry.enroll(id.clone(), name, speaker.embedding) {
-                    tracing::warn!(
-                        speaker_id = %id,
-                        error = %err,
-                        "failed to hydrate speaker into registry"
-                    );
-                }
-            }
+    for (speaker, sample_count) in db.list_voiceprints().await? {
+        let id = speaker.id.clone();
+        // A voiceprint from a different encoder model cannot be compared
+        // and would make every identification fail on a dimension mismatch.
+        if model_dim != 0 && speaker.embedding.len() != model_dim {
+            tracing::warn!(
+                speaker_id = %id,
+                stored_dim = speaker.embedding.len(),
+                model_dim,
+                "stored voiceprint does not match the speaker encoder, not loading it"
+            );
+            continue;
         }
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to list speakers from database");
+        if let Err(err) =
+            registry.enroll_with_count(speaker.id, speaker.name, speaker.embedding, sample_count)
+        {
+            tracing::warn!(
+                speaker_id = %id,
+                error = %err,
+                "failed to hydrate speaker into registry"
+            );
         }
     }
+    let speakers = registry.speaker_count();
 
-    let pipeline = match vox::DiarizationPipelineBuilder::new()
+    // Enrollment is decided per utterance by the server (consent gate), so
+    // the pipeline's own auto-enroll stays off. Reserving the database's
+    // high-water mark keeps the ID of a deleted speaker from being reissued.
+    let pipeline = vox::DiarizationPipelineBuilder::new()
         .embedding(embedding)
         .registry(registry)
-        .auto_enroll(true)
-        .build()
-    {
-        Ok(p) => p,
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to build diarization pipeline");
-            return (None, None);
-        }
-    };
+        .auto_enroll(false)
+        .reserve_speaker_numbers(db.speaker_sequence().await?)
+        .build()?;
 
-    info!(
-        model = %encoder_path.display(),
-        db = %db_path.display(),
-        "loaded diarization pipeline"
-    );
-    (Some(Arc::new(pipeline)), Some(Arc::new(db)))
+    Ok((pipeline, db, speakers))
 }

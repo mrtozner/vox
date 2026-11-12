@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use super::ServerState;
 use super::error::ServerError;
 use super::speakers::{
-    SpeakerPublic, current_speaker_list, diarize_utterance, forget_speaker, rename_speaker,
+    SpeakerPublic, current_speaker_list, diarize_utterance, enrollment_blocked_notice,
+    forget_speaker, rename_speaker,
 };
 use super::ws::bytes_to_f32_samples;
 
@@ -427,6 +428,19 @@ async fn handle_ws(
                                         "WS: diarization toggled"
                                     );
                                     if diarization_on {
+                                        // Enrollment is gated on consent recorded
+                                        // server-side; say so rather than silently
+                                        // never creating speakers.
+                                        if let Some(message) =
+                                            enrollment_blocked_notice(&state).await
+                                        {
+                                            if let Ok(json) =
+                                                serde_json::to_string(&WsEvent::Error { message })
+                                            {
+                                                let _ =
+                                                    ws_tx.send(Message::Text(json.into())).await;
+                                            }
+                                        }
                                         // Send full snapshot so the UI can
                                         // populate the speaker sidebar.
                                         if let Some(list) = current_speaker_list(&state).await {
