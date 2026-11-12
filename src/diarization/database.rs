@@ -98,6 +98,12 @@ pub enum EmbeddingVersionChange {
 }
 
 impl SpeakerDatabase {
+    /// The connection pool, for modules that keep their own tables in this
+    /// file (see [`crate::memory`]).
+    pub(crate) fn pool(&self) -> &Pool<Sqlite> {
+        &self.pool
+    }
+
     /// Open or create a speaker database at the given path.
     ///
     /// # Arguments
@@ -260,6 +266,9 @@ impl SpeakerDatabase {
         if let Some(max) = ids.iter().filter_map(|id| auto_speaker_number(id)).max() {
             raise_speaker_sequence(&self.pool, max).await?;
         }
+
+        // Per-person memory lives in the same file and hangs off `speakers`.
+        crate::memory::create_schema(&self.pool).await?;
 
         Ok(())
     }
@@ -574,6 +583,11 @@ impl SpeakerDatabase {
             .bind(target)
             .bind(source)
             .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+        // Long-term memory moves too, before the source row (and with it,
+        // by cascade, whatever still hangs off it) is deleted.
+        crate::memory::reassign_person(&mut tx, source, target)
             .await
             .map_err(err)?;
         sqlx::query(

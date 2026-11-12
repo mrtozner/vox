@@ -271,10 +271,18 @@ pub const LIVE_TALK_PROTOCOL_VERSION: u32 = 2;
 ///
 /// - `ready`        — handshake done. `session_id` identifies the memory;
 ///   send it back in `config` after a reconnect to keep the conversation.
+///   `diarization` says whether speakers are being identified: `false` when
+///   the client did not ask for it or the server has no speaker model.
 /// - `speech_start` / `speech_end` — the user started / stopped speaking.
 ///   After `speech_end` the server is transcribing.
 /// - `transcript`   — what the user said. The speaker fields are present only
-///   when the server identified the speaker.
+///   when the server identified the speaker (`config.diarization` on, a
+///   voice it knows, and the answer in time); otherwise show "You".
+///   Identification never enrolls anyone.
+/// - `speaker_enrolled` — answer to `enroll_speaker`: the voice of the last
+///   utterance belongs to this speaker. `created` is `false` when the voice
+///   was already known (the speaker keeps its name). A refusal comes as a
+///   non-fatal `error`.
 /// - `thinking`     — the LLM request was sent.
 /// - `token`        — raw LLM text as it arrives, for display only (may
 ///   contain markdown or reasoning text that is never spoken).
@@ -301,6 +309,7 @@ pub enum LiveTalkWsEvent {
         mode: LiveTalkMode,
         protocol_version: u32,
         session_id: String,
+        diarization: bool,
     },
     #[serde(rename = "speech_start")]
     SpeechStart,
@@ -308,6 +317,14 @@ pub enum LiveTalkWsEvent {
     SpeechEnd,
     #[serde(rename = "partial")]
     Partial { text: String, stability: f32 },
+    #[serde(rename = "speaker_enrolled")]
+    SpeakerEnrolled {
+        speaker_id: String,
+        speaker_name: String,
+        speaker_color: String,
+        /// `false`: the voice was already known as this speaker.
+        created: bool,
+    },
     #[serde(rename = "transcript")]
     Transcript {
         turn_id: u64,
@@ -402,6 +419,12 @@ pub struct LiveTalkConfig {
     /// first message of a connection.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Identify who is speaking (off by default). Known speakers are
+    /// labelled in `transcript`, the model is told who is talking, and a
+    /// person who switched memory on is remembered across sessions. Nobody
+    /// is enrolled by talking; see `enroll_speaker`.
+    #[serde(default)]
+    pub diarization: bool,
 }
 
 impl Default for LiveTalkConfig {
@@ -413,6 +436,7 @@ impl Default for LiveTalkConfig {
             barge_in_enabled: true,
             system_prompt_override: None,
             session_id: None,
+            diarization: false,
         }
     }
 }
@@ -445,7 +469,13 @@ impl From<LiveTalkModeConfig> for LiveTalkMode {
 ///   `{"type":"cancel"}` of protocol v1 is still accepted.
 /// - `playback_done` — the browser finished playing the turn; the server
 ///   listens to the microphone again.
-/// - `forget_memory` — clear the conversation memory.
+/// - `forget_memory` — clear the conversation memory of this session. What
+///   is stored long-term about a person is deleted through the speaker API
+///   (`DELETE /v1/speakers/{id}/memory` or forgetting the speaker); until
+///   the session ends it is not brought back into the conversation.
+/// - `enroll_speaker` — store the voice of the last utterance as a speaker,
+///   optionally under `name`. Needs enrollment consent on the server
+///   (`PUT /v1/speakers/consent`). Answered with `speaker_enrolled`.
 /// - `ptt_start` / `ptt_end` — push-to-talk key down / up.
 #[derive(Debug, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -463,6 +493,10 @@ pub enum LiveTalkClientMsg {
         heard_sentences: Option<usize>,
     },
     ForgetMemory,
+    EnrollSpeaker {
+        #[serde(default)]
+        name: Option<String>,
+    },
     PttStart,
     PttEnd,
 }
