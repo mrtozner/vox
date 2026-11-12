@@ -9,8 +9,8 @@ use futures_util::{SinkExt, StreamExt};
 
 use super::ServerState;
 use super::error::ServerError;
-use super::ws::encode_wav_chunk;
 use super::models::{SpeakWsRequest, TtsWsEvent};
+use super::ws::encode_wav_chunk;
 use vox::traits::StreamingTtsBackend;
 use vox::tts::SentenceStreamingAdapter;
 use vox::types::TtsRequest;

@@ -215,7 +215,10 @@ pub(super) async fn rename_speaker(
 }
 
 /// Forget a speaker from both the in-memory registry and the SQLite database.
-pub(super) async fn forget_speaker(state: &Arc<ServerState>, id: &str) -> Result<(), vox::VoxError> {
+pub(super) async fn forget_speaker(
+    state: &Arc<ServerState>,
+    id: &str,
+) -> Result<(), vox::VoxError> {
     #[cfg(feature = "diarization")]
     {
         let pipeline = state

@@ -9,8 +9,8 @@ use futures_util::{SinkExt, StreamExt};
 
 use super::ServerState;
 use super::error::ServerError;
-use super::ws::{bytes_to_f32_samples, encode_wav_chunk};
 use super::models::{ConverseConfig, ConverseWsEvent};
+use super::ws::{bytes_to_f32_samples, encode_wav_chunk};
 
 /// Minimal std-lib base64 encoder to avoid pulling in a new dependency.
 ///
