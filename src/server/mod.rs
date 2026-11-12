@@ -51,7 +51,7 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
     let models_dir = resolve_models_dir();
     info!(dir = %models_dir.display(), "server using models directory");
 
-    // `--cache-models` used to construct a `ModelCache` that nothing ever
+    // `--cache-models` used to build an LRU model cache that nothing ever
     // read from or wrote to. The cache is gone; the flag is accepted and
     // ignored so existing invocations keep working.
     if cache_models {
