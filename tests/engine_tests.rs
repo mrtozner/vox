@@ -1685,3 +1685,283 @@ fn builder_accepts_on_partial() {
         }
     }
 }
+
+// ===========================================================================
+// Audio-in path: framing and resampling (driven through build_with_source)
+// ===========================================================================
+
+/// A VAD that records every frame it is given and never detects speech.
+struct RecordingVad {
+    frames: Arc<Mutex<Vec<AudioChunk>>>,
+    frame_size: usize,
+}
+
+impl RecordingVad {
+    fn new(frame_size: usize) -> (Self, Arc<Mutex<Vec<AudioChunk>>>) {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                frames: frames.clone(),
+                frame_size,
+            },
+            frames,
+        )
+    }
+}
+
+#[async_trait]
+impl VadBackend for RecordingVad {
+    async fn process_frame(&mut self, frame: &AudioChunk) -> Result<Vec<VadEvent>, VoxError> {
+        self.frames.lock().unwrap().push(frame.clone());
+        Ok(vec![VadEvent::Silence])
+    }
+
+    fn reset(&mut self) {}
+
+    fn frame_size(&self) -> usize {
+        self.frame_size
+    }
+
+    fn sample_rate(&self) -> u32 {
+        16000
+    }
+}
+
+/// Run the real engine loop over `chunks` and return the frames the VAD saw.
+async fn run_engine_over(chunks: Vec<AudioChunk>, source_rate: u32) -> Vec<AudioChunk> {
+    let (vad, frames) = RecordingVad::new(512);
+    let (tx, rx) = tokio::sync::mpsc::channel(chunks.len().max(1));
+    for chunk in chunks {
+        tx.send(chunk).await.unwrap();
+    }
+    drop(tx); // end of stream: listen() returns once everything is processed
+
+    let vox = Vox::builder()
+        .vad(vad)
+        .stt(MockStt::new("unused"))
+        .build_with_source(rx, source_rate)
+        .expect("build_with_source needs no audio device");
+    vox.listen().await.unwrap();
+
+    frames.lock().unwrap().clone()
+}
+
+fn mono_chunks(samples: &[f32], chunk: usize, rate: u32) -> Vec<AudioChunk> {
+    samples
+        .chunks(chunk)
+        .map(|c| AudioChunk {
+            samples: c.to_vec(),
+            sample_rate: rate,
+            channels: 1,
+        })
+        .collect()
+}
+
+fn sine_wave(freq: f32, rate: u32, n: usize) -> Vec<f32> {
+    (0..n)
+        .map(|i| (i as f32 * 2.0 * std::f32::consts::PI * freq / rate as f32).sin())
+        .collect()
+}
+
+/// The capture path delivers 480-sample chunks, the VAD needs 512-sample
+/// frames. Every frame must be exactly 512 samples and no sample may be lost.
+#[tokio::test]
+async fn engine_reframes_480_sample_chunks_into_512_sample_frames() {
+    // 16 * 480 = 7680 = 15 * 512, so the stream divides evenly.
+    let input: Vec<f32> = (0..480 * 16).map(|i| i as f32).collect();
+
+    let frames = run_engine_over(mono_chunks(&input, 480, 16000), 16000).await;
+
+    assert_eq!(frames.len(), 15);
+    for frame in &frames {
+        assert_eq!(frame.samples.len(), 512);
+        assert_eq!(frame.sample_rate, 16000);
+        assert_eq!(frame.channels, 1);
+    }
+    let seen: Vec<f32> = frames.iter().flat_map(|f| f.samples.clone()).collect();
+    assert_eq!(
+        seen, input,
+        "samples must reach the VAD unchanged, in order"
+    );
+}
+
+/// A stream that does not end on a frame boundary keeps its tail: the last
+/// frame is padded with silence instead of being dropped.
+#[tokio::test]
+async fn engine_pads_final_partial_frame_at_end_of_stream() {
+    // 10 * 480 = 4800 = 9 * 512 + 192.
+    let input: Vec<f32> = (1..=480 * 10).map(|i| i as f32).collect();
+
+    let frames = run_engine_over(mono_chunks(&input, 480, 16000), 16000).await;
+
+    assert_eq!(frames.len(), 10);
+    assert!(frames.iter().all(|f| f.samples.len() == 512));
+    let seen: Vec<f32> = frames.iter().flat_map(|f| f.samples.clone()).collect();
+    assert_eq!(&seen[..input.len()], &input[..]);
+    assert!(seen[input.len()..].iter().all(|&s| s == 0.0));
+}
+
+/// A 48 kHz device (the usual macOS default) is resampled from its real rate:
+/// one second of audio becomes one second of 16 kHz frames carrying the same
+/// tone, with no clicks where capture chunks meet.
+#[tokio::test]
+async fn engine_resamples_48k_source_to_vad_rate() {
+    let input = sine_wave(440.0, 48000, 48000);
+
+    // 1440 samples = the 30 ms chunk AudioCapture emits at 48 kHz.
+    let frames = run_engine_over(mono_chunks(&input, 1440, 48000), 48000).await;
+
+    // 16000 samples -> 31 full frames + 128 samples padded to a 32nd frame.
+    assert_eq!(frames.len(), 32);
+    assert!(
+        frames
+            .iter()
+            .all(|f| f.samples.len() == 512 && f.sample_rate == 16000)
+    );
+
+    let seen: Vec<f32> = frames.iter().flat_map(|f| f.samples.clone()).collect();
+    // Reference: the whole second resampled in a single call.
+    let single_shot = vox::audio::to_mono_16k(&input, 48000, 1).unwrap();
+    assert_eq!(single_shot.len(), 16000);
+    let mut max_err = 0.0f32;
+    for i in 0..16000 {
+        max_err = max_err.max((seen[i] - single_shot[i]).abs());
+    }
+    assert!(
+        max_err < 1e-6,
+        "streamed output differs from single-shot: {max_err}"
+    );
+    assert!(seen[16000..].iter().all(|&s| s == 0.0));
+
+    // And it is a clean tone: no sample-to-sample jump larger than a 440 Hz
+    // sine at 16 kHz can make (a dropped or zero-padded block would).
+    let max_step = seen[..16000]
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        max_step < 0.18,
+        "discontinuity in resampled stream: {max_step}"
+    );
+}
+
+/// Chunks whose sample rate differs from the declared source rate (the
+/// device fell back to another format) are still resampled correctly.
+#[tokio::test]
+async fn engine_follows_chunk_sample_rate() {
+    let input = sine_wave(440.0, 48000, 48000);
+
+    // Declared 16 kHz, but the chunks say 48 kHz.
+    let frames = run_engine_over(mono_chunks(&input, 1440, 48000), 16000).await;
+
+    assert_eq!(frames.len(), 32, "48000 samples at 48 kHz are 1 s, not 3 s");
+}
+
+#[tokio::test]
+async fn engine_downmixes_stereo_source() {
+    // 512 stereo frames: left = 1.0, right = 0.0.
+    let samples: Vec<f32> = (0..1024)
+        .map(|i| if i % 2 == 0 { 1.0 } else { 0.0 })
+        .collect();
+    let chunk = AudioChunk {
+        samples,
+        sample_rate: 16000,
+        channels: 2,
+    };
+
+    let frames = run_engine_over(vec![chunk], 16000).await;
+
+    assert_eq!(frames.len(), 1);
+    assert!(frames[0].samples.iter().all(|&s| (s - 0.5).abs() < 1e-6));
+}
+
+/// End to end without a microphone: an utterance detected by the VAD is
+/// transcribed and handed to the callback.
+#[tokio::test]
+async fn engine_delivers_utterance_from_external_source() {
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    for _ in 0..8 {
+        tx.send(AudioChunk {
+            samples: vec![0.1; 480],
+            sample_rate: 16000,
+            channels: 1,
+        })
+        .await
+        .unwrap();
+    }
+    drop(tx);
+
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let heard_cb = heard.clone();
+    let vox = Vox::builder()
+        .vad(MockVad::new(3))
+        .stt(MockStt::new("hello from a file"))
+        .on_utterance(move |result, ctx| {
+            heard_cb
+                .lock()
+                .unwrap()
+                .push((result.text, ctx.stats().utterance_count));
+        })
+        .build_with_source(rx, 16000)
+        .unwrap();
+    vox.listen().await.unwrap();
+
+    let heard = heard.lock().unwrap();
+    assert_eq!(heard.as_slice(), [("hello from a file".to_string(), 1)]);
+}
+
+#[test]
+fn build_with_source_requires_backends() {
+    let (_tx, rx) = tokio::sync::mpsc::channel::<AudioChunk>(1);
+    let err = Vox::builder()
+        .stt(MockStt::new("x"))
+        .build_with_source(rx, 16000)
+        .err()
+        .expect("missing VAD must fail");
+    assert!(matches!(err, VoxError::NoVad));
+
+    let (_tx, rx) = tokio::sync::mpsc::channel::<AudioChunk>(1);
+    let err = Vox::builder()
+        .vad(SilentVad)
+        .build_with_source(rx, 16000)
+        .err()
+        .expect("missing STT must fail");
+    assert!(matches!(err, VoxError::NoStt));
+}
+
+#[test]
+fn build_with_source_rejects_zero_sample_rate() {
+    let (_tx, rx) = tokio::sync::mpsc::channel::<AudioChunk>(1);
+    let result = Vox::builder()
+        .vad(SilentVad)
+        .stt(MockStt::new("x"))
+        .build_with_source(rx, 0);
+    assert!(result.is_err());
+}
+
+// ===========================================================================
+// Shared audio helpers
+// ===========================================================================
+
+#[test]
+fn to_mono_16k_converts_44k_stereo_to_expected_length() {
+    // 2 s of 44.1 kHz stereo -> 2 s of 16 kHz mono.
+    let samples = vec![0.2f32; 44_100 * 2 * 2];
+    let out = vox::audio::to_mono_16k(&samples, 44_100, 2).unwrap();
+    assert_eq!(out.len(), 32_000);
+}
+
+#[test]
+fn frame_assembler_is_public_and_lossless() {
+    let mut asm = vox::audio::FrameAssembler::new(512);
+    let input: Vec<f32> = (0..2048).map(|i| i as f32).collect();
+    let mut out = Vec::new();
+    for chunk in input.chunks(300) {
+        asm.push(chunk);
+        while let Some(frame) = asm.pop() {
+            assert_eq!(frame.len(), 512);
+            out.extend(frame);
+        }
+    }
+    assert_eq!(out, input);
+}
