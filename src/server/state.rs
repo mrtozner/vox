@@ -63,6 +63,8 @@ pub struct ServerState {
     /// Cancelled when the server starts shutting down. WebSocket handlers
     /// select on it and send [`shutdown_close_message`] before returning.
     pub shutdown: CancellationToken,
+    /// Live Talk conversation memory by session id, kept across reconnects.
+    pub sessions: Arc<vox::conversation::SessionStore>,
     #[cfg(feature = "diarization")]
     pub diarization: Option<Arc<vox::DiarizationPipeline>>,
     #[cfg(feature = "diarization")]
@@ -106,6 +108,7 @@ impl ServerState {
             inference: Arc::new(Semaphore::new(opts.max_concurrent_inference.max(1))),
             inference_slots: opts.max_concurrent_inference.max(1),
             shutdown: CancellationToken::new(),
+            sessions: Default::default(),
             #[cfg(feature = "diarization")]
             diarization: None,
             #[cfg(feature = "diarization")]
