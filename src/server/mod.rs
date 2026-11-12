@@ -29,27 +29,45 @@ use tracing::info;
 
 #[cfg(feature = "diarization")]
 use diarization_init::load_diarization;
+pub use loaders::LoadOptions;
 #[cfg(feature = "piper")]
 use loaders::try_load_piper;
-use loaders::{load_tts, resolve_models_dir};
+use loaders::{load_stt, load_tts, resolve_models_dir};
 pub use state::{ServerState, ServerStats};
 
 /// Start the HTTP server on `host:port`.
 ///
 /// Attempts to load STT (Whisper) and TTS (Kokoro/Piper) backends from
-/// the repo-relative `models/` directory (see
-/// [`crate::cli::models::models_dir`]). Missing backends are tolerated --
-/// the corresponding endpoints return 503 until models are available.
+/// the models directory (see [`vox::paths::models_dir`]). Missing backends
+/// are tolerated -- the corresponding endpoints return 503 until models are
+/// available.
+///
+/// Language, STT model and Piper voice come from the `VOX_LANGUAGE`,
+/// `VOX_STT_MODEL` and `VOX_PIPER_VOICE` environment variables; use
+/// [`run_with_options`] to pass them explicitly.
 ///
 /// # Arguments
 /// - `cache_models`: deprecated, ignored (kept so `vox serve --cache-models` still parses)
+#[allow(dead_code)]
 pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()> {
-    // Use the single source of truth for model resolution -- repo-relative
-    // by default, overridable via `VOX_MODELS_DIR`. Mirrors the logic in
-    // `crate::cli::models::models_dir` so the server module is self-contained
-    // when pulled into test crates via `#[path = ...]`.
+    run_with_options(host, port, cache_models, LoadOptions::from_env()).await
+}
+
+/// Like [`run`], with explicit model-loading options.
+pub async fn run_with_options(
+    host: &str,
+    port: u16,
+    cache_models: bool,
+    load_opts: LoadOptions,
+) -> anyhow::Result<()> {
+    // Single source of truth for model resolution, shared with the CLI:
+    // `VOX_MODELS_DIR` → source checkout → per-user data directory.
     let models_dir = resolve_models_dir();
     info!(dir = %models_dir.display(), "server using models directory");
+
+    // Hardware profile drives the STT candidate order and thread count.
+    let profile = vox::system_profile::SystemProfile::detect();
+    info!(profile = %profile.summary(), "detected hardware profile");
 
     // `--cache-models` used to build an LRU model cache that nothing ever
     // read from or wrote to. The cache is gone; the flag is accepted and
@@ -58,67 +76,9 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
         tracing::warn!("--cache-models is deprecated and has no effect");
     }
 
-    #[cfg(feature = "whisper")]
-    let (stt, stt_model_name, stt_model_size): (
-        Option<Arc<dyn vox::traits::SttBackend>>,
-        Option<String>,
-        Option<u64>,
-    ) = {
-        let candidates = [
-            "ggml-base.en.bin",
-            "ggml-tiny.en.bin",
-            "ggml-base.bin",
-            "ggml-tiny.bin",
-            "ggml-small.en.bin",
-            "ggml-small.bin",
-        ];
-        let mut loaded = None;
-        let mut model_name = None;
-        let mut model_size = None;
-        for name in &candidates {
-            let path = models_dir.join(name);
-            if path.exists() {
-                match vox::stt::WhisperBackend::from_model(&path) {
-                    Ok(backend) => {
-                        info!(model = %path.display(), "loaded whisper STT backend");
-                        let variant = name
-                            .strip_prefix("ggml-")
-                            .unwrap_or(name)
-                            .strip_suffix(".bin")
-                            .unwrap_or(name)
-                            .to_string();
-                        model_name = Some(variant);
-                        model_size = std::fs::metadata(&path)
-                            .ok()
-                            .map(|m| m.len() / (1024 * 1024));
-                        loaded = Some(Arc::new(backend) as Arc<dyn vox::traits::SttBackend>);
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::warn!(model = %path.display(), error = %e, "failed to load whisper model");
-                    }
-                }
-            }
-        }
-        if loaded.is_none() {
-            tracing::warn!(
-                "no whisper model found in {}, STT disabled",
-                models_dir.display()
-            );
-        }
-        (loaded, model_name, model_size)
-    };
-    #[cfg(not(feature = "whisper"))]
-    let (stt, stt_model_name, stt_model_size): (
-        Option<Arc<dyn vox::traits::SttBackend>>,
-        Option<String>,
-        Option<u64>,
-    ) = {
-        tracing::warn!("STT disabled (compiled without 'whisper' feature)");
-        (None, None, None)
-    };
+    let (stt, stt_model_name, stt_model_size) = load_stt(&models_dir, &profile, &load_opts);
 
-    let (tts, tts_model_name, tts_model_size) = load_tts(&models_dir).await;
+    let (tts, tts_model_name, tts_model_size) = load_tts(&models_dir, &load_opts).await;
 
     // Load Piper as conversation TTS (better pronunciation for Live Talk/Converse)
     #[cfg(feature = "piper")]
@@ -130,7 +90,7 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
         {
             tts.clone() // Main TTS is already Piper, reuse it
         } else {
-            match try_load_piper(&models_dir) {
+            match try_load_piper(&models_dir, &load_opts) {
                 Some((Some(piper), _, _)) => {
                     info!("loaded piper as conversation TTS (Live Talk/Converse)");
                     Some(piper)
@@ -184,7 +144,6 @@ pub async fn run(host: &str, port: u16, cache_models: bool) -> anyhow::Result<()
     let (diarization, speaker_db) = load_diarization(&models_dir).await;
 
     // Build capability registry from already-loaded state.
-    let profile = vox::system_profile::SystemProfile::detect();
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .build()
