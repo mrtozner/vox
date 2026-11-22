@@ -56,7 +56,7 @@ What Vox is not: it has no telephony or WebRTC transport, no cloud-provider plug
 
 ### Prebuilt binary
 
-Download the archive for your platform from the [latest release](https://github.com/mrtozner/vox/releases/latest), unpack it, and put `vox` on your `PATH`. Archives exist for Linux x86_64 and aarch64 (glibc 2.39+: Ubuntu 24.04, Debian 13, Raspberry Pi OS Trixie), macOS 13.4+ on Apple Silicon, and Windows x86_64. x86_64 builds need an AVX2-capable CPU (x86-64-v3: Intel Haswell / AMD Zen or newer). Each release carries a `SHA256SUMS` file and a build provenance attestation:
+Download the archive for your platform from the [latest release](https://github.com/mrtozner/vox/releases/latest), unpack it, and put `vox` on your `PATH`. Archives exist for Linux x86_64 and aarch64 (glibc 2.39+: Ubuntu 24.04, Debian 13, Raspberry Pi OS Trixie), macOS 13.4+ on Apple Silicon, and Windows x86_64 (without Piper: espeak-ng does not build with MSVC, so Windows uses Kokoro for every voice). x86_64 builds need an AVX2-capable CPU (x86-64-v3: Intel Haswell / AMD Zen or newer). Each release carries a `SHA256SUMS` file and a build provenance attestation:
 
 ```bash
 sha256sum --check SHA256SUMS --ignore-missing
@@ -518,7 +518,7 @@ Download the models an example needs first (`vox models download ...`).
 | macOS 13.4+ (Apple Silicon) | yes | CI tested |
 | Linux x86_64 (glibc 2.39+, x86-64-v3 CPU) | yes | CI tested |
 | Linux aarch64 (glibc 2.39+, Raspberry Pi 4/5) | yes | Built and smoke-tested by the release workflow |
-| Windows x86_64 (x86-64-v3 CPU) | yes | CI tested |
+| Windows x86_64 (x86-64-v3 CPU) | yes, without Piper | CI tested (no Piper) |
 | macOS (Intel) | no | Not built or tested. The ONNX Runtime bindings Vox uses (`ort` 2.0.0-rc.11) ship no prebuilt library for Intel macOS, so a build needs your own ONNX Runtime. |
 
 <br>

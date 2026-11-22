@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] - 2026-11-22
 
 ### Changed
+- The Windows release binary is built without Piper (espeak-ng does not compile with MSVC); Live Talk uses Kokoro there
 - **BREAKING**: `GET /v1/models` now returns the OpenAI list shape. Vox's own model report moved to `GET /v1/vox/models`
 - **BREAKING**: the Cargo package is now `vox-voice` (the `vox` name on crates.io belongs to another project). The library crate is still `vox` and the binary is still `vox`, so `use vox::...` and the command line are unchanged. Depend on it with `vox = { package = "vox-voice", git = "..." }`
 - **Release binaries are GPL-3.0.** They are built with the new `dist` feature (`cli`, `server`, `kokoro`, `piper`), and Piper links espeak-ng; Kokoro's phonemizer is derived from espeak-ng too. The source code stays MIT OR Apache-2.0. See `NOTICE`

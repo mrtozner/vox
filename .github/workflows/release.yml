@@ -17,10 +17,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # The feature set of the shipped binary. It includes Piper, which links
-  # espeak-ng (GPL-3.0-or-later): the binaries are distributed under GPL-3.0.
-  # See NOTICE.
-  VOX_FEATURES: dist
+  # The feature set of each shipped binary is `matrix.features`: `dist`
+  # (with Piper, which links espeak-ng, GPL-3.0-or-later) everywhere but
+  # Windows. The binaries are distributed under GPL-3.0. See NOTICE.
 
 jobs:
   # ── Version gate ─────────────────────────────────────────────────────
@@ -79,21 +78,28 @@ jobs:
           # Trixie).
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            features: dist
             artifact: vox
             archive: tar.gz
 
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            features: dist
             artifact: vox
             archive: tar.gz
 
           - os: macos-14
             target: aarch64-apple-darwin
+            features: dist
             artifact: vox
             archive: tar.gz
 
+          # No Piper on Windows: espeak-ng (built by espeak-rs-sys) does not
+          # compile with MSVC (its compat headers use __has_include_next).
+          # Live Talk uses Kokoro there.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            features: cli,server,kokoro
             artifact: vox.exe
             archive: zip
 
@@ -166,7 +172,7 @@ jobs:
       # [profile.release] in Cargo.toml sets thin LTO, one codegen unit and
       # symbol stripping, so no separate strip step is needed.
       - name: Build release binary
-        run: cargo build --release --locked --features ${{ env.VOX_FEATURES }} --target ${{ matrix.target }}
+        run: cargo build --release --locked --features ${{ matrix.features }} --target ${{ matrix.target }}
 
       # ── Smoke test ───────────────────────────────────────────────────
       # --version, --help of every documented subcommand, `vox models list`,
@@ -256,7 +262,7 @@ jobs:
           fail_on_unmatched_files: true
           files: artifacts/*
           body: |
-            Prebuilt `vox` binaries, built with `--features dist` (CLI, server, Kokoro, Piper).
+            Prebuilt `vox` binaries, built with `--features dist` (CLI, server, Kokoro, Piper). The Windows build has no Piper (espeak-ng does not build with MSVC); it uses Kokoro for every voice.
 
             **License of these binaries: GPL-3.0.** They link espeak-ng through Piper, and Kokoro's phonemizer is derived from espeak-ng. Vox's source code remains MIT OR Apache-2.0. See `NOTICE` in each archive.
 

@@ -239,7 +239,9 @@ jobs:
           cargo check --locked --lib --no-default-features --features server
           cargo test --locked --no-default-features --test embedding_tests
 
-      - name: Tests with piper feature
+      # espeak-ng (Piper) does not compile with MSVC.
+      - name: Tests with piper feature (Unix only)
+        if: runner.os != 'Windows'
         run: cargo test --features piper
         env:
           RUSTFLAGS: ""
