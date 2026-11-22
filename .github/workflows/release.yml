@@ -74,14 +74,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux builds use the oldest hosted image so the binaries run on
-          # glibc 2.35+ (Ubuntu 22.04, Debian 12, Raspberry Pi OS Bookworm).
-          - os: ubuntu-22.04
+          # The floor is set by ort's prebuilt ONNX Runtime, which needs glibc
+          # 2.39+ and libstdc++ 13.2+ (Ubuntu 24.04, Debian 13, Raspberry Pi OS
+          # Trixie).
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact: vox
             archive: tar.gz
 
-          - os: ubuntu-22.04-arm
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: vox
             archive: tar.gz
@@ -247,7 +248,7 @@ jobs:
           body: |
             Prebuilt `vox` binaries, built with `--features dist` (CLI, server, Kokoro, Piper).
 
-            **License of these binaries: GPL-3.0.** They link espeak-ng through Piper. Vox's source code remains MIT OR Apache-2.0. See `NOTICE` in each archive.
+            **License of these binaries: GPL-3.0.** They link espeak-ng through Piper, and Kokoro's phonemizer is derived from espeak-ng. Vox's source code remains MIT OR Apache-2.0. See `NOTICE` in each archive.
 
             Verify a download with `sha256sum --check SHA256SUMS --ignore-missing`, and its provenance with `gh attestation verify <archive> --repo ${{ github.repository }}`.
 

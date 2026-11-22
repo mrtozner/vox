@@ -1,4 +1,4 @@
-//! Vox CLI — the open-source voice AI framework.
+//! Vox CLI: the offline voice AI runtime.
 //!
 //! An Ollama-like interface for voice: manage models, transcribe speech,
 //! and synthesize audio, all running locally on your hardware.
@@ -12,9 +12,10 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "vox",
     version,
-    about = "The open-source voice AI framework",
-    long_about = "Vox is an open-source voice AI framework that runs entirely on your device.\n\
-                  Whisper STT + Kokoro TTS + Silero VAD — no cloud, no Python, just Rust."
+    about = "Offline voice AI runtime: speech-to-text, text-to-speech and voice chat on your machine",
+    long_about = "Vox is an offline voice AI runtime in a single binary.\n\
+                  Whisper STT, Kokoro/Piper TTS, Silero VAD, speaker identification and barge-in voice chat\n\
+                  with a local Ollama model. No cloud APIs, no Python."
 )]
 struct Cli {
     /// Stay on this machine: refuse an Ollama host that is not loopback and

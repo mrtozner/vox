@@ -1,4 +1,4 @@
-//! # Vox — The open-source voice AI framework
+//! # Vox: offline voice AI runtime
 //!
 //! Vox assembles a local voice pipeline into a single crate:
 //!

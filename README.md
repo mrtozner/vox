@@ -1,6 +1,6 @@
 <p align="center">
   <img src="assets/vox-logo.jpg" alt="Vox" width="200">
-  <p align="center"><strong>Local-first voice AI framework. Speech-to-text, text-to-speech, speaker diarization, and voice chat &mdash; all running on your machine.</strong></p>
+  <p align="center"><strong>The offline voice runtime in Rust. Talk to a local LLM, interrupt it mid-sentence, and let it remember who it is talking to &mdash; all on your machine.</strong></p>
 </p>
 
 <p align="center">
@@ -12,23 +12,42 @@
 
 ---
 
-No API keys. No cloud. No data leaving your machine.
+Vox is a voice AI runtime that ships as one binary and as a Rust library: voice activity detection, speech-to-text, speaker identification, text-to-speech, and full-duplex voice chat with a local LLM through [Ollama](https://ollama.com). It recognizes the people it has been introduced to and, if they opt in, remembers what they said across sessions. No API keys, no cloud APIs, and an `--offline` switch that refuses a remote LLM host and every download.
 
 ```
-Mic --> VAD (Silero) --> STT (Whisper/Sherpa) --> Speaker ID --> Your Code --> TTS (Kokoro/Piper/Qwen3) --> Speaker
+Mic --> VAD (Silero) --> STT (Whisper/Sherpa) --> Speaker ID --> LLM (Ollama) or your code --> TTS (Kokoro/Piper/Qwen3) --> Speaker
+                                                      |
+                                              per-person memory (SQLite, local)
 ```
+
+<br>
+
+## Why Vox
+
+Most voice-agent frameworks are Python orchestration layers built around cloud speech and LLM APIs. Vox takes the other route:
+
+- **One binary, no Python.** `vox serve` is the whole stack: speech models run in-process, the web UI is embedded, there is no separate frontend or worker to deploy. Two things live outside the binary: the model files, which are downloaded once, and the LLM, which is an Ollama server you run.
+- **Offline you can check.** In the release feature set Vox makes two kinds of outbound connection: requests to Ollama and model downloads. `--offline` refuses an Ollama host that is not loopback and refuses every download. `GET /v1/privacy/ledger` shows the connections the server process made, with destination, purpose and body bytes. (The optional `pocket`, `chatterbox` and `qwen3` backends fetch their own weights and are outside this control.)
+- **It knows who is speaking.** Speaker identification runs inside the conversation loop. No voiceprint is stored before you record consent, and in Live Talk a voice is enrolled only by an explicit command. Long-term memory is opt-in per person and deleted with the speaker.
+- **Embeddable.** The engine and the HTTP/WebSocket server are library APIs (`vox::server`, `VoxBuilder::build_with_channel`), so you can feed it your own audio and mount its router in your own application.
+- **OpenAI-shaped where it helps.** `/v1/audio/transcriptions`, `/v1/audio/speech` and `/v1/models` follow the OpenAI shape, so OpenAI SDK clients can use a Vox server for transcription and speech.
+
+What Vox is not: it has no telephony or WebRTC transport, no cloud-provider plugins, and no built-in authentication (it binds to loopback by default). If you need a hosted, multi-provider agent platform, a framework like Pipecat or LiveKit Agents is the better fit. Live Talk and speaker identification are still marked experimental.
 
 <br>
 
 ## Highlights
 
-- **Speech-to-Text** &mdash; Whisper, Distil-Whisper (6x faster), Sherpa-ONNX (streaming + multilingual)
+- **Live Talk** *(experimental)* &mdash; Full-duplex voice chat with barge-in in every phase of a turn. While a reply is being transcribed or generated, a cough or a click does not cancel it: speech has to last 250 ms. The conversation records only the sentences you actually heard, sessions survive a reconnect, and every turn reports latency metrics
+- **Speaker-aware conversations** *(experimental)* &mdash; Known speakers are identified while they talk and named to the model. Voiceprints are stored only after you give consent. In Live Talk, talking never enrolls or changes a voiceprint; enrollment is an explicit command
+- **Per-person long-term memory** &mdash; Opt-in for each speaker, stored in the local SQLite speaker database, recalled at the start of their next session. Turns that fall out of the context window are distilled into facts by the conversation's Ollama model. Forgetting a speaker deletes their memory
+- **Offline mode and privacy ledger** &mdash; `--offline` (or `VOX_OFFLINE=1`) blocks remote Ollama hosts and model downloads; `/v1/privacy/ledger` shows the server's outbound connections
+- **Speech-to-Text** &mdash; Whisper (including multilingual and large-v3-turbo models), Distil-Whisper, Sherpa-ONNX (streaming + multilingual)
 - **Text-to-Speech** &mdash; Kokoro (57 voices, 9 languages), Piper (multilingual), Qwen3, Pocket (pure Rust), Chatterbox (voice cloning)
-- **Speaker Diarization** *(experimental)* &mdash; Know *who* is speaking. Real-time speaker identification with voice embeddings and a local speaker database. Voiceprints are stored only after you give consent
-- **Live Talk** *(experimental)* &mdash; Barge-in voice chat. Talk to an LLM and interrupt it mid-sentence, just like a real conversation
-- **Web Interface** &mdash; 5-tab browser UI: Live Talk, Listen, Speak, Chat, Dashboard
-- **HTTP + WebSocket API** &mdash; REST endpoints (including OpenAI-compatible `/v1/audio/*`) and 4 WebSocket channels for real-time streaming
-- **Fully Local** &mdash; Everything runs on-device. Works offline after model download
+- **`vox tune`** &mdash; Measures the STT, TTS and Ollama models installed on your machine with a spoken sample and saves the best combination as the defaults of `vox chat`
+- **HTTP + WebSocket API** &mdash; OpenAI-compatible `/v1/audio/*` and `/v1/models`, a speaker and memory REST API, and 4 WebSocket channels for real-time streaming
+- **Web Interface** &mdash; 5-tab browser UI served by the binary: Listen, Speak, Chat, Live Talk, Dashboard. It opens on Live Talk
+- **Verified downloads and releases** &mdash; Model downloads are pinned to a revision and checked by size and SHA-256; release archives carry `SHA256SUMS` and build provenance attestations
 - **Pluggable Backends** &mdash; Swap any component via Rust traits
 
 <br>
@@ -37,7 +56,7 @@ Mic --> VAD (Silero) --> STT (Whisper/Sherpa) --> Speaker ID --> Your Code --> T
 
 ### Prebuilt binary
 
-Download the archive for your platform from the [latest release](https://github.com/mrtozner/vox/releases/latest), unpack it, and put `vox` on your `PATH`. Archives exist for Linux x86_64 and aarch64 (glibc 2.35+), macOS on Apple Silicon, and Windows x86_64. Each release carries a `SHA256SUMS` file and a build provenance attestation:
+Download the archive for your platform from the [latest release](https://github.com/mrtozner/vox/releases/latest), unpack it, and put `vox` on your `PATH`. Archives exist for Linux x86_64 and aarch64 (glibc 2.39+: Ubuntu 24.04, Debian 13, Raspberry Pi OS Trixie), macOS 13.4+ on Apple Silicon, and Windows x86_64. x86_64 builds need an AVX2-capable CPU (x86-64-v3: Intel Haswell / AMD Zen or newer). Each release carries a `SHA256SUMS` file and a build provenance attestation:
 
 ```bash
 sha256sum --check SHA256SUMS --ignore-missing
@@ -60,7 +79,10 @@ cargo install --locked --git https://github.com/mrtozner/vox vox-voice --feature
 ```bash
 # Start the web server, downloading the default models it needs
 vox serve --download
-# Open http://localhost:3000
+# Open http://localhost:3000 (Chat and Live Talk need a running Ollama)
+
+# Once the models are there: no downloads, loopback Ollama only
+vox serve --offline
 
 # Transcribe speech from your microphone
 vox listen
@@ -70,6 +92,9 @@ vox speak "Hello from Vox!" --voice af_heart
 
 # Voice chat with Ollama
 vox chat --llm llama3.2
+
+# Measure the installed models and save the best ones as vox chat defaults
+vox tune
 
 # Something not working? This explains which models are missing and why
 vox doctor
@@ -107,6 +132,9 @@ The server has no authentication. It binds to `127.0.0.1` and refuses a non-loop
 | `VOX_ALLOW_REMOTE` | `1` permits a non-loopback bind |
 | `VOX_ALLOWED_HOSTS`, `VOX_ALLOWED_ORIGINS` | Comma-separated extra `Host` / `Origin` values to accept |
 | `VOX_SPEAKER_DB` | Path of the speaker database |
+| `VOX_OFFLINE` | `1` is the same as `--offline`: no remote Ollama, no model downloads |
+| `VOX_MEMORY_DISTILL` | `0` stops distilling trimmed Live Talk turns into long-term facts (on by default) |
+| `VOX_SESSION_TTL_SECS` | How long an idle Live Talk session is kept (default 1800) |
 
 <br>
 
@@ -127,6 +155,9 @@ vox speak "A long text." --stream          # start playing sentence by sentence
 vox chat --llm llama3.2                    # voice chat with Ollama
 vox serve --port 3000                      # start web + API server
 vox serve --download --language tr         # fetch default models for Turkish first
+vox serve --offline                        # loopback Ollama only, no downloads
+vox tune                                   # measure installed models, save the best for vox chat
+vox tune --dry-run                         # recommend only: loads, connects and writes nothing
 vox doctor                                 # check models directory and installed models
 vox test                                   # audio I/O diagnostics
 vox benchmark                              # benchmark STT/TTS performance
@@ -173,6 +204,12 @@ curl http://localhost:3000/v1/audio/speech \
 # Known speakers (also PATCH/DELETE /v1/speakers/{id}, POST /v1/speakers/merge)
 curl http://localhost:3000/v1/speakers
 
+# Long-term memory of one speaker (GET reads, PUT {"enabled": true} switches it on, DELETE forgets)
+curl http://localhost:3000/v1/speakers/speaker_1/memory
+
+# Outbound connections this server process made (destination, purpose, body bytes)
+curl http://localhost:3000/v1/privacy/ledger
+
 # List Ollama models
 curl http://localhost:3000/v1/ollama-models
 
@@ -187,7 +224,7 @@ curl http://localhost:3000/health
 curl http://localhost:3000/health/ready
 ```
 
-`/v1/models` returns the OpenAI list shape, so OpenAI SDKs can use a Vox server as their `base_url`. Vox's own model report, which `/v1/models` returned up to 0.6.0, is at `/v1/vox/models`.
+`/v1/models` returns the OpenAI list shape, so OpenAI SDKs can use a Vox server as their `base_url` for transcription and speech. Vox's own model report, which `/v1/models` returned up to 0.6.0, is at `/v1/vox/models`. Chat completions are not provided.
 
 ### WebSocket Endpoints
 
@@ -218,7 +255,7 @@ Combines VAD + STT + LLM + TTS in a single WebSocket. Speak, get a spoken LLM re
 
 **`/v1/live-talk`** &mdash; Barge-in voice chat (experimental)
 
-Full-duplex conversation. You can interrupt the LLM mid-response by speaking. Requires an Ollama instance. The server's `ready` message carries `protocol_version: 2` and a `session_id`; turn-scoped events carry a `turn_id`.
+Full-duplex conversation. You can interrupt the LLM mid-response by speaking. Requires an Ollama instance. The server's `ready` message carries `protocol_version: 2` and a `session_id`; turn-scoped events carry a `turn_id`. With `diarization` on and the `speaker-encoder` model installed, known speakers are named in `transcript`; `enroll_speaker` stores the voice of the newest turn (consent required), and `memory_distilled` reports facts saved to long-term memory.
 
 <br>
 
@@ -296,7 +333,7 @@ The server has no authentication; read the notes on `vox::server::check_bind_hos
 
 ## Python Bindings
 
-The bindings (Whisper STT, Silero VAD, Kokoro TTS) are built from this repository with [maturin](https://www.maturin.rs); there is no package on PyPI. Inside a virtualenv:
+The bindings (Whisper STT, Silero VAD, Kokoro TTS) are built from this repository with [maturin](https://www.maturin.rs); there is no package on PyPI. A built wheel includes Kokoro, whose phonemizer is derived from espeak-ng, so treat the wheel as GPL-3.0 if you redistribute it. Inside a virtualenv:
 
 ```bash
 pip install maturin
@@ -388,7 +425,7 @@ The speaker database is `speakers.db` in the same per-user `vox` data directory 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `dist` | no | What the release binaries are built with: `cli`, `server`, `kokoro`, `piper`. Produces a GPL-3.0 binary |
-| `cli` | no | CLI binary (`vox listen`, `vox speak`, `vox chat`, `vox doctor`, `vox models`) |
+| `cli` | no | CLI binary (`vox listen`, `vox speak`, `vox chat`, `vox tune`, `vox doctor`, `vox models`) |
 | `server` | no | HTTP/WebSocket server with web UI, as `vox::server` (includes `diarization` and `silero`) |
 | `mic` | **yes** | Microphone capture via cpal (`Vox::builder().build()`, `AudioCapture`). Off: feed the engine with `build_with_source` / `build_with_channel` |
 | `signal` | **yes** | `Vox::listen()` stops on Ctrl-C. Off: use `Vox::listen_until()` |
@@ -396,13 +433,14 @@ The speaker database is `speakers.db` in the same per-user `vox` data directory 
 | `distil-whisper` | no | Distil-Whisper STT (6x faster) |
 | `silero` | **yes** | Silero VAD via ONNX Runtime |
 | `sherpa` | no | Sherpa-ONNX STT (SenseVoice, Zipformer, streaming) |
-| `kokoro` | no | Kokoro TTS (57 voices, 9 languages) |
+| `kokoro` | no | Kokoro TTS (57 voices, 9 languages). Bundles espeak-ng-derived phonemizer data (GPL-3.0): see [License](#license) |
 | `qwen3` | no | Qwen3 TTS (state-of-the-art, streaming) |
 | `qwen3-metal` | no | Qwen3 with Apple Metal GPU |
 | `qwen3-cuda` | no | Qwen3 with NVIDIA CUDA GPU |
 | `piper` | no | Piper TTS (multilingual, fast CPU). Links espeak-ng (GPL-3.0): see [License](#license) |
 | `pocket` | no | Pocket TTS (pure Rust, edge-ready) |
 | `pocket-metal` | no | Pocket with Apple Metal GPU |
+| `pocket-mkl` | no | Pocket with Intel MKL |
 | `chatterbox` | no | Chatterbox TTS (voice cloning) |
 | `chatterbox-coreml` | no | Chatterbox with CoreML (macOS) |
 | `diarization` | no | Speaker identification (auto-enabled by `server`) |
@@ -417,7 +455,7 @@ cargo install --locked --git https://github.com/mrtozner/vox vox-voice --feature
 # Minimal: just transcription
 cargo install --locked --git https://github.com/mrtozner/vox vox-voice --features cli
 
-# Server without Piper (no espeak-ng in the binary)
+# Server without Piper
 cargo install --locked --git https://github.com/mrtozner/vox vox-voice --features cli,server,kokoro
 
 # Server with Qwen3 on Apple Silicon
@@ -451,7 +489,7 @@ Measured on Apple M1 MacBook Pro:
 
 ## Raspberry Pi
 
-The `aarch64-unknown-linux-gnu` release archive is built for 64-bit ARM Linux with glibc 2.35+, which covers a Raspberry Pi 4 or 5 on Raspberry Pi OS Bookworm (64-bit). See [docs/raspberry_pi.md](docs/raspberry_pi.md) for installation, model choices for small machines, and building on the Pi itself.
+The `aarch64-unknown-linux-gnu` release archive is built for 64-bit ARM Linux with glibc 2.39+, which covers a Raspberry Pi 4 or 5 on Raspberry Pi OS Trixie (64-bit). See [docs/raspberry_pi.md](docs/raspberry_pi.md) for installation, model choices for small machines, and building on the Pi itself.
 
 <br>
 
@@ -477,10 +515,10 @@ Download the models an example needs first (`vox models download ...`).
 
 | Platform | Release binary | Status |
 |----------|----------------|--------|
-| macOS (Apple Silicon) | yes | CI tested |
-| Linux x86_64 (glibc 2.35+) | yes | CI tested |
-| Linux aarch64 (glibc 2.35+, Raspberry Pi 4/5) | yes | Built and smoke-tested by the release workflow |
-| Windows x86_64 | yes | CI tested |
+| macOS 13.4+ (Apple Silicon) | yes | CI tested |
+| Linux x86_64 (glibc 2.39+, x86-64-v3 CPU) | yes | CI tested |
+| Linux aarch64 (glibc 2.39+, Raspberry Pi 4/5) | yes | Built and smoke-tested by the release workflow |
+| Windows x86_64 (x86-64-v3 CPU) | yes | CI tested |
 | macOS (Intel) | no | Not built or tested. The ONNX Runtime bindings Vox uses (`ort` 2.0.0-rc.11) ship no prebuilt library for Intel macOS, so a build needs your own ONNX Runtime. |
 
 <br>
@@ -499,6 +537,6 @@ Download the models an example needs first (`vox models download ...`).
 
 **Source code:** MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
 
-**Release binaries:** GPL-3.0 ([LICENSE-GPL-3.0](LICENSE-GPL-3.0)). The prebuilt `vox` binaries include Piper, which links [espeak-ng](https://github.com/espeak-ng/espeak-ng) (GPL-3.0-or-later), so each binary as a whole is distributed under GPL-3.0. The same applies to any binary you build with the `piper` or `dist` feature and pass on to someone else. A build without `piper` contains no espeak-ng.
+**Release binaries:** GPL-3.0 ([LICENSE-GPL-3.0](LICENSE-GPL-3.0)). The prebuilt `vox` binaries include Piper, which links [espeak-ng](https://github.com/espeak-ng/espeak-ng) (GPL-3.0-or-later), so each binary as a whole is distributed under GPL-3.0. The same applies to any binary you build with the `piper`, `kokoro` or `dist` feature and pass on to someone else. Kokoro's phonemizer is derived from espeak-ng as well. A build without `piper` and `kokoro` contains no espeak-ng material.
 
 Models are downloaded separately and carry their publishers' licenses. [NOTICE](NOTICE) has the details.

@@ -11,16 +11,18 @@ name = "vox-voice"
 version = "0.7.0"
 edition = "2024"
 authors = ["Mert Ozoner"]
-description = "Local-first voice AI framework. Whisper STT, Kokoro/Piper TTS, Silero VAD. Zero cloud dependencies."
+description = "Offline voice AI runtime: Whisper STT, Kokoro/Piper TTS, Silero VAD, speaker ID and barge-in voice chat with opt-in per-person memory. Embeddable, no cloud APIs."
 # License of the source code. A binary built with the `piper` feature links
-# espeak-ng (GPL-3.0-or-later) and is distributed under GPL-3.0; see NOTICE.
+# espeak-ng, and one built with `kokoro` contains espeak-ng-derived phonemizer
+# code and data (GPL-3.0-or-later); either is distributed under GPL-3.0; see
+# NOTICE.
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mrtozner/vox"
 homepage = "https://github.com/mrtozner/vox"
 documentation = "https://github.com/mrtozner/vox#readme"
 readme = "README.md"
-keywords = ["voice", "speech", "whisper", "ai", "edge"]
-categories = ["multimedia::audio", "science::robotics"]
+keywords = ["voice", "speech-to-text", "text-to-speech", "offline", "voice-assistant"]
+categories = ["multimedia::audio", "command-line-utilities", "web-programming::http-server"]
 # Floor set by ort 2.0.0-rc.11 (rust-version 1.88). CI checks it.
 rust-version = "1.88"
 # Not publishable yet: piper-rs, qwen3-tts, chatterbox-rs and sherpa-sys are
@@ -127,8 +129,9 @@ server = [
     "tokio/net", "tokio/process",
 ]
 # The feature set of the release binaries (.github/workflows/release.yml).
-# It includes `piper`, which links espeak-ng (GPL-3.0-or-later), so a binary
-# built with `dist` is distributed under GPL-3.0. See NOTICE.
+# It includes `piper`, which links espeak-ng, and `kokoro`, whose phonemizer is
+# derived from it (GPL-3.0-or-later), so a binary built with `dist` is
+# distributed under GPL-3.0. See NOTICE.
 dist = ["cli", "server", "kokoro", "piper"]
 
 # `cargo build --release` and `cargo install` produce the shipped binary:

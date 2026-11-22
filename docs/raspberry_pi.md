@@ -8,13 +8,14 @@ supported by the release binaries.
 
 The `aarch64-unknown-linux-gnu` archive on the
 [releases page](https://github.com/mrtozner/vox/releases/latest) is built on
-Ubuntu 22.04 and needs glibc 2.35 or newer: Raspberry Pi OS Bookworm (64-bit),
-Debian 12, Ubuntu 22.04 or later. Check with `ldd --version`.
+Ubuntu 24.04 and needs glibc 2.39 or newer: Raspberry Pi OS Trixie (64-bit),
+Debian 13, Ubuntu 24.04 or later. Check with `ldd --version`. On Bookworm,
+build from source with your own ONNX Runtime.
 
 ```bash
 tar xzf vox-v*-aarch64-unknown-linux-gnu.tar.gz
 sudo install vox-v*-aarch64-unknown-linux-gnu/vox /usr/local/bin/vox
-sudo apt-get install -y libasound2     # ALSA runtime, for microphone and playback
+sudo apt-get install -y libasound2t64  # ALSA runtime, for microphone and playback
 vox --version
 vox doctor
 ```
@@ -53,7 +54,9 @@ authentication. Read the server section of the README before setting
 
 ## Build on the Pi
 
-Building needs Rust 1.88+, about 4 GB of RAM plus swap, and patience.
+Building needs Rust 1.88+, about 4 GB of RAM plus swap, and patience. The
+build links the same prebuilt ONNX Runtime as the release binary, so it needs
+glibc 2.39+ as well.
 
 ```bash
 sudo apt-get install -y build-essential cmake clang libclang-dev pkg-config libasound2-dev

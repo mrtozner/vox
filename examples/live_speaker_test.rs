@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Let's enroll speakers. We'll capture voice samples and create profiles.\n");
     println!("NOTE: This demo uses a simplified approach. For production:");
-    println!("      1. Download a speaker encoder model (ECAPA-TDNN)");
+    println!("      1. Download a speaker encoder model (WeSpeaker ResNet34)");
     println!("      2. Extract embeddings from audio");
     println!("      3. Use those embeddings for identification\n");
 

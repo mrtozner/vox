@@ -47,7 +47,7 @@ has_subcommand() {
 
 # Every subcommand the README documents. `serve` exists only in builds with
 # the server feature, so it is checked below.
-for sub in listen speak chat test benchmark config doctor models; do
+for sub in listen speak chat test benchmark tune config doctor models; do
     echo "== vox $sub --help"
     if ! has_subcommand "$sub"; then
         echo "error: 'vox --help' does not list '$sub'" >&2

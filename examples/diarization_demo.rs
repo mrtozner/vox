@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     println!("==================================\n");
 
     // Note: This demo uses synthesized audio for demonstration.
-    // In production, you would use a speaker encoder ONNX model like ECAPA-TDNN.
+    // In production, you would use a speaker encoder ONNX model like WeSpeaker ResNet34.
     // Download from: https://huggingface.co/onnx-community/speaker-encoder
 
     println!("📦 Initializing diarization system...\n");
@@ -157,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("✨ Demo complete!");
     println!("\n💡 Next Steps:");
-    println!("   1. Download a speaker encoder model (ECAPA-TDNN)");
+    println!("   1. Download a speaker encoder model (WeSpeaker ResNet34)");
     println!("   2. Use SpeakerEmbedding::new(\"path/to/model.onnx\")");
     println!("   3. Extract real embeddings from audio with embedding.extract(&audio)");
     println!("   4. Integrate with VAD+STT pipeline for real-time conversations");

@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **BREAKING**: `GET /v1/models` now returns the OpenAI list shape. Vox's own model report moved to `GET /v1/vox/models`
 - **BREAKING**: the Cargo package is now `vox-voice` (the `vox` name on crates.io belongs to another project). The library crate is still `vox` and the binary is still `vox`, so `use vox::...` and the command line are unchanged. Depend on it with `vox = { package = "vox-voice", git = "..." }`
-- **Release binaries are GPL-3.0.** They are built with the new `dist` feature (`cli`, `server`, `kokoro`, `piper`), and Piper links espeak-ng. The source code stays MIT OR Apache-2.0. See `NOTICE`
+- **Release binaries are GPL-3.0.** They are built with the new `dist` feature (`cli`, `server`, `kokoro`, `piper`), and Piper links espeak-ng; Kokoro's phonemizer is derived from espeak-ng too. The source code stays MIT OR Apache-2.0. See `NOTICE`
+- Release binaries need glibc 2.39+ on Linux, macOS 13.4+, and an x86-64-v3 CPU (AVX2: Intel Haswell / AMD Zen or newer) on x86_64; these floors come from `ort` 2.0.0-rc.11's ONNX Runtime
 - Minimum supported Rust version is 1.88 (required by `ort` 2.0.0-rc.11)
 - Release builds use thin LTO, one codegen unit and stripped symbols
 - The web UI opens on the Live Talk tab and was redesigned
@@ -30,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenAI-compatible endpoints: `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`, `GET /v1/models`, `GET /v1/models/{id}`
 - Live Talk protocol v2: `protocol_version` and `session_id` in `ready`, `turn_id` on turn-scoped events, `turn_metrics`, `memory`, `playback_done`, `forget_memory`; memory survives a reconnect with the same `session_id`
 - Speaker REST API: list, rename, forget, merge, export, and enrollment consent under `/v1/speakers`
+- Offline mode: `--offline` (global flag, or `VOX_OFFLINE=1`) refuses an Ollama host that is not loopback and refuses all model downloads. Not covered: the `pocket`, `chatterbox` and `qwen3` backends, which fetch weights through the Hugging Face hub client
+- `GET /v1/privacy/ledger`: outbound connections made by the server process (destination, purpose, body bytes)
+- `vox tune`: measures the installed STT, TTS and Ollama models on a spoken sample and saves the best as the defaults of `vox chat` (`[tune]` in `config.toml`); `--dry-run` loads, connects and writes nothing
+- Live Talk identifies known speakers (read-only lookup; the model gets `[Name] text`). In Live Talk a voice is enrolled only by the explicit `enroll_speaker` command, and only with consent
+- Per-person long-term memory, off until switched on per speaker: `GET/PUT/DELETE /v1/speakers/{id}/memory`. Forgetting a speaker deletes it; the speaker export includes it
+- Distill on evict: Live Talk turns that leave the context window are distilled into facts by the conversation's Ollama model while idle (`memory_distilled`; `VOX_MEMORY_DISTILL=0` turns it off)
+- `VOX_SESSION_TTL_SECS`: lifetime of an idle Live Talk session (default 30 minutes)
 - `GET /health/ready` readiness probe; graceful shutdown; request, text-length and concurrent-inference limits
 - `vox doctor`: explains which models directory is used and which models are missing or corrupt
 - `vox serve --download`, `--language`, `--stt-model`, `--piper-voice`, `--ollama-host`; `vox listen --language`; `vox chat --language`
