@@ -11,13 +11,11 @@
 //! cargo run --example diarization_demo --features diarization
 //! ```
 
-use vox::diarization::{
-    DiarizationConfig, DiarizationPipeline, DiarizationPipelineBuilder, RecognitionConfig,
-    SpeakerEmbedding, SpeakerRegistry,
-};
-use vox::{AudioChunk, Utterance};
+use vox::AudioChunk;
+use vox::diarization::{RecognitionConfig, SpeakerRegistry};
 
 /// Generate test audio (sine wave at specified frequency) to simulate different speakers.
+#[allow(dead_code)]
 fn generate_speaker_voice(duration_ms: u64, frequency: f32, sample_rate: u32) -> AudioChunk {
     let total_samples = (duration_ms * sample_rate as u64) / 1000;
     let samples: Vec<f32> = (0..total_samples)
@@ -98,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     println!("💬 Conversation Transcript:");
     println!("----------------------------\n");
 
-    for (expected_speaker, embedding, text) in conversation {
+    for (_expected_speaker, embedding, text) in conversation {
         // Identify speaker using their voice embedding
         let recognition = registry.identify(&embedding)?;
 
@@ -142,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
     // Test identification
     let result = registry.identify(&david_embedding)?;
     if let vox::diarization::Recognition::Identified {
-        speaker_id,
+        speaker_id: _,
         confidence,
     } = result
     {

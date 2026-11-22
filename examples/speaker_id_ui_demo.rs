@@ -3,7 +3,7 @@
 //! This demonstrates what the UI will look like when identifying speakers.
 //! Run with: cargo run --example speaker_id_ui_demo --features diarization
 
-use std::io::{self, Write};
+use std::io::{self};
 use std::thread;
 use std::time::Duration;
 use vox::diarization::{RecognitionConfig, SpeakerRegistry};
@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
     println!("🎙️  LIVE CONVERSATION");
     println!("════════════════════════════════════════════════════════════\n");
 
-    for (expected_speaker, embedding, confidence, text) in conversation {
+    for (_expected_speaker, embedding, _confidence, text) in conversation {
         thread::sleep(Duration::from_millis(800));
 
         let recognition = registry.identify(&embedding)?;

@@ -373,6 +373,14 @@ impl VadBackend for SileroVad {
         self.segmenter.reset();
     }
 
+    fn voiced_ms(&self) -> Option<u32> {
+        Some(if self.segmenter.is_speaking {
+            self.segmenter.speech_frames * FRAME_MS
+        } else {
+            0
+        })
+    }
+
     fn frame_size(&self) -> usize {
         FRAME_SIZE
     }

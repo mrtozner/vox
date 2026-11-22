@@ -394,7 +394,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
 <header class="header">
     <div class="header-brand">
         <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><rect x="2" y="9" width="3" height="6" rx="1.5"/><rect x="7" y="5" width="3" height="14" rx="1.5"/><rect x="12" y="2" width="3" height="20" rx="1.5"/><rect x="17" y="7" width="3" height="10" rx="1.5"/></g></svg>
-        vox<span>v0.6.0</span>
+        vox<span id="headerVersion">v0.7.0</span>
     </div>
     <div class="local-pill" id="localPill">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.600-1.600 8-6 8-11V5l-8-3z"/></svg>
@@ -3245,6 +3245,7 @@ async function fetchHealth() {
             S.version = data.version;
             $('dashVersion').textContent = 'vox ' + data.version;
             $('statusVersion').textContent = 'vox ' + data.version;
+            $('headerVersion').textContent = 'v' + data.version;
         }
     } catch (_) {
         applyHealth('error');

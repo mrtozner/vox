@@ -392,13 +392,12 @@ async fn main() -> anyhow::Result<()> {
                 println!();
 
                 // Record in database
-                if speaker_name != "Unknown" {
-                    if let Err(e) = speaker_ui
+                if speaker_name != "Unknown"
+                    && let Err(e) = speaker_ui
                         .record_utterance(&speaker_name, &result.text, utterance.duration_ms)
                         .await
-                    {
-                        eprintln!("❌ Failed to record utterance: {}", e);
-                    }
+                {
+                    eprintln!("❌ Failed to record utterance: {}", e);
                 }
             }
             Err(e) => {

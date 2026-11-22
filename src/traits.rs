@@ -41,6 +41,16 @@ pub trait VadBackend: Send + Sync {
     fn current_speech_buffer(&self) -> Option<AudioChunk> {
         None
     }
+
+    /// Milliseconds of frames classified as speech in the utterance in
+    /// progress (pauses not counted), or 0 when no speech is in progress.
+    ///
+    /// `None` means the backend does not report it; callers then have to
+    /// treat `SpeechStart` as confirmed speech. Live Talk uses this to tell a
+    /// cough or a keyboard click from someone starting to talk.
+    fn voiced_ms(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Speech-to-Text backend.

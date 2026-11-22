@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-22
+
 ### Changed
 - **BREAKING**: `GET /v1/models` now returns the OpenAI list shape. Vox's own model report moved to `GET /v1/vox/models`
 - **BREAKING**: the Cargo package is now `vox-voice` (the `vox` name on crates.io belongs to another project). The library crate is still `vox` and the binary is still `vox`, so `use vox::...` and the command line are unchanged. Depend on it with `vox = { package = "vox-voice", git = "..." }`
@@ -37,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedding API: `VoxBuilder::build_with_channel` (engine fed from a channel, no audio device), `Vox::listen_until` (caller-supplied stop condition, no signal handler), and `vox::server::{build_router, serve, run_with_config, ServerState}`
 
 ### Fixed
+- Live Talk: a short noise (a cough, a click) while a reply is being transcribed or generated no longer cancels it; speech has to last 250 ms before it counts as a barge-in
 - Microphone capture resamples from the device's real sample rate and feeds the VAD whole frames
 - Silero VAD receives the context samples the v5 model expects; utterance length is capped
 - Whisper honours the configured language instead of always assuming English

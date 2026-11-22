@@ -19,7 +19,9 @@
 //!   the audio that was sent must have finished playing).
 //! - **Voice barge-in.** Before the first reply audio there is nothing to
 //!   echo, so the VAD keeps listening; speech in that phase cancels the turn
-//!   with reason `user_barge_in`.
+//!   with reason `user_barge_in` once it has lasted
+//!   `BARGE_IN_MIN_VOICED_MS` (or became an utterance), so a cough or a
+//!   click does not throw the reply away.
 //! - **Memory records what was heard.** A turn is stored with the sentences
 //!   that were sent; `cancel` and `playback_done` carry `heard_sentences`,
 //!   which cuts the stored turn down to what was really played, also after
@@ -99,6 +101,13 @@ const CONFIG_WAIT: Duration = Duration::from_millis(250);
 
 /// How long a cancel waits for the turn task to wind down. The task stops at
 /// its next await point, so this is normally not reached.
+/// Voiced speech needed before speech during a running turn counts as a
+/// barge-in. Shorter sounds (a cough, a click, a door) leave the turn alone.
+/// Equal to the VAD's default `min_speech_ms`, so anything long enough to
+/// become an utterance is also long enough to interrupt.
+const BARGE_IN_MIN_VOICED_MS: u32 = 250;
+
+/// Time to wait for a cancelled turn task to finish.
 const CANCEL_JOIN: Duration = Duration::from_millis(250);
 
 /// Default for [`LiveTalkDeps::playback_grace`].
@@ -1365,6 +1374,10 @@ struct Session {
 
     ptt_active: bool,
     ptt_buffer: Vec<f32>,
+
+    /// The VAD reported `SpeechStart` while a turn was running, but there has
+    /// not been enough voiced audio yet to treat it as a barge-in.
+    barge_pending: bool,
 }
 
 impl Session {
@@ -1416,6 +1429,7 @@ impl Session {
             // Nothing is fed while gated: start from a clean VAD when the
             // gate opens again.
             self.vad.reset();
+            self.barge_pending = false;
             self.residual.clear();
             self.ring.clear();
         }
@@ -1486,6 +1500,7 @@ impl Session {
                         turn_id: None,
                     });
                     self.vad.reset();
+                    self.barge_pending = false;
                     self.residual.clear();
                     return;
                 }
@@ -1493,20 +1508,35 @@ impl Session {
             for event in events {
                 match event {
                     crate::VadEvent::SpeechStart => {
-                        // The model is about to be needed.
-                        self.ctx.cancel_distill();
-                        // Speech while a turn is still transcribing or
-                        // thinking: the user goes on, or changed their mind.
-                        self.interrupt(CancelReason::UserBargeIn, None).await;
-                        self.out.send(LiveTalkWsEvent::SpeechStart);
+                        if self.active.is_some() && self.vad.voiced_ms().is_some() {
+                            // Speech while a turn is transcribing or
+                            // thinking. Wait until it is clearly speech: a
+                            // single noisy frame must not throw the reply
+                            // away.
+                            self.barge_pending = true;
+                        } else {
+                            self.confirm_speech().await;
+                        }
                     }
                     crate::VadEvent::SpeechEnd(utterance) => {
+                        if self.barge_pending {
+                            self.confirm_speech().await;
+                        }
                         self.interrupt(CancelReason::UserBargeIn, None).await;
                         self.out.send(LiveTalkWsEvent::SpeechEnd);
                         self.dispatch(utterance);
                     }
-                    crate::VadEvent::Silence => {}
+                    // The VAD dropped a too-short sound: it was noise.
+                    crate::VadEvent::Silence => self.barge_pending = false,
                 }
+            }
+            if self.barge_pending
+                && self
+                    .vad
+                    .voiced_ms()
+                    .is_some_and(|ms| ms >= BARGE_IN_MIN_VOICED_MS)
+            {
+                self.confirm_speech().await;
             }
         }
         self.residual.drain(..offset);
@@ -1514,6 +1544,16 @@ impl Session {
             let rest = std::mem::take(&mut self.residual);
             self.gate_audio(&rest);
         }
+    }
+
+    /// Speech has started for real: stop a running turn (the user goes on, or
+    /// changed their mind) and tell the client.
+    async fn confirm_speech(&mut self) {
+        self.barge_pending = false;
+        // The model is about to be needed.
+        self.ctx.cancel_distill();
+        self.interrupt(CancelReason::UserBargeIn, None).await;
+        self.out.send(LiveTalkWsEvent::SpeechStart);
     }
 
     /// Cancel the running turn, if any, and tell the client. Returns its id.
@@ -1666,6 +1706,7 @@ impl Session {
             self.ptt_active = false;
             self.ptt_buffer.clear();
             self.vad.reset();
+            self.barge_pending = false;
             self.residual.clear();
             self.ring.clear();
             self.was_gated = false;
@@ -1915,6 +1956,7 @@ where
         last_turn_id: 0,
         ptt_active: false,
         ptt_buffer: Vec::new(),
+        barge_pending: false,
     };
 
     if let Some(text) = first_text {

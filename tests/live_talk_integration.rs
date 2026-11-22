@@ -445,6 +445,9 @@ const FRAME: usize = 512;
 struct VadStats {
     resets: AtomicUsize,
     frames: AtomicUsize,
+    /// Behave like Silero: report `voiced_ms` and drop utterances shorter
+    /// than 250 ms. Off by default (the VAD then reports no voiced time).
+    like_silero: std::sync::atomic::AtomicBool,
 }
 
 /// A VAD that calls a frame speech when its mean absolute level is above
@@ -484,6 +487,10 @@ impl vox::traits::VadBackend for FakeVad {
             (Some(_), false) => {
                 let samples = self.speech.take().unwrap_or_default();
                 let duration_ms = samples.len() as u64 * 1000 / 16_000;
+                if self.stats.like_silero.load(Ordering::SeqCst) && duration_ms < 250 {
+                    events.push(vox::VadEvent::Silence);
+                    return Ok(events);
+                }
                 events.push(vox::VadEvent::SpeechEnd(vox::Utterance {
                     audio: vox::AudioChunk {
                         samples,
@@ -503,6 +510,14 @@ impl vox::traits::VadBackend for FakeVad {
     fn reset(&mut self) {
         self.stats.resets.fetch_add(1, Ordering::SeqCst);
         self.speech = None;
+    }
+
+    fn voiced_ms(&self) -> Option<u32> {
+        if !self.stats.like_silero.load(Ordering::SeqCst) {
+            return None;
+        }
+        let samples = self.speech.as_ref().map_or(0, Vec::len);
+        Some((samples * 1000 / 16_000) as u32)
     }
 
     fn frame_size(&self) -> usize {
@@ -941,6 +956,13 @@ impl Client {
     /// Three loud frames and a quiet one: one utterance for [`FakeVad`].
     fn speak(&self) {
         self.speak_at(MERT_LEVEL);
+    }
+
+    /// An utterance of `frames` loud frames, then a pause.
+    fn speak_long(&self, frames: usize) {
+        let mut samples = vec![MERT_LEVEL; FRAME * frames];
+        samples.extend(std::iter::repeat_n(0.0, FRAME));
+        self.send_audio(&samples);
     }
 
     /// An utterance at `level`, which is what [`FakeSpeakers`] tells voices
@@ -1410,6 +1432,58 @@ async fn speech_while_thinking_is_a_voice_barge_in() {
         vox::conversation::INTERRUPTED_MARKER
     );
     assert_eq!(messages[3]["content"], "utterance 2");
+}
+
+#[tokio::test]
+async fn a_short_noise_while_thinking_does_not_cancel_the_turn() {
+    let slow = Script {
+        tokens: vec!["Still here."],
+        start_delay: Duration::from_millis(600),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow]).await;
+    rig.vad.like_silero.store(true, Ordering::SeqCst);
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak_long(10);
+    client.until("thinking").await;
+    settle().await;
+
+    // A cough: one loud frame (32 ms), then silence.
+    let mut cough = vec![MERT_LEVEL; FRAME];
+    cough.extend(std::iter::repeat_n(0.0, FRAME * 2));
+    client.send_audio(&cough);
+
+    let events = client.until("turn_done").await;
+    assert!(of_type(&events, "cancelled").is_empty(), "{events:?}");
+    assert!(of_type(&events, "speech_start").is_empty(), "{events:?}");
+    assert_eq!(events.last().unwrap()["turn_id"], 1);
+}
+
+#[tokio::test]
+async fn sustained_speech_while_thinking_cancels_before_it_ends() {
+    let slow = Script {
+        tokens: vec!["Too late."],
+        start_delay: Duration::from_secs(5),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow, reply(&["Second reply."])]).await;
+    rig.vad.like_silero.store(true, Ordering::SeqCst);
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak_long(10);
+    client.until("thinking").await;
+    settle().await;
+
+    // 10 loud frames (320 ms) and no pause yet: the user is talking.
+    client.send_audio(&vec![MERT_LEVEL; FRAME * 10]);
+    let events = client.until("speech_start").await;
+    let cancelled = of_type(&events, "cancelled");
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(cancelled[0]["reason"], "user_barge_in");
+    assert!(of_type(&events, "speech_end").is_empty());
 }
 
 #[tokio::test]
