@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+# Linux jobs are pinned to ubuntu-24.04: that is where release binaries are
+# built (glibc floor set by ort), and on 26.04 (clang 21) bindgen generates
+# broken whisper.cpp bindings.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -13,7 +16,7 @@ jobs:
   # Quick checks that run on every commit
   quick-check:
     name: Quick Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       should_test: ${{ steps.filter.outputs.code }}
       should_test_cross_platform: ${{ steps.filter.outputs.cross_platform }}
@@ -69,7 +72,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: quick-check
     # Always run format check unless it's pure docs changes
     if: needs.quick-check.outputs.should_test == 'true' || github.event_name == 'push'
@@ -90,7 +93,7 @@ jobs:
       fail-fast: false
       matrix:
         # Only run Ubuntu by default, expand to all platforms for cross-platform changes
-        os: ${{ needs.quick-check.outputs.should_test_cross_platform == 'true' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        os: ${{ needs.quick-check.outputs.should_test_cross_platform == 'true' && fromJSON('["ubuntu-24.04", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -134,13 +137,15 @@ jobs:
         if: runner.os == 'Windows'
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
-      # ort-sys copies the ONNX Runtime DLLs next to the binaries, examples and
-      # test executables, and fails if those directories do not exist yet.
+      # ort-sys copies the ONNX Runtime DLLs into <dir>, <dir>/examples and
+      # <dir>/deps and panics if one is missing. With Cargo's newer build-dir
+      # layout (build/<pkg>/<hash>/out) its <dir> resolves to target/*/build,
+      # so create both layouts.
       - name: Create target directories (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($p in 'debug','release') { foreach ($d in 'examples','deps') { New-Item -ItemType Directory -Force -Path "target/$p/$d" | Out-Null } }
+          foreach ($p in 'debug','release') { foreach ($d in 'examples','deps','build/examples','build/deps') { New-Item -ItemType Directory -Force -Path "target/$p/$d" | Out-Null } }
 
       - name: Clippy (default features)
         run: cargo clippy -- -D warnings
@@ -167,7 +172,7 @@ jobs:
       fail-fast: false
       matrix:
         # Only run Ubuntu for quick feedback, expand to all platforms for cross-platform changes
-        os: ${{ needs.quick-check.outputs.should_test_cross_platform == 'true' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        os: ${{ needs.quick-check.outputs.should_test_cross_platform == 'true' && fromJSON('["ubuntu-24.04", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -207,13 +212,15 @@ jobs:
         if: runner.os == 'Windows'
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
-      # ort-sys copies the ONNX Runtime DLLs next to the binaries, examples and
-      # test executables, and fails if those directories do not exist yet.
+      # ort-sys copies the ONNX Runtime DLLs into <dir>, <dir>/examples and
+      # <dir>/deps and panics if one is missing. With Cargo's newer build-dir
+      # layout (build/<pkg>/<hash>/out) its <dir> resolves to target/*/build,
+      # so create both layouts.
       - name: Create target directories (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($p in 'debug','release') { foreach ($d in 'examples','deps') { New-Item -ItemType Directory -Force -Path "target/$p/$d" | Out-Null } }
+          foreach ($p in 'debug','release') { foreach ($d in 'examples','deps','build/examples','build/deps') { New-Item -ItemType Directory -Force -Path "target/$p/$d" | Out-Null } }
 
       - name: Unit + integration tests
         run: cargo test --locked
@@ -271,7 +278,7 @@ jobs:
   # CLI + server code.
   msrv:
     name: MSRV
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [quick-check, fmt]
     if: needs.quick-check.outputs.should_test == 'true'
     steps:
@@ -308,7 +315,7 @@ jobs:
 
   doc:
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: quick-check
     # Run doc build if code changed
     if: needs.quick-check.outputs.should_test == 'true'
@@ -361,7 +368,7 @@ jobs:
   # Summary job that all branch protection rules should depend on
   ci-success:
     name: CI Success
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [quick-check, fmt, clippy, test, msrv, doc, python]
     # Run even if some jobs are skipped, but fail if any required job failed
     if: always()

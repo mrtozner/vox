@@ -152,13 +152,15 @@ jobs:
         if: runner.os == 'Windows'
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
-      # ort-sys copies the ONNX Runtime DLLs next to the binaries, examples and
-      # test executables, and fails if those directories do not exist yet.
+      # ort-sys copies the ONNX Runtime DLLs into <dir>, <dir>/examples and
+      # <dir>/deps and panics if one is missing. With Cargo's newer build-dir
+      # layout (build/<pkg>/<hash>/out) its <dir> resolves to target/*/build,
+      # so create both layouts.
       - name: Create target directories (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($d in 'examples','deps') { New-Item -ItemType Directory -Force -Path "target/${{ matrix.target }}/release/$d" | Out-Null }
+          foreach ($d in 'examples','deps','build/examples','build/deps') { New-Item -ItemType Directory -Force -Path "target/${{ matrix.target }}/release/$d" | Out-Null }
 
       # ── Build ────────────────────────────────────────────────────────
       # [profile.release] in Cargo.toml sets thin LTO, one codegen unit and
