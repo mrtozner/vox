@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedding API: `VoxBuilder::build_with_channel` (engine fed from a channel, no audio device), `Vox::listen_until` (caller-supplied stop condition, no signal handler), and `vox::server::{build_router, serve, run_with_config, ServerState}`
 
 ### Fixed
+- Kokoro and Piper in one binary: `kokoro-tts` is vendored with its phoneme buffer made private. Upstream exports a `ph_list2` symbol that clashes with espeak-ng's, which broke Linux links with lld (default since Rust 1.100) and could make the two engines share a buffer
 - Live Talk: a short noise (a cough, a click) while a reply is being transcribed or generated no longer cancels it; speech has to last 250 ms before it counts as a barge-in
 - Microphone capture resamples from the device's real sample rate and feeds the VAD whole frames
 - Silero VAD receives the context samples the v5 model expects; utterance length is capped

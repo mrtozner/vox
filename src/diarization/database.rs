@@ -1086,13 +1086,8 @@ fn bytes_to_embedding(bytes: &[u8]) -> Result<Vec<f32>, VoxError> {
         ));
     }
 
-    let mut embedding = Vec::with_capacity(bytes.len() / 4);
-    for chunk in bytes.chunks_exact(4) {
-        let value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-        embedding.push(value);
-    }
-
-    Ok(embedding)
+    let (chunks, _rest) = bytes.as_chunks::<4>();
+    Ok(chunks.iter().map(|b| f32::from_le_bytes(*b)).collect())
 }
 
 /// Get current Unix timestamp in seconds.

@@ -1,7 +1,7 @@
 //! Shared text segmenter and TTS sanitizer.
 //!
 //! One splitter for every path that turns text into speech: the streaming
-//! LLM→TTS path ([`crate::streaming_chat`]) feeds tokens into a
+//! LLM→TTS path (`streaming_chat`) feeds tokens into a
 //! [`Segmenter`], and the batch path ([`super::SentenceStreamingAdapter`])
 //! calls [`split_sentences`], which runs the same code.
 //!

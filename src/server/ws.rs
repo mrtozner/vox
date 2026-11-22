@@ -3,8 +3,10 @@
 
 /// Interpret raw bytes as f32 little-endian PCM samples.
 pub(super) fn bytes_to_f32_samples(data: &[u8]) -> Vec<f32> {
-    data.chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    let (chunks, _rest) = data.as_chunks::<4>();
+    chunks
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
         .collect()
 }
 

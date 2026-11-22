@@ -36,13 +36,13 @@ pub struct WhisperConfig {
     pub language: Option<String>,
     /// Whether to translate to English.
     pub translate: bool,
-    /// Number of CPU threads. See [`default_n_threads`].
+    /// Number of CPU threads. See `default_n_threads()`.
     pub n_threads: i32,
 }
 
 impl WhisperConfig {
     /// Config for `model_path` with automatic language detection and a
-    /// thread count derived from the machine ([`default_n_threads`]).
+    /// thread count derived from the machine (`default_n_threads()`).
     pub fn new(model_path: impl Into<PathBuf>) -> Self {
         Self {
             model_path: model_path.into(),

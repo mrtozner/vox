@@ -686,7 +686,7 @@ mod tests {
         let mut max_prob = 0.0f32;
         let mut starts = 0;
         let mut utterance_samples = 0;
-        for chunk in samples.chunks_exact(FRAME_SIZE) {
+        for chunk in samples.as_chunks::<FRAME_SIZE>().0 {
             let frame = AudioChunk {
                 samples: chunk.to_vec(),
                 sample_rate: SAMPLE_RATE,
@@ -703,7 +703,7 @@ mod tests {
 
         // Probabilities on the same audio, to show the model is confident.
         vad.reset();
-        for chunk in samples.chunks_exact(FRAME_SIZE) {
+        for chunk in samples.as_chunks::<FRAME_SIZE>().0 {
             max_prob = max_prob.max(vad.infer(chunk).unwrap());
         }
 
