@@ -569,9 +569,9 @@ pub fn list() -> anyhow::Result<()> {
 
 /// Download a model by name with a progress bar.
 ///
-/// The file is streamed to `<dest>.part`; an interrupted download resumes
-/// from where it stopped (HTTP range request). The finished file must match
-/// the registry's exact size and SHA-256 before it is moved into place.
+/// Ordinary downloads resume from `<dest>.part`. Forced downloads use private
+/// staging so the installed model stays available during the refresh.
+/// Both must match the registry's exact size and SHA-256 before installation.
 pub async fn download(name: &str, force: bool) -> anyhow::Result<()> {
     let model = find_model(name).ok_or_else(|| {
         let available: Vec<&str> = MODELS.iter().map(|m| m.name).collect();
@@ -580,12 +580,16 @@ pub async fn download(name: &str, force: bool) -> anyhow::Result<()> {
             available.join("\n  ")
         )
     })?;
-    download_to(model, &models_dir(), force).await
+    download_to(model, &models_dir(), force, vox::privacy::offline()).await
 }
 
-async fn download_to(model: &ModelInfo, dir: &Path, force: bool) -> anyhow::Result<()> {
+async fn download_to(
+    model: &ModelInfo,
+    dir: &Path,
+    force: bool,
+    offline: bool,
+) -> anyhow::Result<()> {
     let dest = dir.join(model.filename);
-    let part = part_path(&dest);
 
     if dest.exists() && !force {
         match check_size(&dest, model.size_bytes) {
@@ -609,25 +613,41 @@ async fn download_to(model: &ModelInfo, dir: &Path, force: bool) -> anyhow::Resu
         }
     }
 
-    if force {
-        if dest.exists() {
-            println!("Removing existing file for forced re-download...");
-            tokio::fs::remove_file(&dest).await?;
-        }
-        let _ = tokio::fs::remove_file(&part).await;
+    // Record a blocked download before touching any installed or partial file.
+    if offline {
+        vox::privacy::download_request_in(vox::privacy::ledger(), offline, model.url, model.name)?;
     }
 
     // Ensure parent directories exist (models dir itself, and subdirectories
     // for filenames like sensevoice/model.int8.onnx).
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+    let parent = dest.parent().expect("model filenames are relative");
+    tokio::fs::create_dir_all(parent).await.map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to create models directory {}: {e}\n\n\
+             Set VOX_MODELS_DIR to a writable location to store models elsewhere.",
+            parent.display()
+        )
+    })?;
+
+    // A force refresh starts fresh without sharing the resumable file with
+    // another download. Keep staging on the same filesystem for replacement.
+    let refresh = force
+        .then(|| {
+            tempfile::Builder::new()
+                .prefix(".vox-refresh-")
+                .tempdir_in(parent)
+        })
+        .transpose()
+        .map_err(|e| {
             anyhow::anyhow!(
-                "Failed to create models directory {}: {e}\n\n\
-                 Set VOX_MODELS_DIR to a writable location to store models elsewhere.",
-                parent.display()
+                "Failed to create model refresh staging in {}: {e}",
+                parent.display(),
             )
         })?;
-    }
+    let part = refresh
+        .as_ref()
+        .map(|stage| stage.path().join("model.part"))
+        .unwrap_or_else(|| part_path(&dest));
 
     println!(
         "Downloading {} ({})...",
@@ -638,8 +658,8 @@ async fn download_to(model: &ModelInfo, dir: &Path, force: bool) -> anyhow::Resu
     println!("  Destination: {}", dest.display());
     println!();
 
-    fetch_to_part(model, &part).await?;
-    finalize_download(model, &part, &dest).await?;
+    fetch_to_part(model, &part, force, offline).await?;
+    finalize_download(model, &part, &dest, force).await?;
 
     println!(
         "Successfully downloaded {} to {}",
@@ -655,8 +675,25 @@ async fn download_to(model: &ModelInfo, dir: &Path, force: bool) -> anyhow::Resu
     Ok(())
 }
 
+fn download_recovery(model: &ModelInfo, part: &Path, force: bool) -> String {
+    if force {
+        format!("To retry, run: vox models download {} --force", model.name)
+    } else {
+        format!(
+            "The partial file is kept at\n  {}\nTo resume, run: vox models download {}",
+            part.display(),
+            model.name
+        )
+    }
+}
+
 /// Stream `model.url` into `part`, resuming if `part` already holds a prefix.
-async fn fetch_to_part(model: &ModelInfo, part: &Path) -> anyhow::Result<()> {
+async fn fetch_to_part(
+    model: &ModelInfo,
+    part: &Path,
+    force: bool,
+    offline: bool,
+) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt;
     use tokio_stream::StreamExt;
 
@@ -673,7 +710,8 @@ async fn fetch_to_part(model: &ModelInfo, part: &Path) -> anyhow::Result<()> {
         return Ok(()); // Fully downloaded earlier; only verification is left.
     }
     // The only place a model is fetched: refused in offline mode, recorded otherwise.
-    let egress = vox::privacy::download_request(model.url, model.name)?;
+    let egress =
+        vox::privacy::download_request_in(vox::privacy::ledger(), offline, model.url, model.name)?;
 
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -692,7 +730,7 @@ async fn fetch_to_part(model: &ModelInfo, part: &Path) -> anyhow::Result<()> {
 
     egress.served_by(response.url().as_str());
     let status = response.status();
-    if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+    if offset > 0 && status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
         let _ = tokio::fs::remove_file(part).await;
         anyhow::bail!(
             "The server rejected the resume request; the partial file was removed.\n\
@@ -737,12 +775,9 @@ async fn fetch_to_part(model: &ModelInfo, part: &Path) -> anyhow::Result<()> {
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
+            let recovery = download_recovery(model, part, force);
             anyhow::anyhow!(
-                "Download stream error: {e}\n\n\
-                 The download was interrupted. The partial file is kept at\n  {}\n\
-                 To resume, run: vox models download {}",
-                part.display(),
-                model.name
+                "Download stream error: {e}\n\nThe download was interrupted.\n{recovery}"
             )
         })?;
 
@@ -761,15 +796,13 @@ async fn fetch_to_part(model: &ModelInfo, part: &Path) -> anyhow::Result<()> {
         }
 
         file.write_all(&chunk).await.map_err(|e| {
+            let recovery = download_recovery(model, part, force);
             anyhow::anyhow!(
                 "Failed to write downloaded data: {e}\n\n\
                  This typically indicates insufficient disk space.\n\
-                 Partial download location: {}\n\
                  Required space: {}\n\n\
-                 To resume after freeing space, run: vox models download {}",
-                part.display(),
-                format_bytes(model.size_bytes),
-                model.name
+                 {recovery}",
+                format_bytes(model.size_bytes)
             )
         })?;
         pb.inc(chunk.len() as u64);
@@ -782,9 +815,14 @@ async fn fetch_to_part(model: &ModelInfo, part: &Path) -> anyhow::Result<()> {
 }
 
 /// Verify a completed `.part` file against the registry and move it into
-/// place. A truncated file is kept for resuming; a file that fails the
-/// checksum is deleted.
-async fn finalize_download(model: &ModelInfo, part: &Path, dest: &Path) -> anyhow::Result<()> {
+/// place. Truncated ordinary downloads are kept for resuming and files that
+/// fail the checksum are deleted.
+async fn finalize_download(
+    model: &ModelInfo,
+    part: &Path,
+    dest: &Path,
+    force: bool,
+) -> anyhow::Result<()> {
     let (size, sha256) = (model.size_bytes, model.sha256);
     let part_owned = part.to_path_buf();
     let verdict = tokio::task::spawn_blocking(move || verify_file(&part_owned, size, sha256))
@@ -794,33 +832,31 @@ async fn finalize_download(model: &ModelInfo, part: &Path, dest: &Path) -> anyho
     match verdict {
         Ok(()) => {}
         Err(VerifyError::Size { expected, actual }) if actual < expected => anyhow::bail!(
-            "Download of '{}' is incomplete ({actual} of {expected} bytes).\n\
-             The partial file is kept at\n  {}\n\
-             To resume, run: vox models download {}",
+            "Download of '{}' is incomplete ({actual} of {expected} bytes).\n{}",
             model.name,
-            part.display(),
-            model.name
+            download_recovery(model, part, force)
         ),
         Err(e) => {
             let _ = tokio::fs::remove_file(part).await;
+            let force_flag = if force { " --force" } else { "" };
             anyhow::bail!(
                 "Downloaded file for '{}' failed verification: {e}\n\n\
                  The download was corrupted or the upstream file changed.\n\
-                 The bad file has been removed; nothing was installed.\n\
-                 To retry, run: vox models download {}",
+                 The bad file has been removed.\n\
+                 To retry, run: vox models download {}{force_flag}",
                 model.name,
                 model.name
             );
         }
     }
 
+    // Replace the installed file in one operation after verification.
     tokio::fs::rename(part, dest).await.map_err(|e| {
+        let recovery = download_recovery(model, part, force);
         anyhow::anyhow!(
             "Failed to finalize download: {e}\n\n\
              The file was downloaded and verified but could not be moved into place.\n\
-             Temporary file: {}\n\
-             Final location: {}",
-            part.display(),
+             Final location: {}\n{recovery}",
             dest.display()
         )
     })
@@ -1301,6 +1337,15 @@ pub fn diagnose(
         );
     }
     let _ = writeln!(out, "Compiled features: {}", compiled_features().join(", "));
+    #[cfg(feature = "piper")]
+    match vox::PiperBackend::check_phonemizer() {
+        Ok(()) => {
+            let _ = writeln!(out, "Piper phonemizer: ready");
+        }
+        Err(error) => {
+            let _ = writeln!(out, "Piper phonemizer: unavailable ({error})");
+        }
+    }
     let _ = writeln!(
         out,
         "Hardware: {} (whisper threads: {})",
@@ -1745,7 +1790,7 @@ mod tests {
         let part = part_path(&dest);
         std::fs::write(&part, b"hello_world").unwrap();
 
-        let err = finalize_download(&model, &part, &dest)
+        let err = finalize_download(&model, &part, &dest, false)
             .await
             .expect_err("corrupt file must not be installed");
         assert!(err.to_string().contains("checksum mismatch"), "{err}");
@@ -1761,7 +1806,7 @@ mod tests {
         let part = part_path(&dest);
         std::fs::write(&part, b"hello").unwrap();
 
-        let err = finalize_download(&model, &part, &dest)
+        let err = finalize_download(&model, &part, &dest, false)
             .await
             .expect_err("incomplete file must not be installed");
         assert!(err.to_string().contains("incomplete"), "{err}");
@@ -1773,16 +1818,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verified_download_is_moved_into_place() {
+    async fn verified_download_replaces_installed_model() {
         let tmp = Scratch::new("finalize-ok");
         let model = fake_model(HELLO_SHA, 11);
         let dest = tmp.0.join(model.filename);
         let part = part_path(&dest);
+        std::fs::write(&dest, b"installed model").unwrap();
         std::fs::write(&part, b"hello world").unwrap();
 
-        finalize_download(&model, &part, &dest).await.unwrap();
+        finalize_download(&model, &part, &dest, true).await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"hello world");
         assert!(!part.exists());
+    }
+
+    #[tokio::test]
+    async fn corrupt_replacement_leaves_installed_model_intact() {
+        let tmp = Scratch::new("finalize-force-corrupt");
+        let model = fake_model(HELLO_SHA, 11);
+        let dest = tmp.0.join(model.filename);
+        let part = part_path(&dest);
+        std::fs::write(&dest, b"installed model").unwrap();
+        std::fs::write(&part, b"hello_world").unwrap();
+
+        let err = finalize_download(&model, &part, &dest, true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("checksum mismatch"), "{err}");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"installed model");
+        assert!(!part.exists());
+    }
+
+    #[tokio::test]
+    async fn offline_force_leaves_model_and_partial_intact() {
+        let tmp = Scratch::new("force-offline");
+        let model = fake_model(HELLO_SHA, 11);
+        let dest = tmp.0.join(model.filename);
+        let part = part_path(&dest);
+        std::fs::write(&dest, b"installed model").unwrap();
+        std::fs::write(&part, b"hello world").unwrap();
+
+        let err = download_to(&model, &tmp.0, true, true).await.unwrap_err();
+        assert!(err.to_string().contains("offline mode"), "{err}");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"installed model");
+        assert_eq!(std::fs::read(&part).unwrap(), b"hello world");
+        assert_eq!(std::fs::read_dir(&tmp.0).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_force_leaves_model_and_partial_intact_and_cleans_staging() {
+        let tmp = Scratch::new("force-failed");
+        let model = ModelInfo {
+            // Rejected by the HTTP client without any network access.
+            url: "not a URL",
+            ..fake_model(HELLO_SHA, 11)
+        };
+        let dest = tmp.0.join(model.filename);
+        let part = part_path(&dest);
+        std::fs::write(&dest, b"installed model").unwrap();
+        std::fs::write(&part, b"hello world").unwrap();
+
+        let err = download_to(&model, &tmp.0, true, false).await.unwrap_err();
+        assert!(err.to_string().contains("Download failed"), "{err}");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"installed model");
+        assert_eq!(std::fs::read(&part).unwrap(), b"hello world");
+        assert_eq!(std::fs::read_dir(&tmp.0).unwrap().count(), 2);
     }
 
     #[tokio::test]
@@ -1792,7 +1891,7 @@ mod tests {
         let model = fake_model(HELLO_SHA, 11);
         let part = part_path(&tmp.0.join(model.filename));
         std::fs::write(&part, b"hello world").unwrap();
-        fetch_to_part(&model, &part).await.unwrap();
+        fetch_to_part(&model, &part, false, false).await.unwrap();
     }
 
     #[tokio::test]
@@ -1800,7 +1899,7 @@ mod tests {
         let tmp = Scratch::new("existing-bad");
         let model = fake_model(HELLO_SHA, 11);
         std::fs::write(tmp.0.join(model.filename), b"short").unwrap();
-        let err = download_to(&model, &tmp.0, false).await.unwrap_err();
+        let err = download_to(&model, &tmp.0, false, false).await.unwrap_err();
         assert!(err.to_string().contains("--force"), "{err}");
     }
 

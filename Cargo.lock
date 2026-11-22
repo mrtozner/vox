@@ -6528,6 +6528,7 @@ dependencies = [
  "sha2",
  "sherpa-sys",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",

@@ -334,6 +334,12 @@ pub struct Conversation {
     /// Trimmed turns of known speakers, oldest first, at most
     /// [`MAX_EVICTED_TURNS`]; see [`Conversation::take_evicted`].
     evicted: VecDeque<EvictedTurn>,
+    /// Counts clears so pending Live Talk work cannot repopulate the history.
+    #[cfg(feature = "server")]
+    generation: u64,
+    /// Connection id and wire turn id of the latest stored Live Talk turn.
+    #[cfg(feature = "server")]
+    last_live_turn: Option<(u64, u64)>,
 }
 
 impl Conversation {
@@ -354,6 +360,10 @@ impl Conversation {
             recall: HashMap::new(),
             recall_suppressed: false,
             evicted: VecDeque::new(),
+            #[cfg(feature = "server")]
+            generation: 0,
+            #[cfg(feature = "server")]
+            last_live_turn: None,
         }
     }
 
@@ -383,6 +393,16 @@ impl Conversation {
         self.dropped_turns = 0;
         self.recall.clear();
         self.recall_suppressed = true;
+        #[cfg(feature = "server")]
+        {
+            self.generation += 1;
+            self.last_live_turn = None;
+        }
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// What remembered context, if any, belongs in front of the next message
@@ -498,6 +518,11 @@ impl Conversation {
         true
     }
 
+    #[cfg(feature = "server")]
+    pub(crate) fn amend_live_turn(&mut self, id: (u64, u64), heard: usize) -> bool {
+        self.last_live_turn == Some(id) && self.amend_last_spoken(heard)
+    }
+
     /// Build the message list for a new turn: system prompt, history, then
     /// the new user message. Volatile context belongs in `user_text`, never in
     /// the system prompt, so the cached prefix stays valid.
@@ -535,8 +560,35 @@ impl Conversation {
         spoken: &[String],
         interrupted: bool,
     ) -> usize {
+        self.try_commit_message(user, spoken, interrupted)
+            .unwrap_or(0)
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn commit_live_turn(
+        &mut self,
+        id: (u64, u64),
+        generation: u64,
+        user: &UserMessage,
+        spoken: &[String],
+        interrupted: bool,
+    ) -> Option<usize> {
+        if self.generation != generation {
+            return None;
+        }
+        let dropped = self.try_commit_message(user, spoken, interrupted)?;
+        self.last_live_turn = Some(id);
+        Some(dropped)
+    }
+
+    fn try_commit_message(
+        &mut self,
+        user: &UserMessage,
+        spoken: &[String],
+        interrupted: bool,
+    ) -> Option<usize> {
         if user.text.is_empty() {
-            return 0;
+            return None;
         }
         let sentences: Vec<String> = spoken
             .iter()
@@ -547,7 +599,7 @@ impl Conversation {
         if sentences.is_empty() && !interrupted {
             // Nothing reached the listener and nothing was interrupted
             // (e.g. empty LLM reply): skip to keep the history meaningful.
-            return 0;
+            return None;
         }
         let turn = Turn::new(user, sentences, interrupted);
         let tokens = turn.tokens;
@@ -561,7 +613,11 @@ impl Conversation {
         }
         self.turns.push(turn);
         self.total_tokens += tokens;
-        self.trim()
+        #[cfg(feature = "server")]
+        {
+            self.last_live_turn = None;
+        }
+        Some(self.trim())
     }
 
     fn trim(&mut self) -> usize {
@@ -614,6 +670,9 @@ pub const DEFAULT_MAX_SESSIONS: usize = 256;
 struct SessionEntry {
     conversation: SharedConversation,
     last_seen: Instant,
+    active_connections: usize,
+    #[cfg(feature = "server")]
+    distillation: Arc<SessionDistillation>,
 }
 
 /// What [`SessionStore::attach`] hands to a connection.
@@ -626,11 +685,52 @@ pub struct SessionHandle {
     pub resumed: bool,
 }
 
+/// Keeps the conversation in the store until this connection ends.
+#[cfg(feature = "server")]
+pub(crate) struct SessionLease {
+    store: Arc<SessionStore>,
+    pub handle: SessionHandle,
+    pub distillation: Arc<SessionDistillation>,
+}
+
+#[cfg(feature = "server")]
+impl Drop for SessionLease {
+    fn drop(&mut self) {
+        self.store.release_at(&self.handle.id, Instant::now());
+    }
+}
+
+#[cfg(feature = "server")]
+#[derive(Default)]
+pub(crate) struct SessionDistillation {
+    /// Orders distillation writes against a Live Talk forget command.
+    pub write: tokio::sync::Mutex<()>,
+    cancel: Mutex<tokio_util::sync::CancellationToken>,
+}
+
+#[cfg(feature = "server")]
+impl SessionDistillation {
+    /// Called while holding the conversation lock, in the current generation.
+    pub fn child_token(&self) -> tokio_util::sync::CancellationToken {
+        self.cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .child_token()
+    }
+
+    /// Called while holding the conversation lock, when history is cleared.
+    pub fn cancel_pending(&self) {
+        let mut token = self.cancel.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *token).cancel();
+    }
+}
+
 /// In-memory conversations keyed by session id, so that a client that
 /// reconnects (for example after toggling the microphone) keeps its memory.
 ///
 /// Sessions idle for longer than the time-to-live are dropped the next time
-/// the store is used. Nothing is written to disk. The id is the only thing
+/// the store is used. A session is idle after its last connection closes.
+/// Nothing is written to disk. The id is the only thing
 /// protecting a session's memory: ids made here are unguessable, and a
 /// client-chosen id is accepted only if it is 8-64 characters of
 /// `[A-Za-z0-9_-]`.
@@ -673,36 +773,63 @@ impl SessionStore {
     ///
     /// A valid `requested` id that is unknown (never seen, or expired) starts
     /// an empty session under that id; an invalid or missing one gets a new
-    /// id.
+    /// id. When all slots are held by active connections, a new handle's
+    /// conversation is available only through that handle.
     pub fn attach(&self, requested: Option<&str>) -> SessionHandle {
-        self.attach_at(requested, Instant::now())
+        self.attach_at(requested, Instant::now(), false)
+            .unwrap_or_else(|| SessionHandle {
+                id: requested
+                    .filter(|id| Self::is_valid_id(id))
+                    .map_or_else(new_session_id, str::to_string),
+                conversation: Arc::new(Mutex::new(Conversation::for_num_ctx(ollama_num_ctx()))),
+                resumed: false,
+            })
     }
 
-    fn attach_at(&self, requested: Option<&str>, now: Instant) -> SessionHandle {
+    /// Attach a connection, or return `None` if every slot is active.
+    #[cfg(feature = "server")]
+    pub(crate) fn attach_active(self: &Arc<Self>, requested: Option<&str>) -> Option<SessionLease> {
+        let handle = self.attach_at(requested, Instant::now(), true)?;
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let distillation = Arc::clone(&sessions[&handle.id].distillation);
+        Some(SessionLease {
+            store: Arc::clone(self),
+            handle,
+            distillation,
+        })
+    }
+
+    fn attach_at(
+        &self,
+        requested: Option<&str>,
+        now: Instant,
+        active: bool,
+    ) -> Option<SessionHandle> {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let ttl = self.ttl;
-        sessions.retain(|_, s| now.saturating_duration_since(s.last_seen) < ttl);
+        sessions.retain(|_, s| {
+            s.active_connections > 0 || now.saturating_duration_since(s.last_seen) < ttl
+        });
 
         let requested = requested.filter(|id| Self::is_valid_id(id));
         if let Some(id) = requested
             && let Some(entry) = sessions.get_mut(id)
         {
             entry.last_seen = now;
-            return SessionHandle {
+            entry.active_connections += usize::from(active);
+            return Some(SessionHandle {
                 id: id.to_string(),
                 conversation: Arc::clone(&entry.conversation),
                 resumed: true,
-            };
+            });
         }
 
-        while sessions.len() >= self.max_sessions {
-            let Some(oldest) = sessions
+        if sessions.len() >= self.max_sessions {
+            let oldest = sessions
                 .iter()
+                .filter(|(_, s)| s.active_connections == 0)
                 .min_by_key(|(_, s)| s.last_seen)
-                .map(|(id, _)| id.clone())
-            else {
-                break;
-            };
+                .map(|(id, _)| id.clone())?;
             sessions.remove(&oldest);
         }
 
@@ -722,17 +849,30 @@ impl SessionStore {
             SessionEntry {
                 conversation: Arc::clone(&conversation),
                 last_seen: now,
+                active_connections: usize::from(active),
+                #[cfg(feature = "server")]
+                distillation: Arc::new(SessionDistillation::default()),
             },
         );
-        SessionHandle {
+        Some(SessionHandle {
             id,
             conversation,
             resumed: false,
+        })
+    }
+
+    #[cfg(feature = "server")]
+    fn release_at(&self, id: &str, now: Instant) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = sessions.get_mut(id) {
+            entry.active_connections -= 1;
+            if entry.active_connections == 0 {
+                entry.last_seen = now;
+            }
         }
     }
 
-    /// Restart the idle clock of a session (call when a connection ends, so
-    /// the time-to-live counts from the last use).
+    /// Restart the idle clock after using a session outside a connection.
     pub fn touch(&self, id: &str) {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = sessions.get_mut(id) {
@@ -1014,7 +1154,7 @@ mod tests {
     fn session_store_drops_idle_sessions_after_the_ttl() {
         let store = SessionStore::new(Duration::from_secs(10), 8);
         let t0 = Instant::now();
-        let first = store.attach_at(None, t0);
+        let first = store.attach_at(None, t0, false).unwrap();
         first
             .conversation
             .lock()
@@ -1022,13 +1162,19 @@ mod tests {
             .commit("hi", &s(&["Hello."]), false);
 
         // Still there just before the deadline; that use restarts the clock.
-        let kept = store.attach_at(Some(&first.id), t0 + Duration::from_secs(9));
+        let kept = store
+            .attach_at(Some(&first.id), t0 + Duration::from_secs(9), false)
+            .unwrap();
         assert!(kept.resumed);
-        let kept = store.attach_at(Some(&first.id), t0 + Duration::from_secs(18));
+        let kept = store
+            .attach_at(Some(&first.id), t0 + Duration::from_secs(18), false)
+            .unwrap();
         assert!(kept.resumed);
 
         // Gone once idle for the whole time-to-live: same id, empty memory.
-        let late = store.attach_at(Some(&first.id), t0 + Duration::from_secs(28));
+        let late = store
+            .attach_at(Some(&first.id), t0 + Duration::from_secs(28), false)
+            .unwrap();
         assert!(!late.resumed);
         assert!(late.conversation.lock().unwrap().is_empty());
     }
@@ -1037,17 +1183,53 @@ mod tests {
     fn session_store_evicts_the_oldest_when_full() {
         let store = SessionStore::new(Duration::from_secs(600), 2);
         let t0 = Instant::now();
-        let a = store.attach_at(None, t0);
-        let b = store.attach_at(None, t0 + Duration::from_secs(1));
-        let _c = store.attach_at(None, t0 + Duration::from_secs(2));
+        let a = store.attach_at(None, t0, false).unwrap();
+        let b = store
+            .attach_at(None, t0 + Duration::from_secs(1), false)
+            .unwrap();
+        let _c = store.attach_at(None, t0 + Duration::from_secs(2), false);
         assert_eq!(store.len(), 2);
         // `a` was the oldest and made room for `_c`.
-        let a_again = store.attach_at(Some(&a.id), t0 + Duration::from_secs(3));
+        let a_again = store
+            .attach_at(Some(&a.id), t0 + Duration::from_secs(3), false)
+            .unwrap();
         assert!(!a_again.resumed);
         // Re-creating `a` evicted `b`, the oldest one left.
-        let b_again = store.attach_at(Some(&b.id), t0 + Duration::from_secs(4));
+        let b_again = store
+            .attach_at(Some(&b.id), t0 + Duration::from_secs(4), false)
+            .unwrap();
         assert!(!b_again.resumed);
         assert_eq!(store.len(), 2);
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn session_store_protects_active_sessions_from_eviction() {
+        let store = SessionStore::new(Duration::from_secs(10), 2);
+        let t0 = Instant::now();
+        let active = store.attach_at(None, t0, true).unwrap();
+        let idle = store
+            .attach_at(None, t0 + Duration::from_secs(1), false)
+            .unwrap();
+        let t2 = t0 + Duration::from_secs(2);
+        assert!(store.attach_at(None, t2, true).is_some());
+        assert!(store.attach_at(Some(&idle.id), t2, true).is_none());
+        let resumed = store.attach_at(Some(&active.id), t2, true).unwrap();
+        assert!(resumed.resumed);
+
+        store.release_at(&active.id, t2);
+        let t20 = t0 + Duration::from_secs(20);
+        assert!(store.attach_at(None, t20, false).is_none());
+        store.release_at(&active.id, t20);
+
+        // The idle clock starts at the last release, even though no socket
+        // touched the session for longer than the TTL while it was active.
+        let t29 = t0 + Duration::from_secs(29);
+        let again = store.attach_at(Some(&active.id), t29, false).unwrap();
+        assert!(again.resumed);
+        let t39 = t0 + Duration::from_secs(39);
+        let expired = store.attach_at(Some(&active.id), t39, false).unwrap();
+        assert!(!expired.resumed);
     }
 
     fn label(id: &str, name: &str) -> Option<SpeakerLabel> {

@@ -12,7 +12,7 @@
 
 ---
 
-Vox is a voice AI runtime that ships as one binary and as a Rust library: voice activity detection, speech-to-text, speaker identification, text-to-speech, and full-duplex voice chat with a local LLM through [Ollama](https://ollama.com). It recognizes the people it has been introduced to and, if they opt in, remembers what they said across sessions. No API keys, no cloud APIs, and an `--offline` switch that refuses a remote LLM host and every download.
+Vox is a voice AI runtime available as a CLI and a Rust library. It provides voice activity detection, speech-to-text, speaker identification, text-to-speech, and full-duplex voice chat with a local LLM through [Ollama](https://ollama.com). It recognizes the people it has been introduced to and, if they opt in, remembers what they said across sessions. No API keys, no cloud APIs, and an `--offline` switch that refuses a remote LLM host and every download.
 
 ```
 Mic --> VAD (Silero) --> STT (Whisper/Sherpa) --> Speaker ID --> LLM (Ollama) or your code --> TTS (Kokoro/Piper/Qwen3) --> Speaker
@@ -27,7 +27,7 @@ Mic --> VAD (Silero) --> STT (Whisper/Sherpa) --> Speaker ID --> LLM (Ollama) or
 Most voice-agent frameworks are Python orchestration layers built around cloud speech and LLM APIs. Vox takes the other route:
 
 - **One binary, no Python.** `vox serve` is the whole stack: speech models run in-process, the web UI is embedded, there is no separate frontend or worker to deploy. Two things live outside the binary: the model files, which are downloaded once, and the LLM, which is an Ollama server you run.
-- **Offline you can check.** In the release feature set Vox makes two kinds of outbound connection: requests to Ollama and model downloads. `--offline` refuses an Ollama host that is not loopback and refuses every download. `GET /v1/privacy/ledger` shows the connections the server process made, with destination, purpose and body bytes. (The optional `pocket`, `chatterbox` and `qwen3` backends fetch their own weights and are outside this control.)
+- **Offline you can check.** In the release feature set Vox makes two kinds of outbound connection: requests to Ollama and model downloads. `--offline` refuses remote Ollama hosts and model downloads. Ollama requests connect directly to loopback with proxies and redirects disabled. `GET /v1/privacy/ledger` shows the connections the server process made, with destination, purpose and body bytes. (The optional `pocket`, `chatterbox` and `qwen3` backends fetch their own weights and are outside this control.)
 - **It knows who is speaking.** Speaker identification runs inside the conversation loop. No voiceprint is stored before you record consent, and in Live Talk a voice is enrolled only by an explicit command. Long-term memory is opt-in per person and deleted with the speaker.
 - **Embeddable.** The engine and the HTTP/WebSocket server are library APIs (`vox::server`, `VoxBuilder::build_with_channel`), so you can feed it your own audio and mount its router in your own application.
 - **OpenAI-shaped where it helps.** `/v1/audio/transcriptions`, `/v1/audio/speech` and `/v1/models` follow the OpenAI shape, so OpenAI SDK clients can use a Vox server for transcription and speech.
@@ -63,7 +63,13 @@ sha256sum --check SHA256SUMS --ignore-missing
 gh attestation verify vox-v*.tar.gz --repo mrtozner/vox
 ```
 
-Release binaries include the CLI, the server, Kokoro and Piper. Because Piper links espeak-ng, **the release binaries are GPL-3.0**; see [License](#license).
+- On Ubuntu 24.04, Debian 13 and Raspberry Pi OS Trixie, install the ALSA and OpenSSL shared libraries with `sudo apt install libasound2t64 libssl3t64`.
+- On Windows, install the Microsoft Visual C++ x64 Redistributable before running `vox.exe`. [Microsoft downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)
+- For Piper on Linux and macOS, keep the archive's `espeak-ng-data` directory next to `vox`, or set `PIPER_ESPEAKNG_DATA_DIRECTORY` to the directory that contains it. For v0.7.0 archives, supply compatible eSpeak NG data separately.
+
+**v0.7.0 Linux archives:** Whisper was built with AVX-512 extensions on x86_64 and SVE and i8mm on ARM64. If your CPU lacks these features, build Vox from source on that machine. This includes Raspberry Pi 4 and 5 and x86-64-v3 CPUs such as Haswell and Zen 1.
+
+All release binaries include the CLI, server and Kokoro. The Linux and macOS binaries also include Piper. The phonemizers contain code derived from espeak-ng, so **the release binaries are GPL-3.0**. See [License](#license).
 
 ### From source
 
@@ -101,6 +107,8 @@ vox doctor
 ```
 
 `vox listen`, `vox speak` and `vox chat` offer to download a missing model; pass `-y` to skip the prompt.
+
+For local-only inference in Ollama itself, start Ollama with `OLLAMA_NO_CLOUD=1` and select a downloaded Ollama model. [Ollama local mode](https://docs.ollama.com/faq#how-do-i-disable-ollamas-cloud-features)
 
 <br>
 

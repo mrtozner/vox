@@ -73,6 +73,7 @@ clap = { version = "4.5", features = ["derive"], optional = true }
 dirs = { version = "5.0", optional = true }
 indicatif = { version = "0.17", optional = true }
 reqwest = { version = "0.12", features = ["stream", "json"], optional = true }
+tempfile = { version = "3", optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
 tokio-util = { version = "0.7", features = ["io"], optional = true }
 toml = { version = "0.8", optional = true }
@@ -118,7 +119,7 @@ diarization = ["dep:ort", "dep:ndarray", "dep:sqlx", "dep:sha2"]
 cli = [
     "dep:clap", "dep:dirs", "dep:indicatif", "dep:reqwest",
     "dep:tracing-subscriber", "dep:tokio-util", "dep:toml",
-    "dep:sha2",
+    "dep:sha2", "dep:tempfile",
     "whisper", "silero", "mic", "signal",
     "tokio/rt-multi-thread", "tokio/fs", "tokio/io-util", "tokio/process",
 ]

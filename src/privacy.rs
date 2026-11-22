@@ -10,8 +10,8 @@
 //!
 //! - [`resolve_ollama_host`] decides which Ollama address is used
 //!   (flag, then `VOX_OLLAMA_HOST`, then the config file, then the default).
-//! - [`ollama_request`] builds every Ollama URL. In offline mode it refuses
-//!   any address that is not loopback.
+//! - [`ollama_http_request`] builds each Ollama request. Offline requests
+//!   connect directly to loopback addresses and do not follow redirects.
 //! - [`download_request`] gates every model download. In offline mode it
 //!   refuses all of them.
 //! - Both return a [`Connection`] that records destination, purpose and
@@ -279,7 +279,7 @@ pub fn check_download(target: &str, offline: bool) -> Result<(), EgressDenied> {
 
 /// Fail if offline mode forbids talking to `host`. Call this at startup so a
 /// misconfiguration is reported before any model is loaded;
-/// [`ollama_request`] enforces the same rule on every request.
+/// [`ollama_http_request`] enforces the same rule on every request.
 pub fn ensure_ollama_host_allowed(host: &str) -> Result<(), EgressDenied> {
     check_host(host, offline())
 }
@@ -545,6 +545,78 @@ pub fn json_len<T: Serialize + ?Sized>(body: &T) -> u64 {
 // The two egress points
 // ---------------------------------------------------------------------------
 
+/// An Ollama request could not be prepared.
+#[derive(Debug, thiserror::Error)]
+pub enum OllamaRequestError {
+    #[error(transparent)]
+    Denied(#[from] EgressDenied),
+    #[error("failed to initialize the offline Ollama client: {0}")]
+    Client(#[source] &'static reqwest::Error),
+}
+
+/// Prepare and record an Ollama request. The supplied client is used online.
+/// Offline requests use Vox's own client to enforce loopback transport.
+pub fn ollama_http_request(
+    online_client: &reqwest::Client,
+    method: reqwest::Method,
+    host: &str,
+    path: &str,
+    purpose: &str,
+    bytes_sent: u64,
+) -> Result<(reqwest::RequestBuilder, Connection<'static>), OllamaRequestError> {
+    let offline = offline();
+    let ledger = ledger();
+    let url = checked_ollama_url(ledger, offline, host, path, purpose)?;
+    let client = if offline {
+        offline_ollama_client()?
+    } else {
+        online_client
+    };
+    Ok((
+        client.request(method, url),
+        ledger.begin(host, purpose, bytes_sent),
+    ))
+}
+
+struct LoopbackResolver;
+
+impl reqwest::dns::Resolve for LoopbackResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let is_localhost = name
+            .as_str()
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case("localhost");
+        Box::pin(async move {
+            if !is_localhost {
+                return Err(std::io::Error::other("offline Ollama only resolves localhost").into());
+            }
+            let addresses: reqwest::dns::Addrs = Box::new(
+                [
+                    std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0)),
+                    std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
+                ]
+                .into_iter(),
+            );
+            Ok(addresses)
+        })
+    }
+}
+
+fn offline_ollama_client() -> Result<&'static reqwest::Client, OllamaRequestError> {
+    static CLIENT: OnceLock<Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(std::sync::Arc::new(LoopbackResolver))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+        })
+        .as_ref()
+        .map_err(OllamaRequestError::Client)
+}
+
 /// Start a request to Ollama: the one place that turns an Ollama address
 /// into a URL.
 ///
@@ -570,12 +642,36 @@ pub fn ollama_request_in<'a>(
     purpose: &str,
     bytes_sent: u64,
 ) -> Result<(String, Connection<'a>), EgressDenied> {
+    let url = checked_ollama_url(ledger, offline, host, path, purpose)?;
+    Ok((url, ledger.begin(host, purpose, bytes_sent)))
+}
+
+fn checked_ollama_url(
+    ledger: &PrivacyLedger,
+    offline: bool,
+    host: &str,
+    path: &str,
+    purpose: &str,
+) -> Result<String, EgressDenied> {
     if let Err(denied) = check_host(host, offline) {
         ledger.record_blocked(host, purpose);
         return Err(denied);
     }
-    let url = format!("http://{host}{path}");
-    Ok((url, ledger.begin(host, purpose, bytes_sent)))
+    let url = if offline && host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("http://[{host}]{path}")
+    } else {
+        format!("http://{host}{path}")
+    };
+    // IP literals bypass DNS, so also check the authority of the final URL.
+    if offline
+        && !reqwest::Url::parse(&url).is_ok_and(|url| url.host_str().is_some_and(is_loopback_host))
+    {
+        ledger.record_blocked(host, purpose);
+        return Err(EgressDenied::NonLoopbackHost {
+            host: host.to_string(),
+        });
+    }
+    Ok(url)
 }
 
 /// Start a model download from `url`. Refused in offline mode.

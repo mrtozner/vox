@@ -12,7 +12,6 @@ use core::{Audio, AudioInfo, AudioSamples, AudioStreamIterator, Phonemes};
 pub use core::{PiperAudioResult, PiperError, PiperModel, PiperResult};
 
 use std::any::Any;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -23,6 +22,42 @@ const MAX_CHUNK_SIZE: usize = 1024;
 const BOS: char = '^';
 const EOS: char = '$';
 const PAD: char = '_';
+
+fn phonemize(text: &str, voice: &str) -> PiperResult<Phonemes> {
+    // eSpeak NG stores the selected voice and phonemization state globally.
+    static ESPEAK_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = ESPEAK_LOCK.lock().map_err(|_| {
+        PiperError::PhonemizationError("eSpeak NG phonemizer lock poisoned".to_string())
+    })?;
+    text_to_phonemes(text, voice, None, true, false)
+        .map(Phonemes::from)
+        .map_err(|e| PiperError::PhonemizationError(e.to_string()))
+}
+
+/// Verify that eSpeak NG can produce phonemes for `voice` without loading an ONNX model.
+pub fn check_phonemizer(voice: &str) -> PiperResult<()> {
+    if voice.contains('\0') {
+        return Err(PiperError::PhonemizationError(
+            "The Piper model's eSpeak NG voice contains a null byte".to_string(),
+        ));
+    }
+
+    let details = match phonemize("test", voice) {
+        Ok(probe)
+            if probe
+                .sentences()
+                .iter()
+                .any(|sentence| sentence.chars().any(char::is_alphabetic)) =>
+        {
+            return Ok(());
+        }
+        Ok(_) => "no speech sounds were produced".to_string(),
+        Err(e) => e.to_string(),
+    };
+    Err(PiperError::PhonemizationError(format!(
+        "eSpeak NG could not use Piper voice {voice:?} ({details}). +         Keep the complete espeak-ng-data directory beside the executable, +         or set PIPER_ESPEAKNG_DATA_DIRECTORY to the directory that contains it."
+    )))
+}
 
 #[inline(always)]
 fn reversed_mapping<K, V>(input: &HashMap<K, V>) -> HashMap<V, K>
@@ -231,18 +266,7 @@ trait VitsModelCommons {
         phoneme_ids
     }
     fn do_phonemize_text(&self, text: &str) -> PiperResult<Phonemes> {
-        let config = self.get_config();
-        let text = Cow::from(text);
-        let phonemes = match text_to_phonemes(&text, &config.espeak.voice, None, true, false) {
-            Ok(ph) => ph,
-            Err(e) => {
-                return Err(PiperError::PhonemizationError(format!(
-                    "Failed to phonemize given text using espeak-ng. Error: {}",
-                    e
-                )))
-            }
-        };
-        Ok(phonemes.into())
+        phonemize(text, &self.get_config().espeak.voice)
     }
 
     fn get_audio_output_info(&self) -> PiperResult<AudioInfo> {
@@ -273,6 +297,7 @@ impl VitsModel {
         synth_config: PiperSynthesisConfig,
         onnx_path: &Path,
     ) -> PiperResult<Self> {
+        check_phonemizer(&config.espeak.voice)?;
         let session = match create_inference_session(onnx_path) {
             Ok(session) => session,
             Err(err) => {
@@ -447,6 +472,7 @@ impl VitsStreamingModel {
         encoder_path: &Path,
         decoder_path: &Path,
     ) -> PiperResult<Self> {
+        check_phonemizer(&config.espeak.voice)?;
         let encoder_model = match create_inference_session(encoder_path) {
             Ok(model) => model,
             Err(err) => {
@@ -881,5 +907,35 @@ impl Iterator for AdaptiveMelChunker {
         let chunk_index = ndarray::Slice::new(start_index, end_index, 1);
         let audio_index = ndarray::Slice::new(start_padding * 256, end_padding.map(|i| i * 256), 1);
         Some((chunk_index, audio_index))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probes_an_installed_voice_without_an_onnx_model() {
+        check_phonemizer("en-us").unwrap();
+    }
+
+    #[test]
+    fn rejects_an_unavailable_voice_before_opening_onnx() {
+        let config = ModelConfig {
+            espeak: ESpeakConfig {
+                voice: "vox-test-missing-espeak-voice".to_string(),
+            },
+            ..ModelConfig::default()
+        };
+        let result = VitsModel::from_config(
+            config,
+            PiperSynthesisConfig::default(),
+            Path::new("unused.onnx"),
+        );
+        let Err(PiperError::PhonemizationError(error)) = result else {
+            panic!("expected phonemization to fail before opening the ONNX model");
+        };
+        assert!(error.contains("vox-test-missing-espeak-voice"), "{error}");
+        assert!(error.contains("PIPER_ESPEAKNG_DATA_DIRECTORY"), "{error}");
     }
 }

@@ -97,6 +97,14 @@ fn resolve_speaker(
 }
 
 impl PiperBackend {
+    /// Check the local eSpeak NG installation using an English Piper voice.
+    ///
+    /// This does not require an ONNX model. Loading a model also checks the
+    /// particular voice configured for it.
+    pub fn check_phonemizer() -> Result<(), VoxError> {
+        piper_rs::check_phonemizer("en-us").map_err(|e| VoxError::Tts(e.to_string()))
+    }
+
     /// Create a new Piper TTS backend from a `.onnx.json` config file.
     ///
     /// The ONNX model file is expected to be alongside the config file

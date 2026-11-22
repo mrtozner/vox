@@ -269,7 +269,9 @@ where
         "keep_alive": crate::conversation::OLLAMA_KEEP_ALIVE,
         "options": crate::conversation::ollama_options(),
     });
-    let (url, egress) = crate::privacy::ollama_request(
+    let (request, egress) = crate::privacy::ollama_http_request(
+        client,
+        reqwest::Method::POST,
         host,
         "/api/chat",
         "llm chat",
@@ -289,7 +291,7 @@ where
 
     let response = tokio::select! {
         _ = cancel.cancelled() => return Ok(StopReason::Cancelled),
-        r = tokio::time::timeout_at(first_deadline, client.post(&url).json(&body).send()) => {
+        r = tokio::time::timeout_at(first_deadline, request.json(&body).send()) => {
             r.map_err(|_| no_start())?
                 .map_err(|e| VoxError::Pipeline(format!("Ollama request failed: {e}")))?
         }

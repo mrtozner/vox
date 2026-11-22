@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Offline Ollama requests bypass proxies and refuse redirects. `localhost` resolves directly to loopback.
+- A forced model refresh keeps the installed file until its replacement passes verification. Offline refusal leaves existing model files intact.
+- Voiceprint collection honors consent withdrawals during enrollment and deferred adaptation writes.
+- Overlapping Live Talk connections share the same forget state. Playback feedback applies to the correct turn, and open sessions stay available through idle sweeps and capacity eviction.
+- Release builds pin Whisper's CPU features on Linux and Windows. Linux and macOS archives include Piper's eSpeak NG runtime data, and the server falls back to Kokoro when Piper's phonemizer cannot start.
+
 ## [0.7.0] - 2026-11-22
 
 ### Changed

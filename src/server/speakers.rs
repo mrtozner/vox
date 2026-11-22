@@ -24,8 +24,7 @@ use axum::extract::FromRef;
 use serde::Serialize;
 
 use crate::diarization::{
-    Identification, IdentifyMode, SpeakerExport, SpeakerRecord, merge_embeddings,
-    validate_speaker_name,
+    IdentifyMode, SpeakerExport, SpeakerRecord, merge_embeddings, validate_speaker_name,
 };
 
 use super::ServerState;
@@ -158,6 +157,16 @@ pub(super) struct ConsentStatus {
     pub(super) granted_at: Option<u64>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EnrollmentPolicy {
+    ReadOnly,
+    Automatic,
+    Explicit,
+}
+
+#[derive(Debug)]
+pub(super) struct EnrollmentConsentRequired;
+
 /// Colorblind-friendly palette for visually distinct speaker colors.
 const SPEAKER_PALETTE: &[&str] = &[
     "#4e79a7", // steel blue
@@ -195,41 +204,85 @@ pub(super) fn color_for(id: &str) -> String {
 
 /// Identify who spoke `audio`.
 ///
-/// `mode` bounds what the call may change:
-/// [`IdentifyMode::IdentifyOnly`] touches neither the registry nor the
-/// database; the other modes may adapt the matched speaker and (for
-/// [`IdentifyMode::AdaptAndEnroll`]) enroll an unknown voice. Callers that
-/// enroll are responsible for the consent gate; see [`diarize_utterance`].
+/// Automatic enrollment falls back to read-only recognition without
+/// consent. Explicit enrollment requires uninterrupted consent.
 ///
-/// Returns `None` when diarization is unavailable, the audio is too short,
+/// Returns `Ok(None)` when diarization is unavailable, the audio is too short,
 /// nobody matched, or extraction failed (logged; never fatal to the turn).
 pub(super) async fn identify_speaker(
     ctx: &SpeakerCtx,
     audio: &crate::AudioChunk,
+    policy: EnrollmentPolicy,
+) -> Result<Option<SpeakerMatch>, EnrollmentConsentRequired> {
+    let revision = if policy == EnrollmentPolicy::ReadOnly {
+        None
+    } else {
+        enrollment_revision(ctx).await
+    };
+    if policy == EnrollmentPolicy::Explicit && revision.is_none() {
+        return Err(EnrollmentConsentRequired);
+    }
+
+    let (Some(pipeline), Some(_)) = (&ctx.pipeline, &ctx.db) else {
+        return Ok(None);
+    };
+    match pipeline.identification_embedding(audio).await {
+        Ok(Some(embedding)) => identify_embedding(ctx, embedding, policy, revision).await,
+        Ok(None) => Ok(None),
+        Err(e) => {
+            tracing::warn!(error = %e, "speaker identification failed, continuing without");
+            Ok(None)
+        }
+    }
+}
+
+/// Check the consent captured before extraction while holding the same
+/// lock as withdrawal, then finish any writes before releasing the lock.
+async fn identify_embedding(
+    ctx: &SpeakerCtx,
+    embedding: Vec<f32>,
+    policy: EnrollmentPolicy,
+    revision: Option<u64>,
+) -> Result<Option<SpeakerMatch>, EnrollmentConsentRequired> {
+    let (Some(revision), Some(db)) = (revision, ctx.db.as_ref()) else {
+        return Ok(resolve_identification(ctx, embedding, IdentifyMode::IdentifyOnly).await);
+    };
+
+    let db = Arc::clone(db);
+    let ctx = ctx.clone();
+    // A disconnected request must not release the lock during a SQLite write.
+    tokio::spawn(async move {
+        let current = db.voiceprint_write.lock().await;
+        if *current == revision {
+            return Ok(resolve_identification(&ctx, embedding, IdentifyMode::AdaptAndEnroll).await);
+        }
+        drop(current);
+        if policy == EnrollmentPolicy::Explicit {
+            return Err(EnrollmentConsentRequired);
+        }
+        Ok(resolve_identification(&ctx, embedding, IdentifyMode::IdentifyOnly).await)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "speaker identification task failed");
+        Ok(None)
+    })
+}
+
+async fn resolve_identification(
+    ctx: &SpeakerCtx,
+    embedding: Vec<f32>,
     mode: IdentifyMode,
 ) -> Option<SpeakerMatch> {
     let pipeline = ctx.pipeline.as_ref()?;
-    ctx.db.as_ref()?;
-
-    let identification = match pipeline.identify(audio, mode).await {
+    let db = ctx.db.as_ref()?;
+    let identification = match pipeline.resolve_embedding(embedding, mode) {
         Ok(identification) => identification,
         Err(e) => {
             tracing::warn!(error = %e, "speaker identification failed, continuing without");
             return None;
         }
     };
-    commit_identification(ctx, identification, mode).await
-}
-
-/// Carry the outcome of an identification through to the database and turn
-/// it into what the client sees.
-async fn commit_identification(
-    ctx: &SpeakerCtx,
-    identification: Identification,
-    mode: IdentifyMode,
-) -> Option<SpeakerMatch> {
-    let pipeline = ctx.pipeline.as_ref()?;
-    let db = ctx.db.as_ref()?;
     let id = identification.speaker_id?;
 
     let mut new_speaker = None;
@@ -295,9 +348,8 @@ pub(super) async fn diarize_utterance(
         return (None, None, None, None);
     }
     let ctx = SpeakerCtx::from_state(state);
-    let mode = enrollment_mode(&ctx).await;
-    match identify_speaker(&ctx, &utterance.audio, mode).await {
-        Some(m) => {
+    match identify_speaker(&ctx, &utterance.audio, EnrollmentPolicy::Automatic).await {
+        Ok(Some(m)) => {
             tracing::debug!(
                 speaker_id = %m.id,
                 confidence = m.confidence,
@@ -306,7 +358,7 @@ pub(super) async fn diarize_utterance(
             );
             (Some(m.id), Some(m.name), Some(m.color), m.new_speaker)
         }
-        None => (None, None, None, None),
+        _ => (None, None, None, None),
     }
 }
 
@@ -323,6 +375,7 @@ fn schedule_adaptation_flush(
     let db = Arc::clone(db);
     tokio::spawn(async move {
         tokio::time::sleep(ADAPTATION_FLUSH_DELAY).await;
+        let _write = db.voiceprint_write.lock().await;
         flush_adaptations(&pipeline, &db).await;
     });
 }
@@ -342,8 +395,14 @@ async fn flush_adaptations(pipeline: &crate::DiarizationPipeline, db: &crate::Sp
 /// Settle pending adaptation writes before an operation that reads or
 /// rewrites stored embeddings.
 async fn settle(ctx: &SpeakerCtx) {
-    if let (Some(pipeline), Some(db)) = (ctx.pipeline.as_ref(), ctx.db.as_ref()) {
-        flush_adaptations(pipeline, db).await;
+    if let (Some(pipeline), Some(db)) = (ctx.pipeline.clone(), ctx.db.clone()) {
+        let task = tokio::spawn(async move {
+            let _write = db.voiceprint_write.lock().await;
+            flush_adaptations(&pipeline, &db).await;
+        });
+        if let Err(e) = task.await {
+            tracing::warn!(error = %e, "speaker adaptation flush task failed");
+        }
     }
 }
 
@@ -367,14 +426,11 @@ pub(super) async fn enrollment_consent(ctx: &SpeakerCtx) -> ConsentStatus {
     }
 }
 
-/// The most an utterance may change right now: enroll and adapt while
-/// enrollment consent is recorded, nothing at all otherwise.
-pub(super) async fn enrollment_mode(ctx: &SpeakerCtx) -> IdentifyMode {
-    if enrollment_consent(ctx).await.granted {
-        IdentifyMode::AdaptAndEnroll
-    } else {
-        IdentifyMode::IdentifyOnly
-    }
+/// Snapshot the permission governing an utterance before extracting audio.
+async fn enrollment_revision(ctx: &SpeakerCtx) -> Option<u64> {
+    let db = ctx.db.as_ref()?;
+    let revision = db.voiceprint_write.lock().await;
+    enrollment_consent(ctx).await.granted.then_some(*revision)
 }
 
 /// Grant or withdraw consent to store voiceprints.
@@ -385,15 +441,23 @@ pub(super) async fn set_enrollment_consent(
     ctx: &SpeakerCtx,
     granted: bool,
 ) -> Result<ConsentStatus, SpeakerError> {
-    let db = ctx.db()?;
-    if !granted {
-        // Anything adapted while consent was still in force is written
-        // before the gate closes; nothing is written after.
-        settle(ctx).await;
-    }
-    db.set_enrollment_consent(granted).await?;
-    tracing::info!(granted, "speaker enrollment consent changed");
-    Ok(enrollment_consent(ctx).await)
+    let db = Arc::clone(ctx.db()?);
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        let mut revision = db.voiceprint_write.lock().await;
+        if !granted && let Some(pipeline) = &ctx.pipeline {
+            // Write any references adapted while consent was still in force.
+            flush_adaptations(pipeline, &db).await;
+        }
+        db.set_enrollment_consent(granted).await?;
+        if !granted {
+            *revision = revision.wrapping_add(1);
+        }
+        tracing::info!(granted, "speaker enrollment consent changed");
+        Ok(enrollment_consent(&ctx).await)
+    })
+    .await
+    .map_err(|e| SpeakerError::Internal(format!("speaker consent task failed: {e}")))?
 }
 
 /// A message for the client when diarization was switched on but the server
@@ -802,12 +866,12 @@ pub(super) mod tests {
 
         // Consent not recorded: an unknown voice stays unknown and leaves
         // no trace in the registry or the database.
-        let mode = enrollment_mode(&ctx).await;
-        assert_eq!(mode, IdentifyMode::IdentifyOnly);
-        let identification = pipeline.resolve_embedding(voice.clone(), mode).unwrap();
+        let revision = enrollment_revision(&ctx).await;
+        assert!(revision.is_none());
         assert!(
-            commit_identification(&ctx, identification, mode)
+            identify_embedding(&ctx, voice.clone(), EnrollmentPolicy::Automatic, revision)
                 .await
+                .unwrap()
                 .is_none()
         );
         assert_eq!(pipeline.with_registry(|r| r.speaker_count()), 0);
@@ -815,12 +879,13 @@ pub(super) mod tests {
 
         // Consent recorded: the same voice is enrolled and persisted.
         set_enrollment_consent(&ctx, true).await.unwrap();
-        let mode = enrollment_mode(&ctx).await;
-        assert_eq!(mode, IdentifyMode::AdaptAndEnroll);
-        let identification = pipeline.resolve_embedding(voice.clone(), mode).unwrap();
-        let matched = commit_identification(&ctx, identification, mode)
-            .await
-            .unwrap();
+        let revision = enrollment_revision(&ctx).await;
+        assert!(revision.is_some());
+        let matched =
+            identify_embedding(&ctx, voice.clone(), EnrollmentPolicy::Automatic, revision)
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(matched.id, "speaker_1");
         assert_eq!(matched.name, "Speaker 1");
         assert_eq!(matched.new_speaker.as_ref().unwrap().id, "speaker_1");
@@ -828,26 +893,82 @@ pub(super) mod tests {
         assert_eq!(stored.embedding, voice);
 
         // Heard again: recognized with its score, not enrolled twice.
-        let identification = pipeline.resolve_embedding(voice.clone(), mode).unwrap();
-        let matched = commit_identification(&ctx, identification, mode)
-            .await
-            .unwrap();
+        let matched =
+            identify_embedding(&ctx, voice.clone(), EnrollmentPolicy::Automatic, revision)
+                .await
+                .unwrap()
+                .unwrap();
         assert!(matched.new_speaker.is_none());
         assert!((matched.confidence - 1.0).abs() < 1e-6);
 
         // Consent withdrawn: recognition still works, enrollment stops.
         set_enrollment_consent(&ctx, false).await.unwrap();
-        let mode = enrollment_mode(&ctx).await;
-        let stranger = pipeline
-            .resolve_embedding(vec![0.0, 0.0, 1.0], mode)
-            .unwrap();
-        assert!(commit_identification(&ctx, stranger, mode).await.is_none());
-        let known = pipeline.resolve_embedding(voice, mode).unwrap();
+        let stranger = identify_embedding(
+            &ctx,
+            vec![0.0, 0.0, 1.0],
+            EnrollmentPolicy::Automatic,
+            revision,
+        )
+        .await
+        .unwrap();
+        assert!(stranger.is_none());
         assert_eq!(
-            commit_identification(&ctx, known, mode).await.unwrap().id,
+            identify_embedding(&ctx, voice, EnrollmentPolicy::Automatic, revision)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
             "speaker_1"
         );
         assert_eq!(db.list_records().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_revocation_invalidates_pending_audio_even_after_regrant() {
+        let ctx = test_ctx().await;
+        let pipeline = ctx.pipeline.as_ref().unwrap();
+        let db = ctx.db.as_ref().unwrap();
+        let reference = vec![1.0, 0.0, 0.0];
+        enroll(&ctx, "alice", "Alice", &reference).await;
+        set_enrollment_consent(&ctx, true).await.unwrap();
+
+        // Suspend automatic recognition and explicit enrollment at the
+        // extraction boundary. A fresh grant cannot authorize this audio.
+        let revision = enrollment_revision(&ctx).await;
+        assert!(revision.is_some());
+        let consent_ctx = ctx.clone();
+        set_enrollment_consent(&consent_ctx, false).await.unwrap();
+        set_enrollment_consent(&consent_ctx, true).await.unwrap();
+        let matched = identify_embedding(
+            &ctx,
+            vec![0.6, 0.8, 0.0],
+            EnrollmentPolicy::Automatic,
+            revision,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(matched.id, "alice");
+        assert!(!pipeline.has_unsaved_adaptations());
+        let (in_memory, count) = pipeline.voiceprint("alice").unwrap();
+        assert_eq!((in_memory.embedding, count), (reference.clone(), 1));
+        let (stored, count) = db.load_voiceprint("alice").await.unwrap().unwrap();
+        assert_eq!((stored.embedding, count), (reference, 1));
+
+        let stranger = vec![0.0, 0.0, 1.0];
+        assert!(matches!(
+            identify_embedding(&ctx, stranger.clone(), EnrollmentPolicy::Explicit, revision).await,
+            Err(EnrollmentConsentRequired)
+        ));
+        assert!(!registry_has(&ctx, "speaker_1"));
+        assert!(db.load_voiceprint("speaker_1").await.unwrap().is_none());
+
+        let fresh_revision = enrollment_revision(&ctx).await;
+        let fresh = identify_embedding(&ctx, stranger, EnrollmentPolicy::Explicit, fresh_revision)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fresh.new_speaker.unwrap().id, "speaker_1");
     }
 
     #[tokio::test]

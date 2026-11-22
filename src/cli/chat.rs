@@ -133,9 +133,15 @@ pub async fn run(
     let client = reqwest::Client::new();
 
     println!("Checking Ollama at {ollama_host}...");
-    let (tags_url, _egress) =
-        vox::privacy::ollama_request(ollama_host, "/api/tags", "llm status check", 0)?;
-    match client.get(tags_url).send().await {
+    let (request, _egress) = vox::privacy::ollama_http_request(
+        &client,
+        reqwest::Method::GET,
+        ollama_host,
+        "/api/tags",
+        "llm status check",
+        0,
+    )?;
+    match request.send().await {
         Ok(resp) if resp.status().is_success() => {
             println!("✓ Ollama connected.");
         }

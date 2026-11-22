@@ -11,6 +11,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 
+use crate::privacy::{OllamaRequestError, ollama_http_request};
 use crate::types::{AudioChunk, SttResult, TtsOutput, TtsRequest, Utterance};
 
 use super::ServerState;
@@ -352,19 +353,26 @@ pub async fn synthesize(
 pub async fn vox_models_response(state: &ServerState) -> ModelsResponse {
     // Check Ollama connectivity, bounded so a hung Ollama cannot stall the UI.
     let ollama = {
-        let request =
-            crate::privacy::ollama_request(&state.ollama_host, "/api/tags", "llm status check", 0);
-        let response = match &request {
-            Ok((url, _)) => {
-                let request = state.http_client.get(url).timeout(OLLAMA_TAGS_TIMEOUT);
-                request.send().await.ok()
-            }
+        let response = match ollama_http_request(
+            &state.http_client,
+            reqwest::Method::GET,
+            &state.ollama_host,
+            "/api/tags",
+            "llm status check",
+            0,
+        ) {
+            Ok((request, egress)) => request
+                .timeout(OLLAMA_TAGS_TIMEOUT)
+                .send()
+                .await
+                .ok()
+                .map(|resp| (resp, egress)),
             // Refused by offline mode: reported as not connected.
             Err(_) => None,
         };
         match response {
-            Some(resp) if resp.status().is_success() => {
-                if let (Ok((_, egress)), Some(len)) = (&request, resp.content_length()) {
+            Some((resp, egress)) if resp.status().is_success() => {
+                if let Some(len) = resp.content_length() {
                     egress.add_received(len);
                 }
                 let body: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -590,10 +598,14 @@ fn ollama_send_error(host: &str, err: &reqwest::Error) -> ServerError {
     }
 }
 
-/// An Ollama request refused by offline mode: 403 `offline_mode`.
-fn offline_denied(err: crate::privacy::EgressDenied) -> ServerError {
-    tracing::warn!("{err}");
-    ServerError::forbidden(err.to_string()).with_code("offline_mode")
+fn ollama_request_error(err: OllamaRequestError) -> ServerError {
+    match err {
+        OllamaRequestError::Denied(err) => {
+            tracing::warn!("{err}");
+            ServerError::forbidden(err.to_string()).with_code("offline_mode")
+        }
+        OllamaRequestError::Client(_) => ServerError::internal(err.to_string()),
+    }
 }
 
 /// Log (truncated) what an upstream said without handing it to the client:
@@ -635,24 +647,24 @@ pub async fn chat(
         keep_alive: crate::conversation::OLLAMA_KEEP_ALIVE,
         options: crate::conversation::ollama_options(),
     };
-    let (url, egress) = crate::privacy::ollama_request(
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| ServerError::internal(format!("failed to initialize Ollama client: {e}")))?;
+    let (request, egress) = ollama_http_request(
+        &client,
+        reqwest::Method::POST,
         host,
         "/api/generate",
         "llm chat",
         crate::privacy::json_len(&body),
     )
-    .map_err(offline_denied)?;
-
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(OLLAMA_CHAT_TIMEOUT)
-        .build()
-        .map_err(|e| ServerError::internal(format!("failed to initialize Ollama client: {e}")))?;
+    .map_err(ollama_request_error)?;
 
     let started = Instant::now();
-    let resp = client
-        .post(&url)
+    let resp = request
+        .timeout(OLLAMA_CHAT_TIMEOUT)
         .header(reqwest::header::CONNECTION, "close")
         .json(&body)
         .send()
@@ -703,13 +715,17 @@ pub async fn chat(
 pub async fn ollama_models(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ServerError> {
-    let (url, egress) =
-        crate::privacy::ollama_request(&state.ollama_host, "/api/tags", "llm model list", 0)
-            .map_err(offline_denied)?;
+    let (request, egress) = ollama_http_request(
+        &state.http_client,
+        reqwest::Method::GET,
+        &state.ollama_host,
+        "/api/tags",
+        "llm model list",
+        0,
+    )
+    .map_err(ollama_request_error)?;
 
-    let resp = state
-        .http_client
-        .get(&url)
+    let resp = request
         .timeout(OLLAMA_TAGS_TIMEOUT)
         .send()
         .await
@@ -774,18 +790,16 @@ pub async fn ollama_models(
                 return Some(OllamaModelInfo { name, size });
             }
             let show_body = serde_json::json!({ "name": name.clone() });
-            let (show_url, egress) = crate::privacy::ollama_request(
+            let (request, egress) = ollama_http_request(
+                &client,
+                reqwest::Method::POST,
                 &host,
                 "/api/show",
                 "llm model details",
                 crate::privacy::json_len(&show_body),
             )
             .ok()?;
-            let req = client
-                .post(&show_url)
-                .json(&show_body)
-                .timeout(OLLAMA_SHOW_TIMEOUT)
-                .send();
+            let req = request.json(&show_body).timeout(OLLAMA_SHOW_TIMEOUT).send();
             // Per-probe cap (2s) on top of client timeout — keeps the overall
             // budget tight even if reqwest is blocked on DNS or TCP.
             let result = tokio::time::timeout(Duration::from_secs(2), req).await;

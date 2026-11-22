@@ -126,7 +126,7 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock', '.github/workflows/release.yml', '.github/cmake/whisper-release-cpu.cmake') }}
 
       # ── Linux dependencies ───────────────────────────────────────────
       - name: Install build dependencies (Linux)
@@ -134,6 +134,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev cmake clang libclang-dev pkg-config
+
+      - name: Pin Whisper CPU baseline (Linux and Windows)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          workspace="${GITHUB_WORKSPACE//\\//}"
+          echo "CMAKE_PROJECT_INCLUDE=$workspace/.github/cmake/whisper-release-cpu.cmake" >> "$GITHUB_ENV"
 
       # ── macOS ARM: pin arch to avoid ggml i8mm intrinsic errors ────
       - name: Pin ARM arch (macOS ARM64)
@@ -173,17 +180,41 @@ jobs:
       # [profile.release] in Cargo.toml sets thin LTO, one codegen unit and
       # symbol stripping, so no separate strip step is needed.
       - name: Build release binary
-        run: cargo build --release --locked --features ${{ matrix.features }} --target ${{ matrix.target }}
-
-      # ── Smoke test ───────────────────────────────────────────────────
-      # --version, --help of every documented subcommand, `vox models list`,
-      # and `vox serve` answering GET /health.
-      - name: Smoke test
         shell: bash
         run: |
-          .github/scripts/smoke-test.sh \
-            "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
-            "$VERSION"
+          cargo build --release --locked --features ${{ matrix.features }} --target ${{ matrix.target }} \
+            --message-format json-render-diagnostics > "$RUNNER_TEMP/vox-release-build.jsonl"
+
+      - name: Locate the native build outputs
+        if: matrix.features == 'dist'
+        shell: bash
+        run: |
+          jq -rs '
+            def out_dir($name):
+              map(select(.reason == "build-script-executed" and (.package_id | contains("#" + $name + "@"))) | .out_dir)
+              | if length == 1 then .[0] else error("expected one build output for " + $name) end;
+            "WHISPER_BUILD_OUTPUT=" + out_dir("whisper-rs-sys"),
+            "ESPEAK_BUILD_OUTPUT=" + out_dir("espeak-rs-sys")
+          ' "$RUNNER_TEMP/vox-release-build.jsonl" >> "$GITHUB_ENV"
+
+      - name: Verify Whisper CPU compile flags (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          jq -e --arg arch "$RUNNER_ARCH" '
+            def required:
+              if $arch == "ARM64" then ["-march=armv8-a"]
+              elif $arch == "X64" then ["-mavx", "-mavx2", "-mbmi2", "-mf16c", "-mfma", "-msse4.2"]
+              else error("unexpected Linux runner architecture: " + $arch) end;
+            def allowed: required + ["-m64", "-mfp16-format=ieee"];
+            map(select(.file | contains("/ggml/src/ggml-cpu/")))
+            | if length == 0 then error("no ggml CPU sources in the compile database") else .[] end
+            | (.command | split(" ") | map(select(startswith("-m")))) as $flags
+            | if ((required - $flags | length) == 0 and ($flags - allowed | length) == 0)
+              then true
+              else error("unexpected CPU flags in " + .file + ": " + ($flags | join(" ")))
+              end
+          ' "$WHISPER_BUILD_OUTPUT/build/compile_commands.json" > /dev/null
 
       # ── Package ──────────────────────────────────────────────────────
       - name: Stage files
@@ -193,6 +224,11 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.artifact }}" "$STAGING/"
           # The binary is GPL-3.0 (it links espeak-ng); NOTICE explains it.
           cp README.md CHANGELOG.md NOTICE LICENSE-GPL-3.0 LICENSE-MIT LICENSE-APACHE "$STAGING/"
+
+      - name: Stage Piper phonemizer data
+        if: matrix.features == 'dist'
+        shell: bash
+        run: cp -R "$ESPEAK_BUILD_OUTPUT/share/espeak-ng-data" "$STAGING/"
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
@@ -207,6 +243,43 @@ jobs:
         run: |
           7z a "$STAGING.zip" "$STAGING"
           echo "ASSET=$STAGING.zip" >> "$GITHUB_ENV"
+
+      # ── Smoke test ───────────────────────────────────────────────────
+      - name: Smoke test the extracted archive
+        shell: bash
+        run: |
+          workspace="$PWD"
+          work="$(mktemp -d)"
+          espeak_data="${ESPEAK_BUILD_OUTPUT:+$ESPEAK_BUILD_OUTPUT/share/espeak-ng-data}"
+          cleanup() {
+            if [ -d "$work/build-espeak-ng-data" ]; then
+              mv "$work/build-espeak-ng-data" "$espeak_data"
+            fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+
+          case "$ASSET" in
+            *.tar.gz) tar xzf "$ASSET" -C "$work" ;;
+            *.zip) 7z x "$ASSET" "-o$(cygpath -m "$work")" > /dev/null ;;
+            *) echo "::error::Unexpected release archive: $ASSET"; exit 1 ;;
+          esac
+          bin="$work/$STAGING/${{ matrix.artifact }}"
+          cd "$work"
+          "$workspace/.github/scripts/smoke-test.sh" "$bin" "$VERSION"
+
+          if [ -n "$espeak_data" ]; then
+            # Hide the build-time fallback so phonemization must use the archive.
+            mv "$espeak_data" "$work/build-espeak-ng-data"
+            unset ESPEAK_DATA_PATH PIPER_ESPEAKNG_DATA_DIRECTORY
+            status=0
+            env -u HOME VOX_MODELS_DIR="$work/models" "$bin" --offline doctor > "$work/doctor.log" 2>&1 || status=$?
+            if [ "$status" -gt 1 ] || ! grep -Fxq 'Piper phonemizer: ready' "$work/doctor.log"; then
+              cat "$work/doctor.log"
+              echo "::error::Piper could not phonemize with the packaged data"
+              exit 1
+            fi
+          fi
 
       - name: Attest build provenance
         if: needs.version.outputs.publish == 'true'

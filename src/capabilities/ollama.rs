@@ -27,13 +27,17 @@ pub async fn probe(
 ) -> Result<Vec<OllamaModelSummary>, reqwest::Error> {
     // Offline mode refuses a non-loopback host here; like every other
     // failure of this probe that reads as "no models".
-    let Ok((url, egress)) =
-        crate::privacy::ollama_request(ollama_host, "/api/tags", "llm model list", 0)
-    else {
+    let Ok((request, egress)) = crate::privacy::ollama_http_request(
+        http,
+        reqwest::Method::GET,
+        ollama_host,
+        "/api/tags",
+        "llm model list",
+        0,
+    ) else {
         return Ok(Vec::new());
     };
-    let resp = match tokio::time::timeout(Duration::from_millis(1200), http.get(&url).send()).await
-    {
+    let resp = match tokio::time::timeout(Duration::from_millis(1200), request.send()).await {
         Ok(Ok(r)) => r,
         _ => return Ok(Vec::new()),
     };

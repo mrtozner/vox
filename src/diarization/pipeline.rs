@@ -207,11 +207,21 @@ impl DiarizationPipeline {
         audio: &AudioChunk,
         mode: IdentifyMode,
     ) -> Result<Identification, VoxError> {
-        if !self.long_enough(audio.duration_ms()) {
+        let Some(embedding) = self.identification_embedding(audio).await? else {
             return Ok(Identification::unknown(0.0));
-        }
-        let embedding = self.embed(audio).await?;
+        };
         self.resolve_embedding(embedding, mode)
+    }
+
+    /// Extract the embedding for identification without altering the registry.
+    pub(crate) async fn identification_embedding(
+        &self,
+        audio: &AudioChunk,
+    ) -> Result<Option<Vec<f32>>, VoxError> {
+        if !self.long_enough(audio.duration_ms()) {
+            return Ok(None);
+        }
+        self.embed(audio).await.map(Some)
     }
 
     /// The decision step of [`identify`](Self::identify), for an embedding

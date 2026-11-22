@@ -6,6 +6,9 @@ supported by the release binaries.
 
 ## Install the release binary
 
+The v0.7.0 ARM64 archive uses SVE and i8mm in Whisper. On Raspberry Pi 4 and 5,
+[build on the Pi](#build-on-the-pi) to get a binary for its CPU.
+
 The `aarch64-unknown-linux-gnu` archive on the
 [releases page](https://github.com/mrtozner/vox/releases/latest) is built on
 Ubuntu 24.04 and needs glibc 2.39 or newer: Raspberry Pi OS Trixie (64-bit),
@@ -14,14 +17,14 @@ build from source with your own ONNX Runtime.
 
 ```bash
 tar xzf vox-v*-aarch64-unknown-linux-gnu.tar.gz
-sudo install vox-v*-aarch64-unknown-linux-gnu/vox /usr/local/bin/vox
-sudo apt-get install -y libasound2t64  # ALSA runtime, for microphone and playback
-vox --version
-vox doctor
+sudo apt-get install -y libasound2t64 libssl3t64  # ALSA and OpenSSL runtime libraries
+./vox-v*-aarch64-unknown-linux-gnu/vox --version
+./vox-v*-aarch64-unknown-linux-gnu/vox doctor
 ```
 
-The release binary includes Piper and is distributed under GPL-3.0; see
-`NOTICE` in the archive.
+To run `vox` from anywhere, add the extracted directory to `PATH` so the
+executable and Piper's `espeak-ng-data` stay together. The release binary is
+distributed under GPL-3.0. See `NOTICE` in the archive.
 
 ## Models for a small machine
 

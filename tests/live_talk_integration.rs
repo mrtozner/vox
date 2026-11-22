@@ -590,6 +590,8 @@ struct Script {
     token_delay: Duration,
     /// Pause before the first chunk.
     start_delay: Duration,
+    /// Wait for the test to release this reply.
+    start_gate: Option<Arc<tokio::sync::Notify>>,
     /// Accept the request and never answer.
     silent: bool,
 }
@@ -658,6 +660,9 @@ async fn fake_ollama(scripts: Vec<Script>) -> (String, Arc<Mutex<Vec<Value>>>) {
                 if script.silent {
                     tokio::time::sleep(Duration::from_secs(60)).await;
                     return;
+                }
+                if let Some(gate) = script.start_gate {
+                    gate.notified().await;
                 }
                 tokio::time::sleep(script.start_delay).await;
                 let head = "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
@@ -1668,6 +1673,74 @@ async fn reconnecting_with_the_session_id_keeps_memory_until_forget() {
 }
 
 #[tokio::test]
+async fn forgetting_on_another_connection_invalidates_an_in_flight_turn() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let held_reply = Script {
+        start_gate: Some(Arc::clone(&gate)),
+        ..reply(&["Reply to the forgotten turn."])
+    };
+    let rig = Rig::new(vec![held_reply, reply(&["Reply after forget."])]).await;
+
+    let mut talk = rig.live(vad_config());
+    let id = talk.expect("ready").await["session_id"].clone();
+    talk.expect("memory").await;
+    talk.speak();
+    talk.expect("thinking").await;
+
+    let mut other = rig.live(json!({"type": "config", "session_id": id}));
+    assert_eq!(other.expect("ready").await["session_id"], id);
+    other.expect("memory").await;
+    other.send(json!({"type": "forget_memory"}));
+    assert_eq!(other.expect("memory").await["turns"], json!([]));
+
+    gate.notify_one();
+    let events = talk.until("turn_done").await;
+    assert!(of_type(&events, "memory").is_empty());
+
+    // A turn dispatched after the clear can be recorded.
+    other.speak();
+    let events = other.until("turn_done").await;
+    let turns = of_type(&events, "memory")[0]["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0]["assistant"], "Reply after forget.");
+}
+
+#[tokio::test]
+async fn playback_feedback_can_only_amend_its_own_connections_turn() {
+    let rig = Rig::new(vec![
+        reply(&["First connection."]),
+        reply(&["Second connection."]),
+    ])
+    .await;
+
+    let mut first = rig.live(vad_config());
+    let id = first.expect("ready").await["session_id"].clone();
+    first.expect("memory").await;
+    first.speak();
+    assert_eq!(first.expect("turn_done").await["turn_id"], 1);
+
+    let mut second = rig.live(json!({"type": "config", "session_id": id}));
+    assert_eq!(second.expect("ready").await["session_id"], id);
+    second.expect("memory").await;
+    second.speak();
+    assert_eq!(second.expect("turn_done").await["turn_id"], 1);
+
+    first.send(json!({"type": "playback_done", "turn_id": 1, "heard_sentences": 0}));
+    first.send(json!({"type": "cancel", "turn_id": 1}));
+    let events = first.until("cancelled").await;
+    assert!(of_type(&events, "memory").is_empty());
+
+    second.send(json!({"type": "playback_done", "turn_id": 1, "heard_sentences": 0}));
+    let snapshot = second.expect("memory").await;
+    let turns = snapshot["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0]["assistant"], "First connection.");
+    assert_eq!(turns[0]["interrupted"], false);
+    assert_eq!(turns[1]["assistant"], "");
+    assert_eq!(turns[1]["interrupted"], true);
+}
+
+#[tokio::test]
 async fn an_open_connection_keeps_its_session_past_the_ttl() {
     let mut rig = Rig::new(vec![reply(&["First reply."])]).await;
     rig.sessions = Arc::new(SessionStore::new(Duration::from_millis(400), 16));
@@ -1679,12 +1752,8 @@ async fn an_open_connection_keeps_its_session_past_the_ttl() {
         .to_string();
     client.turn_at(MERT_LEVEL).await;
 
-    // The connection stays open, microphone streaming, for longer than the
-    // time-to-live.
-    for _ in 0..16 {
-        client.send_audio(&[0.0; FRAME]);
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // The connection stays open without sending any traffic.
+    tokio::time::sleep(Duration::from_millis(800)).await;
     // Another connection attaches, which is when idle sessions are dropped.
     let mut other = rig.live(vad_config());
     other.expect("ready").await;
@@ -1696,6 +1765,32 @@ async fn an_open_connection_keeps_its_session_past_the_ttl() {
     client.expect("ready").await;
     let memory = client.expect("memory").await;
     assert_eq!(memory["turns"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn capacity_still_allows_connections_to_an_active_session() {
+    let mut rig = Rig::new(vec![reply(&["Keep this reply."])]).await;
+    rig.sessions = Arc::new(SessionStore::new(Duration::from_secs(60), 1));
+
+    let mut first = rig.live(vad_config());
+    let id = first.expect("ready").await["session_id"].clone();
+    first.turn_at(MERT_LEVEL).await;
+
+    let mut rejected = rig.live(vad_config());
+    let error = rejected.expect("error").await;
+    assert_eq!(error["fatal"], true);
+    assert!(error["message"].as_str().unwrap().contains("capacity"));
+
+    let mut second = rig.live(json!({"type": "config", "session_id": id}));
+    assert_eq!(second.expect("ready").await["session_id"], id);
+    let snapshot = second.expect("memory").await;
+    assert_eq!(snapshot["turns"][0]["assistant"], "Keep this reply.");
+
+    drop(first);
+    drop(second);
+    settle().await;
+    let mut next = rig.live(vad_config());
+    assert_ne!(next.expect("ready").await["session_id"], id);
 }
 
 #[tokio::test]
@@ -2648,20 +2743,21 @@ async fn speech_interrupts_a_distillation_and_its_turns_wait_for_the_next_trim()
 }
 
 #[tokio::test]
-async fn forget_memory_drops_a_running_distillation_and_its_turns() {
-    let never = Script {
-        silent: true,
-        ..Script::default()
+async fn forgetting_on_another_connection_drops_a_running_distillation() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let held_reply = Script {
+        start_gate: Some(Arc::clone(&gate)),
+        ..reply(&["- Mert likes tea."])
     };
     let (rig, memory, _db) = memory_rig(vec![
         reply(&["One."]),
         reply(&["Two."]),
         reply(&["Three."]),
-        never,
+        held_reply,
     ])
     .await;
     let (config, conversation) = tiny_session(&rig, "distill-forget-1");
-    let mut client = rig.live(config);
+    let mut client = rig.live(config.clone());
     client.expect("ready").await;
     for _ in 0..3 {
         client.turn_at(MERT_LEVEL).await;
@@ -2671,14 +2767,16 @@ async fn forget_memory_drops_a_running_distillation_and_its_turns() {
     })
     .await;
 
-    client.send(json!({"type": "forget_memory"}));
-    let cleared = client.expect("memory").await;
+    let mut other = rig.live(config);
+    other.expect("ready").await;
+    other.expect("memory").await;
+    other.send(json!({"type": "forget_memory"}));
+    let cleared = other.expect("memory").await;
     assert_eq!(cleared["turns"].as_array().unwrap().len(), 0);
-    settle().await;
-    // Not put back, and nothing came of it.
+    gate.notify_one();
+    assert!(client.drain(Duration::from_millis(300)).await.is_empty());
     assert_eq!(conversation.lock().unwrap().evicted_len(), 0);
     assert!(memory.facts("speaker_1", 10).await.unwrap().is_empty());
-    assert!(client.drain(Duration::from_millis(100)).await.is_empty());
 }
 
 #[tokio::test]

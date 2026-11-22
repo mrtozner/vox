@@ -68,10 +68,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::conversation::{
-    ChatMessage, EvictedTurn, RecallNeed, SessionStore, SharedConversation, SpeakerLabel,
-    UserMessage,
+    ChatMessage, EvictedTurn, RecallNeed, SessionDistillation, SessionStore, SharedConversation,
+    SpeakerLabel, UserMessage,
 };
-use crate::diarization::IdentifyMode;
 use crate::memory::{ExchangeRef, HeardExchange, MemoryStore};
 use crate::streaming_chat::{StopReason, StreamOptions};
 
@@ -81,7 +80,7 @@ use super::models::{
     CancelReason, LIVE_TALK_PROTOCOL_VERSION, LiveTalkClientMsg, LiveTalkConfig, LiveTalkMode,
     LiveTalkWsEvent,
 };
-use super::speakers::{self, SpeakerCtx};
+use super::speakers::{self, EnrollmentPolicy, SpeakerCtx};
 
 /// Sample rate of the microphone stream.
 const MIC_SAMPLE_RATE: u64 = 16_000;
@@ -189,7 +188,9 @@ struct ServerSpeakers(SpeakerCtx);
 #[async_trait]
 impl SpeakerService for ServerSpeakers {
     async fn identify(&self, audio: &crate::AudioChunk) -> Option<SpeakerTag> {
-        let found = speakers::identify_speaker(&self.0, audio, IdentifyMode::IdentifyOnly).await?;
+        let found = speakers::identify_speaker(&self.0, audio, EnrollmentPolicy::ReadOnly)
+            .await
+            .ok()??;
         Some(SpeakerTag {
             id: found.id,
             name: found.name,
@@ -208,16 +209,13 @@ impl SpeakerService for ServerSpeakers {
             }
             None => None,
         };
-        // The same gate as everywhere else: no voiceprint without consent.
-        if !speakers::enrollment_consent(&self.0).await.granted {
-            return Err(
-                "Speaker enrollment consent is not recorded on the server. Grant it with \
-                 PUT /v1/speakers/consent {\"granted\": true} and try again."
-                    .to_string(),
-            );
-        }
-        let found = speakers::identify_speaker(&self.0, audio, IdentifyMode::AdaptAndEnroll)
+        let found = speakers::identify_speaker(&self.0, audio, EnrollmentPolicy::Explicit)
             .await
+            .map_err(|_| {
+                "Speaker enrollment requires consent throughout analysis. Grant it with \
+                 PUT /v1/speakers/consent {\"granted\": true} and try again."
+                    .to_string()
+            })?
             .ok_or_else(|| {
                 format!(
                     "The voice could not be stored: the last utterance is shorter than {} ms \
@@ -428,11 +426,6 @@ impl Outbox {
     fn kill_turn(&self, turn: u64) {
         self.dead_upto.fetch_max(turn, Ordering::SeqCst);
     }
-
-    /// `true` once the client is gone.
-    fn is_closed(&self) -> bool {
-        self.tx.is_closed()
-    }
 }
 
 /// Drain the queue into the socket. Ends when every [`Outbox`] is dropped or
@@ -477,6 +470,8 @@ where
 
 /// What the connection loop and a turn task share about one turn.
 struct TurnShared {
+    /// Conversation generation when this turn was dispatched.
+    generation: u64,
     phase: AtomicU8,
     /// When the browser will have played everything queued so far, assuming
     /// it plays each chunk as soon as the one before it ends. `None` until
@@ -658,9 +653,12 @@ async fn distill_batch(
     store: &MemoryStore,
     model: &str,
     batch: &DistillBatch,
-    epoch: u64,
+    generation: u64,
     cancel: &CancellationToken,
 ) -> Result<Distilled, crate::VoxError> {
+    if ctx.generation() != generation {
+        return Ok(Distilled::Skipped);
+    }
     if cancel.is_cancelled() {
         return Ok(Distilled::Cancelled);
     }
@@ -671,6 +669,9 @@ async fn distill_batch(
         return Ok(Distilled::Skipped);
     }
     let known = store.facts(speaker_id, DISTILL_KNOWN_FACTS).await?;
+    if ctx.generation() != generation {
+        return Ok(Distilled::Skipped);
+    }
     let exchanges: Vec<HeardExchange> = batch
         .turns
         .iter()
@@ -706,10 +707,16 @@ async fn distill_batch(
     if stopped == StopReason::Cancelled && cancel.is_cancelled() {
         return Ok(Distilled::Cancelled);
     }
-    if ctx.forget_epoch.load(Ordering::SeqCst) != epoch {
+    let facts = crate::memory::parse_distilled_facts(&reply);
+    // Forget either invalidates this batch or waits for a write that is
+    // already underway. The conversation mutex never spans a database call.
+    let _distill_write = ctx.distillation.write.lock().await;
+    if ctx.generation() != generation {
         return Ok(Distilled::Skipped);
     }
-    let facts = crate::memory::parse_distilled_facts(&reply);
+    if cancel.is_cancelled() {
+        return Ok(Distilled::Cancelled);
+    }
     // The store checks the person's setting once more when it writes.
     store
         .add_facts(speaker_id, &facts)
@@ -719,18 +726,18 @@ async fn distill_batch(
 
 /// Distill `turns`, one request per batch. When `cancel` fires, the turns
 /// that are not done go back to the conversation's queue, unless the session
-/// was told to forget since `epoch`.
+/// was told to forget since `generation`.
 async fn run_distill(
     ctx: Arc<TurnCtx>,
     store: MemoryStore,
     model: String,
     turns: Vec<EvictedTurn>,
-    epoch: u64,
+    generation: u64,
     cancel: CancellationToken,
 ) {
     let mut batches = distill_batches(turns, distill_batch_chars());
     while let Some(batch) = batches.pop_front() {
-        match distill_batch(&ctx, &store, &model, &batch, epoch, &cancel).await {
+        match distill_batch(&ctx, &store, &model, &batch, generation, &cancel).await {
             Ok(Distilled::Stored(facts)) => {
                 debug!(
                     speaker_id = %batch.speaker.id,
@@ -738,7 +745,8 @@ async fn run_distill(
                     facts = facts.len(),
                     "live_talk: trimmed turns distilled"
                 );
-                if !facts.is_empty() {
+                let conv = ctx.conversation.lock().unwrap_or_else(|e| e.into_inner());
+                if !facts.is_empty() && conv.generation() == generation {
                     ctx.out.send(LiveTalkWsEvent::MemoryDistilled {
                         speaker_id: batch.speaker.id,
                         speaker_name: batch.speaker.name,
@@ -755,7 +763,7 @@ async fn run_distill(
                     "live_talk: distillation interrupted, turns kept for later"
                 );
                 let mut conv = ctx.conversation.lock().unwrap_or_else(|e| e.into_inner());
-                if ctx.forget_epoch.load(Ordering::SeqCst) == epoch {
+                if conv.generation() == generation {
                     conv.restore_evicted(rest);
                 }
                 return;
@@ -778,13 +786,8 @@ struct TurnCtx {
     stream_options: StreamOptions,
     out: Outbox,
     conversation: SharedConversation,
-    /// The turn of this connection that is the newest entry in
-    /// `conversation`, if any. Locked only while `conversation` is locked.
-    last_committed: std::sync::Mutex<Option<u64>>,
-    /// Counts `forget_memory` commands. A turn that started before one does
-    /// not get recorded after it. Changed only while `conversation` is
-    /// locked.
-    forget_epoch: AtomicU64,
+    connection_id: u64,
+    distillation: Arc<SessionDistillation>,
     speakers: Option<Arc<dyn SpeakerService>>,
     identify_grace: Duration,
     memory: Option<MemoryStore>,
@@ -796,9 +799,16 @@ struct TurnCtx {
 }
 
 impl TurnCtx {
+    fn generation(&self) -> u64 {
+        self.conversation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation()
+    }
+
     /// Start distilling the turns that were trimmed out of the context,
     /// unless a distillation is already running or there are none.
-    fn start_distill(self: &Arc<Self>, model: &str) {
+    fn start_distill(self: &Arc<Self>, model: &str, generation: u64) {
         let (Some(slot), Some(store)) = (&self.distill, &self.memory) else {
             return;
         };
@@ -806,24 +816,24 @@ impl TurnCtx {
         if job.as_ref().is_some_and(|job| !job.handle.is_finished()) {
             return;
         }
-        let (turns, epoch) = {
+        let (turns, cancel) = {
             let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                conv.take_evicted(),
-                self.forget_epoch.load(Ordering::SeqCst),
-            )
+            if conv.generation() != generation {
+                return;
+            }
+            let turns = conv.take_evicted();
+            if turns.is_empty() {
+                return;
+            }
+            (turns, self.distillation.child_token())
         };
-        if turns.is_empty() {
-            return;
-        }
         debug!(turns = turns.len(), "live_talk: distilling trimmed turns");
-        let cancel = CancellationToken::new();
         let handle = tokio::spawn(run_distill(
             Arc::clone(self),
             store.clone(),
             model.to_string(),
             turns,
-            epoch,
+            generation,
             cancel.clone(),
         ));
         *job = Some(DistillJob { cancel, handle });
@@ -854,48 +864,34 @@ impl TurnCtx {
     /// Store a turn and tell the client what memory looks like now. Returns
     /// whether older turns were trimmed out of the context to make room.
     ///
-    /// `epoch` is the value of `forget_epoch` when the turn started: if the
-    /// user said "forget" in between, the turn is not stored.
+    /// The generation must still match the one at turn dispatch.
     fn commit(
         &self,
         turn_id: u64,
-        epoch: u64,
+        generation: u64,
         user: &UserMessage,
         spoken: &[String],
         interrupted: bool,
     ) -> bool {
-        let stored =
-            !user.text().is_empty() && (interrupted || spoken.iter().any(|s| !s.trim().is_empty()));
-        if !stored {
+        let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(dropped) = conv.commit_live_turn(
+            (self.connection_id, turn_id),
+            generation,
+            user,
+            spoken,
+            interrupted,
+        ) else {
             return false;
-        }
-        let trimmed;
-        let snapshot = {
-            let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
-            if self.forget_epoch.load(Ordering::SeqCst) != epoch {
-                debug!(
-                    turn_id,
-                    "live_talk: turn not stored, memory was cleared meanwhile"
-                );
-                return false;
-            }
-            let dropped = conv.commit_message(user, spoken, interrupted);
-            trimmed = dropped > 0;
-            *self
-                .last_committed
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(turn_id);
-            debug!(
-                turn_id,
-                turns = conv.len(),
-                history_tokens = conv.history_tokens(),
-                dropped,
-                interrupted,
-                "live_talk: conversation updated"
-            );
-            conv.snapshot()
         };
-        self.out.send(LiveTalkWsEvent::Memory(snapshot));
+        debug!(
+            turn_id,
+            turns = conv.len(),
+            history_tokens = conv.history_tokens(),
+            dropped,
+            interrupted,
+            "live_talk: conversation updated"
+        );
+        self.out.send(LiveTalkWsEvent::Memory(conv.snapshot()));
 
         // Long-term memory: only for an identified speaker. Whether that
         // person switched memory on is checked by the store when it writes.
@@ -912,7 +908,7 @@ impl TurnCtx {
                 interrupted,
             });
         }
-        trimmed
+        dropped > 0
     }
 
     /// The block of remembered context to put in front of this speaker's
@@ -959,41 +955,24 @@ impl TurnCtx {
     /// played. Does nothing unless that turn is the newest one in memory and
     /// has more sentences than that.
     fn amend(&self, turn_id: u64, heard: usize) -> bool {
-        let snapshot = {
-            let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
-            let is_last = *self
-                .last_committed
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                == Some(turn_id);
-            if !is_last || !conv.amend_last_spoken(heard) {
-                return false;
-            }
-            conv.snapshot()
-        };
+        let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
+        if !conv.amend_live_turn((self.connection_id, turn_id), heard) {
+            return false;
+        }
         debug!(turn_id, heard, "live_talk: memory cut to what was heard");
-        self.out.send(LiveTalkWsEvent::Memory(snapshot));
+        self.out.send(LiveTalkWsEvent::Memory(conv.snapshot()));
         if let Some(tx) = &self.memory_tx {
             let _ = tx.send(MemoryOp::Amend { turn_id, heard });
         }
         true
     }
 
-    fn forget(&self) {
-        // Turns that were waiting to be distilled are forgotten too; a
-        // request that is under way is dropped without storing anything.
-        self.cancel_distill();
-        let snapshot = {
-            let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
-            conv.clear();
-            self.forget_epoch.fetch_add(1, Ordering::SeqCst);
-            *self
-                .last_committed
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = None;
-            conv.snapshot()
-        };
-        self.out.send(LiveTalkWsEvent::Memory(snapshot));
+    async fn forget(&self) {
+        let _distill_write = self.distillation.write.lock().await;
+        let mut conv = self.conversation.lock().unwrap_or_else(|e| e.into_inner());
+        conv.clear();
+        self.distillation.cancel_pending();
+        self.out.send(LiveTalkWsEvent::Memory(conv.snapshot()));
     }
 }
 
@@ -1021,7 +1000,6 @@ async fn run_turn(
     shared: Arc<TurnShared>,
 ) {
     let out = &ctx.out;
-    let epoch = ctx.forget_epoch.load(Ordering::SeqCst);
 
     // Who is speaking is looked up while the utterance is transcribed. The
     // lookup is read-only, so it is simply left to finish if the turn ends
@@ -1129,21 +1107,24 @@ async fn run_turn(
         None => None,
     };
     // Built once: these exact bytes go to the model now and into the
-    // history afterwards.
-    let user = UserMessage::new(
-        &user_text,
-        speaker.map(|s| SpeakerLabel {
-            id: s.id,
-            name: s.name,
-        }),
-        recall.as_deref(),
-    );
-
-    let messages = ctx
-        .conversation
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .messages_for(Some(&cfg.system_prompt), user.content());
+    // history afterwards. Check recall against the generation of the
+    // history snapshot in case another connection just cleared it.
+    let (user, messages) = {
+        let conv = ctx.conversation.lock().unwrap_or_else(|e| e.into_inner());
+        let recall = recall
+            .as_deref()
+            .filter(|_| conv.generation() == shared.generation);
+        let user = UserMessage::new(
+            &user_text,
+            speaker.map(|s| SpeakerLabel {
+                id: s.id,
+                name: s.name,
+            }),
+            recall,
+        );
+        let messages = conv.messages_for(Some(&cfg.system_prompt), user.content());
+        (user, messages)
+    };
 
     let llm_started = Instant::now();
     let first_token_ms = Arc::new(AtomicU64::new(u64::MAX));
@@ -1275,7 +1256,7 @@ async fn run_turn(
         interrupted = interrupted.map(|_| true);
     }
     let trimmed = match interrupted {
-        Some(interrupted) => ctx.commit(turn_id, epoch, &user, &spoken, interrupted),
+        Some(interrupted) => ctx.commit(turn_id, shared.generation, &user, &spoken, interrupted),
         None => false,
     };
 
@@ -1300,7 +1281,7 @@ async fn run_turn(
             // them. Turns trimmed by a turn that did not finish wait for
             // the next one that does.
             if trimmed && !cancel.is_cancelled() {
-                ctx.start_distill(&cfg.model);
+                ctx.start_distill(&cfg.model, shared.generation);
             }
         }
         Ok(StopReason::Cancelled) => {
@@ -1607,6 +1588,7 @@ impl Session {
 
         let cancel = CancellationToken::new();
         let shared = Arc::new(TurnShared {
+            generation: self.ctx.generation(),
             phase: AtomicU8::new(PHASE_STT),
             playback_end: std::sync::Mutex::new(None),
             heard_limit: AtomicUsize::new(usize::MAX),
@@ -1814,7 +1796,7 @@ impl Session {
             }) => self.on_playback_done(turn_id, heard_sentences),
             Ok(LiveTalkClientMsg::ForgetMemory) => {
                 self.carry.clear();
-                self.ctx.forget();
+                self.ctx.forget().await;
             }
             Ok(LiveTalkClientMsg::EnrollSpeaker { name }) => self.on_enroll(name),
             Ok(LiveTalkClientMsg::PttStart) => self.on_ptt_start().await,
@@ -1873,7 +1855,23 @@ where
         _ => {}
     }
 
-    let session_handle = deps.sessions.attach(config.session_id.as_deref());
+    let Some(lease) = deps.sessions.attach_active(config.session_id.as_deref()) else {
+        out.send(LiveTalkWsEvent::Error {
+            message: "Live Talk is at capacity. Try again after a connection closes.".into(),
+            fatal: true,
+            turn_id: None,
+        });
+        drop(out);
+        if tokio::time::timeout(Duration::from_secs(1), &mut writer)
+            .await
+            .is_err()
+        {
+            writer.abort();
+        }
+        return;
+    };
+    let session_handle = &lease.handle;
+    static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(0);
     let mode: LiveTalkMode = config.mode.into();
     let base_prompt = config
         .system_prompt_override
@@ -1928,9 +1926,9 @@ where
             ollama_host: deps.ollama_host,
             stream_options: deps.stream_options,
             out: out.clone(),
-            conversation: session_handle.conversation,
-            last_committed: std::sync::Mutex::new(None),
-            forget_epoch: AtomicU64::new(0),
+            conversation: Arc::clone(&session_handle.conversation),
+            connection_id: NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
+            distillation: Arc::clone(&lease.distillation),
             speakers: deps.speakers,
             identify_grace: deps.identify_grace,
             distill: (deps.distill && deps.memory.is_some()).then(|| std::sync::Mutex::new(None)),
@@ -1966,15 +1964,14 @@ where
         session.on_audio(&pending_audio).await;
     }
 
-    while !session.out.is_closed() {
-        let Some(Ok(msg)) = stream.next().await else {
+    loop {
+        let next = tokio::select! {
+            _ = session.out.tx.closed() => break,
+            next = stream.next() => next,
+        };
+        let Some(Ok(msg)) = next else {
             break;
         };
-        // An open connection is not idle: keep the session's time-to-live
-        // from running out under a conversation that is still going on
-        // (another connection attaching would drop it from the store, and
-        // the next reconnect would find an empty memory).
-        deps.sessions.touch(&session_handle.id);
         match msg {
             Message::Binary(data) => {
                 let samples = super::ws::bytes_to_f32_samples(&data);
@@ -1997,7 +1994,6 @@ where
     if let Some(distill) = session.ctx.stop_distill() {
         let _ = tokio::time::timeout(CANCEL_JOIN, distill).await;
     }
-    deps.sessions.touch(&session_handle.id);
     // Dropping the session drops the last queue handles; the writer then
     // flushes what is left and closes the socket.
     drop(session);

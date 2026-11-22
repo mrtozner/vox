@@ -38,6 +38,10 @@ const META_ENROLLMENT_CONSENT: &str = "enrollment_consent_at";
 /// All data is stored locally in a SQLite file.
 pub struct SpeakerDatabase {
     pool: Pool<Sqlite>,
+    /// Serializes the server's consent changes, enrollment and adaptation
+    /// writes. The value changes on withdrawal to invalidate pending audio.
+    #[cfg(feature = "server")]
+    pub(crate) voiceprint_write: tokio::sync::Mutex<u64>,
 }
 
 /// A stored speaker without the biometric payload.
@@ -148,7 +152,11 @@ impl SpeakerDatabase {
                 .map_err(open_err)?
         };
 
-        let db = Self { pool };
+        let db = Self {
+            pool,
+            #[cfg(feature = "server")]
+            voiceprint_write: tokio::sync::Mutex::new(0),
+        };
         db.create_tables().await?;
 
         Ok(db)
