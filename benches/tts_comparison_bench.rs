@@ -234,35 +234,34 @@ fn bench_tts_rtf(c: &mut Criterion) {
     {
         use vox::ChatterboxBackend;
 
-        if std::path::Path::new(REFERENCE_WAV).exists() {
-            if let Ok(tts) = ChatterboxBackend::new(REFERENCE_WAV) {
-                let request = TtsRequest {
-                    text: SHORT_TEXT.to_string(),
-                    voice: None,
-                    seed: None,
-                };
+        if std::path::Path::new(REFERENCE_WAV).exists()
+            && let Ok(tts) = ChatterboxBackend::new(REFERENCE_WAV)
+        {
+            let request = TtsRequest {
+                text: SHORT_TEXT.to_string(),
+                voice: None,
+                seed: None,
+            };
 
-                let mut group = c.benchmark_group("tts_rtf");
-                group.sample_size(10);
+            let mut group = c.benchmark_group("tts_rtf");
+            group.sample_size(10);
 
-                group.bench_function("chatterbox", |b| {
-                    b.iter_custom(|iters| {
-                        let mut total = Duration::ZERO;
-                        for _ in 0..iters {
-                            let start = std::time::Instant::now();
-                            let output = rt.block_on(async {
-                                tts.synthesize(black_box(&request)).await.unwrap()
-                            });
-                            let elapsed = start.elapsed();
-                            let _rtf = rtf(elapsed, output.duration_ms);
-                            total += elapsed;
-                        }
-                        total
-                    });
+            group.bench_function("chatterbox", |b| {
+                b.iter_custom(|iters| {
+                    let mut total = Duration::ZERO;
+                    for _ in 0..iters {
+                        let start = std::time::Instant::now();
+                        let output = rt
+                            .block_on(async { tts.synthesize(black_box(&request)).await.unwrap() });
+                        let elapsed = start.elapsed();
+                        let _rtf = rtf(elapsed, output.duration_ms);
+                        total += elapsed;
+                    }
+                    total
                 });
+            });
 
-                group.finish();
-            }
+            group.finish();
         }
     }
 }

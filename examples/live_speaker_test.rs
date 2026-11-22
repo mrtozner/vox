@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Let's enroll speakers. We'll capture voice samples and create profiles.\n");
     println!("NOTE: This demo uses a simplified approach. For production:");
-    println!("      1. Download a speaker encoder model (ECAPA-TDNN)");
+    println!("      1. Download a speaker encoder model (WeSpeaker ResNet34)");
     println!("      2. Extract embeddings from audio");
     println!("      3. Use those embeddings for identification\n");
 
@@ -138,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
         {
             let reg = registry.lock().await;
             for speaker in reg.list_speakers() {
-                db.store_speaker(&speaker).await?;
+                db.store_speaker(speaker).await?;
             }
         }
         println!("💾 Speakers saved to database\n");
@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Type 'quit' to exit.\n");
 
     // Main identification loop
-    let (audio_capture, mut audio_rx) = AudioCapture::new(16000, 1)?;
+    let (_audio_capture, mut audio_rx) = AudioCapture::new(16000, 1)?;
 
     loop {
         println!("🔴 Ready to listen... Press Enter when someone starts speaking");
@@ -251,7 +251,7 @@ async fn main() -> anyhow::Result<()> {
 
 /// Capture an enrollment sample from microphone
 async fn capture_enrollment_sample(
-    vad: &mut SileroVad,
+    _vad: &mut SileroVad,
     stt: &WhisperBackend,
     duration_secs: u32,
 ) -> anyhow::Result<AudioChunk> {
@@ -290,8 +290,8 @@ async fn capture_utterance(
     vad: &mut SileroVad,
     audio_rx: &mut tokio::sync::mpsc::Receiver<AudioChunk>,
 ) -> anyhow::Result<AudioChunk> {
-    let mut utterance_audio = Vec::new();
-    let mut is_speaking = false;
+    let utterance_audio = Vec::new();
+    let mut _is_speaking = false;
     let frame_size = vad.frame_size();
 
     // Capture frames until speech ends
@@ -315,7 +315,7 @@ async fn capture_utterance(
                 for event in events {
                     match event {
                         VadEvent::SpeechStart => {
-                            is_speaking = true;
+                            _is_speaking = true;
                             println!("   🎤 Speech detected...");
                         }
                         VadEvent::SpeechEnd(utterance) => {

@@ -8,20 +8,42 @@ use tracing::{error, info};
 use crate::error::VoxError;
 use crate::types::AudioChunk;
 
-/// Default chunk size in samples (30ms at 16kHz, matches Silero VAD frame size).
-const DEFAULT_CHUNK_SIZE: usize = 480;
+/// Capture chunk duration in milliseconds.
+///
+/// This is only the granularity at which audio is handed to the pipeline; it
+/// is unrelated to the VAD frame size (Silero v5 needs 512 samples at 16 kHz).
+/// Consumers must re-frame the stream, e.g. with [`super::FrameAssembler`].
+const CHUNK_MS: usize = 30;
+
+/// Number of interleaved samples in one capture chunk.
+///
+/// Always a whole number of frames, so a chunk never splits the channels of
+/// one frame across two chunks.
+fn chunk_len(sample_rate: u32, channels: u16) -> usize {
+    let frames = (sample_rate as usize * CHUNK_MS / 1000).max(1);
+    frames * usize::from(channels.max(1))
+}
 
 /// Captures audio from the system's default input device and streams
 /// it as [`AudioChunk`]s through a tokio mpsc channel.
+///
+/// The device may not support the requested format. Always read the actual
+/// format from [`sample_rate`](Self::sample_rate) / [`channels`](Self::channels)
+/// (or from each chunk) before resampling.
 pub struct AudioCapture {
     stream: cpal::Stream,
+    sample_rate: u32,
+    channels: u16,
 }
 
 impl AudioCapture {
     /// Create a new capture from the default input device.
     ///
-    /// Returns `Self` and an `mpsc::Receiver<AudioChunk>` that streams audio
-    /// chunks of approximately 30ms each.
+    /// `sample_rate` and `channels` are a preference: if the device does not
+    /// support them, its default input format is used instead.
+    ///
+    /// Returns `Self` and an `mpsc::Receiver<AudioChunk>` that streams
+    /// interleaved audio chunks of 30 ms each in the device's actual format.
     pub fn new(
         sample_rate: u32,
         channels: u16,
@@ -44,8 +66,15 @@ impl AudioCapture {
             "audio capture config"
         );
 
-        // Compute chunk size scaled to actual device sample rate
-        let chunk_size = (DEFAULT_CHUNK_SIZE as f64 * actual_rate as f64 / 16000.0) as usize;
+        if actual_rate != sample_rate || actual_channels != channels {
+            info!(
+                requested_rate = sample_rate,
+                requested_channels = channels,
+                "input device does not support the requested format, using its default"
+            );
+        }
+
+        let chunk_size = chunk_len(actual_rate, actual_channels);
 
         let (tx, rx) = mpsc::channel::<AudioChunk>(64);
 
@@ -84,7 +113,24 @@ impl AudioCapture {
             }
         };
 
-        Ok((Self { stream }, rx))
+        Ok((
+            Self {
+                stream,
+                sample_rate: actual_rate,
+                channels: actual_channels,
+            },
+            rx,
+        ))
+    }
+
+    /// Actual sample rate of the captured audio in Hz.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Actual number of interleaved channels in the captured audio.
+    pub fn channels(&self) -> u16 {
+        self.channels
     }
 
     /// Start capturing audio.
@@ -171,5 +217,24 @@ impl AudioCapture {
                 let _ = tx.try_send(chunk);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_is_30ms_of_whole_frames() {
+        assert_eq!(chunk_len(16000, 1), 480);
+        assert_eq!(chunk_len(48000, 1), 1440);
+        assert_eq!(chunk_len(48000, 2), 2880);
+        // 44.1 kHz stereo: 1323 frames, never an odd number of samples.
+        assert_eq!(chunk_len(44100, 2), 2646);
+    }
+
+    #[test]
+    fn chunk_len_never_zero() {
+        assert_eq!(chunk_len(8, 0), 1);
     }
 }

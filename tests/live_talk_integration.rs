@@ -1,31 +1,59 @@
-//! Integration tests for Live Talk WebSocket wire protocol and cancellable streaming.
+//! Integration tests for the Live Talk protocol v2 and `/v1/converse`.
+//!
+//! The session tests drive the real session loops
+//! ([`server::live_talk::run_live_talk`], [`server::ws_converse::run_converse`])
+//! over in-memory channels, with a scripted VAD, STT and TTS and a fake
+//! Ollama on a local TCP port. No model files and no network are needed.
 
 #![cfg(feature = "server")]
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::convert::Infallible;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use axum::extract::ws::Message;
+use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
 
-#[path = "../src/server/mod.rs"]
-mod server;
+use vox::server;
 
+use server::live_talk::{Enrollment, LiveTalkDeps, SpeakerService, SpeakerTag, run_live_talk};
 use server::models::{
-    CancelReason, LiveTalkClientMsg, LiveTalkMode, LiveTalkModeConfig, LiveTalkWsEvent,
+    CancelReason, ConverseConfig, LIVE_TALK_PROTOCOL_VERSION, LiveTalkClientMsg, LiveTalkConfig,
+    LiveTalkMode, LiveTalkModeConfig, LiveTalkWsEvent,
 };
+use server::ws_converse::{ConverseDeps, run_converse};
+use vox::conversation::{Conversation, SessionStore, SharedConversation};
+use vox::diarization::{
+    DiarizationConfig, DiarizationPipeline, IdentifyMode, SpeakerDatabase, SpeakerRegistry,
+};
+use vox::memory::{DISTILL_SYSTEM_PROMPT, MemoryRole, MemoryStore};
+use vox::streaming_chat::StreamOptions;
+
+// ─── Wire types ──────────────────────────────────────────────
 
 #[test]
-fn ready_event_serializes_with_mode() {
+fn ready_event_carries_protocol_version_and_session_id() {
     let ev = LiveTalkWsEvent::Ready {
         model: "llama3.2".into(),
         voice: Some("en_US-amy-medium".into()),
         mode: LiveTalkMode::Vad,
+        protocol_version: LIVE_TALK_PROTOCOL_VERSION,
+        session_id: "abc12345".into(),
+        diarization: false,
     };
-    let json: serde_json::Value = serde_json::to_value(&ev).unwrap();
+    let json: Value = serde_json::to_value(&ev).unwrap();
     assert_eq!(json["type"], "ready");
     assert_eq!(json["model"], "llama3.2");
     assert_eq!(json["voice"], "en_US-amy-medium");
     assert_eq!(json["mode"], "vad");
+    assert_eq!(json["protocol_version"], 2);
+    assert_eq!(json["session_id"], "abc12345");
+    assert_eq!(json["diarization"], false);
 }
 
 #[test]
@@ -34,56 +62,132 @@ fn ready_event_push_to_talk_mode() {
         model: "llama3.2".into(),
         voice: None,
         mode: LiveTalkMode::PushToTalk,
+        protocol_version: LIVE_TALK_PROTOCOL_VERSION,
+        session_id: "abc12345".into(),
+        diarization: false,
     };
-    let json: serde_json::Value = serde_json::to_value(&ev).unwrap();
-    assert_eq!(json["type"], "ready");
+    let json: Value = serde_json::to_value(&ev).unwrap();
     assert_eq!(json["mode"], "push_to_talk");
     assert!(json["voice"].is_null());
 }
 
 #[test]
-fn speech_start_event_is_bare_tagged_unit() {
-    let ev = LiveTalkWsEvent::SpeechStart;
-    let s = serde_json::to_string(&ev).unwrap();
-    assert_eq!(s, r#"{"type":"speech_start"}"#);
+fn speech_start_and_end_are_bare_tagged_units() {
+    let start = serde_json::to_string(&LiveTalkWsEvent::SpeechStart).unwrap();
+    assert_eq!(start, r#"{"type":"speech_start"}"#);
+    let end = serde_json::to_string(&LiveTalkWsEvent::SpeechEnd).unwrap();
+    assert_eq!(end, r#"{"type":"speech_end"}"#);
 }
 
 #[test]
-fn transcript_event_includes_timing() {
+fn transcript_event_includes_timing_and_omits_unknown_speaker() {
     let ev = LiveTalkWsEvent::Transcript {
+        turn_id: 4,
         text: "hello world".into(),
         duration_ms: 1234,
         processing_time_ms: 56,
+        speaker_id: None,
+        speaker_name: None,
+        speaker_color: None,
     };
-    let json: serde_json::Value = serde_json::to_value(&ev).unwrap();
+    let json: Value = serde_json::to_value(&ev).unwrap();
     assert_eq!(json["type"], "transcript");
+    assert_eq!(json["turn_id"], 4);
     assert_eq!(json["text"], "hello world");
     assert_eq!(json["duration_ms"], 1234);
     assert_eq!(json["processing_time_ms"], 56);
+    assert!(json.get("speaker_id").is_none());
+    assert!(json.get("speaker_name").is_none());
+    assert!(json.get("speaker_color").is_none());
+
+    let ev = LiveTalkWsEvent::Transcript {
+        turn_id: 4,
+        text: "hi".into(),
+        duration_ms: 1,
+        processing_time_ms: 1,
+        speaker_id: Some("spk_1".into()),
+        speaker_name: Some("Ada".into()),
+        speaker_color: Some("#aa3366".into()),
+    };
+    let json: Value = serde_json::to_value(&ev).unwrap();
+    assert_eq!(json["speaker_id"], "spk_1");
+    assert_eq!(json["speaker_name"], "Ada");
+    assert_eq!(json["speaker_color"], "#aa3366");
 }
 
 #[test]
-fn sentence_event_text_only_no_audio_field() {
+fn turn_scoped_events_serialize_turn_id() {
+    let events = [
+        LiveTalkWsEvent::Thinking { turn_id: 7 },
+        LiveTalkWsEvent::Token {
+            turn_id: 7,
+            text: "Hi".into(),
+        },
+        LiveTalkWsEvent::Sentence {
+            turn_id: 7,
+            index: 0,
+            text: "Hi there.".into(),
+        },
+        LiveTalkWsEvent::AudioChunk {
+            turn_id: 7,
+            sentence_index: 0,
+            sample_rate: 22050,
+        },
+        LiveTalkWsEvent::TurnMetrics {
+            turn_id: 7,
+            stt_ms: 10,
+            llm_first_token_ms: Some(20),
+            tts_first_audio_ms: None,
+        },
+        LiveTalkWsEvent::TurnDone {
+            turn_id: 7,
+            sentences: 1,
+        },
+        LiveTalkWsEvent::Cancelled {
+            turn_id: 7,
+            reason: CancelReason::UserBargeIn,
+        },
+    ];
+    let types: Vec<String> = events
+        .iter()
+        .map(|ev| {
+            let json: Value = serde_json::to_value(ev).unwrap();
+            assert_eq!(json["turn_id"], 7, "{json}");
+            json["type"].as_str().unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "thinking",
+            "token",
+            "sentence",
+            "audio_chunk",
+            "turn_metrics",
+            "turn_done",
+            "cancelled"
+        ]
+    );
+}
+
+#[test]
+fn sentence_and_audio_chunk_carry_no_audio() {
     let ev = LiveTalkWsEvent::Sentence {
+        turn_id: 1,
         index: 0,
         text: "Hi there.".into(),
     };
-    let json: serde_json::Value = serde_json::to_value(&ev).unwrap();
-    assert_eq!(json["type"], "sentence");
+    let json: Value = serde_json::to_value(&ev).unwrap();
     assert_eq!(json["index"], 0);
     assert_eq!(json["text"], "Hi there.");
     assert!(json.get("audio_b64").is_none());
-    assert!(json.get("sample_rate").is_none());
-}
 
-#[test]
-fn audio_chunk_event_is_header_only() {
     let ev = LiveTalkWsEvent::AudioChunk {
+        turn_id: 1,
         sentence_index: 2,
         sample_rate: 22050,
     };
-    let json: serde_json::Value = serde_json::to_value(&ev).unwrap();
-    assert_eq!(json["type"], "audio_chunk");
+    let json: Value = serde_json::to_value(&ev).unwrap();
     assert_eq!(json["sentence_index"], 2);
     assert_eq!(json["sample_rate"], 22050);
     assert!(json.get("audio_b64").is_none());
@@ -91,39 +195,72 @@ fn audio_chunk_event_is_header_only() {
 }
 
 #[test]
-fn turn_done_event_reports_sentence_count() {
-    let ev = LiveTalkWsEvent::TurnDone { sentences: 3 };
-    let json: serde_json::Value = serde_json::to_value(&ev).unwrap();
-    assert_eq!(json["type"], "turn_done");
-    assert_eq!(json["sentences"], 3);
+fn turn_metrics_uses_null_for_a_stage_that_was_not_reached() {
+    let ev = LiveTalkWsEvent::TurnMetrics {
+        turn_id: 1,
+        stt_ms: 12,
+        llm_first_token_ms: None,
+        tts_first_audio_ms: None,
+    };
+    let json: Value = serde_json::to_value(&ev).unwrap();
+    assert_eq!(json["type"], "turn_metrics");
+    assert_eq!(json["stt_ms"], 12);
+    assert!(json["llm_first_token_ms"].is_null());
+    assert!(json["tts_first_audio_ms"].is_null());
 }
 
 #[test]
 fn cancelled_event_serializes_reason() {
-    let ev = LiveTalkWsEvent::Cancelled {
-        reason: CancelReason::UserBargeIn,
-    };
-    let json: serde_json::Value = serde_json::to_value(&ev).unwrap();
-    assert_eq!(json["type"], "cancelled");
-    assert_eq!(json["reason"], "user_barge_in");
-
-    let ev2 = LiveTalkWsEvent::Cancelled {
-        reason: CancelReason::ClientRequest,
-    };
-    let json2: serde_json::Value = serde_json::to_value(&ev2).unwrap();
-    assert_eq!(json2["reason"], "client_request");
+    let reasons = [
+        (CancelReason::UserBargeIn, "user_barge_in"),
+        (CancelReason::ClientRequest, "client_request"),
+    ];
+    for (reason, wire) in reasons {
+        let ev = LiveTalkWsEvent::Cancelled { turn_id: 3, reason };
+        let json: Value = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["type"], "cancelled");
+        assert_eq!(json["reason"], wire);
+    }
 }
 
 #[test]
-fn error_event_has_fatal_flag() {
+fn memory_event_is_flat() {
+    let mut conversation = Conversation::with_budget(1000);
+    conversation.commit("hi", &["Hello.".to_string()], true);
+    let ev = LiveTalkWsEvent::Memory(conversation.snapshot());
+    let json: Value = serde_json::to_value(&ev).unwrap();
+    assert_eq!(json["type"], "memory");
+    assert_eq!(json["turns"][0]["user"], "hi");
+    assert_eq!(json["turns"][0]["assistant"], "Hello.");
+    assert_eq!(json["turns"][0]["interrupted"], true);
+    assert!(json["turns"][0]["tokens"].as_u64().unwrap() > 0);
+    assert_eq!(json["total_tokens"], json["turns"][0]["tokens"]);
+    assert_eq!(json["budget_tokens"], 1000);
+    assert_eq!(json["low_watermark_tokens"], 600);
+    assert_eq!(json["dropped_turns"], 0);
+}
+
+#[test]
+fn error_event_has_fatal_flag_and_optional_turn_id() {
     let ev = LiveTalkWsEvent::Error {
         message: "ollama unreachable".into(),
         fatal: true,
+        turn_id: None,
     };
-    let json: serde_json::Value = serde_json::to_value(&ev).unwrap();
+    let json: Value = serde_json::to_value(&ev).unwrap();
     assert_eq!(json["type"], "error");
     assert_eq!(json["message"], "ollama unreachable");
     assert_eq!(json["fatal"], true);
+    assert!(json.get("turn_id").is_none());
+
+    let ev = LiveTalkWsEvent::Error {
+        message: "stalled".into(),
+        fatal: false,
+        turn_id: Some(9),
+    };
+    let json: Value = serde_json::to_value(&ev).unwrap();
+    assert_eq!(json["fatal"], false);
+    assert_eq!(json["turn_id"], 9);
 }
 
 #[test]
@@ -140,34 +277,142 @@ fn client_config_deserializes_with_defaults() {
             assert_eq!(cfg.voice.as_deref(), Some("en_US-amy-medium"));
             assert!(matches!(cfg.mode, LiveTalkModeConfig::Vad));
             assert!(cfg.barge_in_enabled);
-            assert!(cfg.host.is_none());
             assert!(cfg.system_prompt_override.is_none());
+            assert!(cfg.session_id.is_none());
+            // Biometric: off unless asked for.
+            assert!(!cfg.diarization);
         }
         other => panic!("expected Config, got {:?}", other),
     }
 }
 
 #[test]
-fn client_config_deserializes_push_to_talk() {
+fn client_config_deserializes_push_to_talk_and_session_id() {
     let raw = r#"{
         "type": "config",
         "mode": "push_to_talk",
-        "barge_in_enabled": false
+        "barge_in_enabled": false,
+        "session_id": "0123456789abcdef"
     }"#;
     let msg: LiveTalkClientMsg = serde_json::from_str(raw).unwrap();
     match msg {
         LiveTalkClientMsg::Config(cfg) => {
             assert!(matches!(cfg.mode, LiveTalkModeConfig::PushToTalk));
             assert!(!cfg.barge_in_enabled);
+            assert_eq!(cfg.session_id.as_deref(), Some("0123456789abcdef"));
         }
         other => panic!("expected Config, got {:?}", other),
     }
 }
 
+/// The Ollama host is server configuration. A client that still sends
+/// `host` (protocol v1) is accepted and the field has no effect: neither
+/// config type has such a field any more.
 #[test]
-fn client_cancel_deserializes() {
+fn client_supplied_host_is_ignored() {
+    let raw = r#"{"type":"config","model":"m","host":"evil.example:80"}"#;
+    let msg: LiveTalkClientMsg = serde_json::from_str(raw).unwrap();
+    assert!(matches!(msg, LiveTalkClientMsg::Config(_)));
+
+    let bare: LiveTalkConfig =
+        serde_json::from_str(r#"{"model":"m","host":"evil.example:80"}"#).unwrap();
+    assert_eq!(bare.model.as_deref(), Some("m"));
+
+    let converse: ConverseConfig =
+        serde_json::from_str(r#"{"model":"m","host":"evil.example:80","voice":"v"}"#).unwrap();
+    assert_eq!(converse.model.as_deref(), Some("m"));
+    assert_eq!(converse.voice.as_deref(), Some("v"));
+}
+
+#[test]
+fn cancel_parses_the_v1_body_and_the_v2_fields() {
     let msg: LiveTalkClientMsg = serde_json::from_str(r#"{"type":"cancel"}"#).unwrap();
-    assert!(matches!(msg, LiveTalkClientMsg::Cancel));
+    assert!(matches!(
+        msg,
+        LiveTalkClientMsg::Cancel {
+            turn_id: None,
+            heard_sentences: None
+        }
+    ));
+
+    let msg: LiveTalkClientMsg =
+        serde_json::from_str(r#"{"type":"cancel","heard_sentences":2}"#).unwrap();
+    assert!(matches!(
+        msg,
+        LiveTalkClientMsg::Cancel {
+            turn_id: None,
+            heard_sentences: Some(2)
+        }
+    ));
+
+    let msg: LiveTalkClientMsg =
+        serde_json::from_str(r#"{"type":"cancel","turn_id":5,"heard_sentences":0}"#).unwrap();
+    assert!(matches!(
+        msg,
+        LiveTalkClientMsg::Cancel {
+            turn_id: Some(5),
+            heard_sentences: Some(0)
+        }
+    ));
+}
+
+#[test]
+fn playback_done_and_forget_memory_deserialize() {
+    let msg: LiveTalkClientMsg =
+        serde_json::from_str(r#"{"type":"playback_done","turn_id":3,"heard_sentences":4}"#)
+            .unwrap();
+    assert!(matches!(
+        msg,
+        LiveTalkClientMsg::PlaybackDone {
+            turn_id: 3,
+            heard_sentences: Some(4)
+        }
+    ));
+    // `turn_id` is required: without it the server cannot tell which
+    // playback ended.
+    assert!(serde_json::from_str::<LiveTalkClientMsg>(r#"{"type":"playback_done"}"#).is_err());
+
+    let msg: LiveTalkClientMsg = serde_json::from_str(r#"{"type":"forget_memory"}"#).unwrap();
+    assert!(matches!(msg, LiveTalkClientMsg::ForgetMemory));
+}
+
+#[test]
+fn diarization_and_enroll_speaker_deserialize() {
+    let msg: LiveTalkClientMsg =
+        serde_json::from_str(r#"{"type":"config","diarization":true}"#).unwrap();
+    assert!(matches!(msg, LiveTalkClientMsg::Config(cfg) if cfg.diarization));
+
+    let msg: LiveTalkClientMsg = serde_json::from_str(r#"{"type":"enroll_speaker"}"#).unwrap();
+    assert!(matches!(
+        msg,
+        LiveTalkClientMsg::EnrollSpeaker { name: None }
+    ));
+    let msg: LiveTalkClientMsg =
+        serde_json::from_str(r#"{"type":"enroll_speaker","name":"Mert"}"#).unwrap();
+    assert!(matches!(
+        msg,
+        LiveTalkClientMsg::EnrollSpeaker { name: Some(name) } if name == "Mert"
+    ));
+}
+
+#[test]
+fn speaker_enrolled_event_is_flat() {
+    let ev = LiveTalkWsEvent::SpeakerEnrolled {
+        speaker_id: "speaker_3".into(),
+        speaker_name: "Mert".into(),
+        speaker_color: "#e15759".into(),
+        created: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&ev).unwrap(),
+        json!({
+            "type": "speaker_enrolled",
+            "speaker_id": "speaker_3",
+            "speaker_name": "Mert",
+            "speaker_color": "#e15759",
+            "created": true,
+        })
+    );
 }
 
 #[test]
@@ -191,6 +436,1503 @@ fn mode_config_to_runtime_mode_conversion() {
     assert!(matches!(vad, LiveTalkMode::Vad));
     assert!(matches!(ptt, LiveTalkMode::PushToTalk));
 }
+
+// ─── Fakes ───────────────────────────────────────────────────
+
+const FRAME: usize = 512;
+
+#[derive(Default)]
+struct VadStats {
+    resets: AtomicUsize,
+    frames: AtomicUsize,
+    /// Behave like Silero: report `voiced_ms` and drop utterances shorter
+    /// than 250 ms. Off by default (the VAD then reports no voiced time).
+    like_silero: std::sync::atomic::AtomicBool,
+}
+
+/// A VAD that calls a frame speech when its mean absolute level is above
+/// 0.5. Speech starts at the first such frame and ends at the first frame
+/// below it.
+struct FakeVad {
+    stats: Arc<VadStats>,
+    speech: Option<Vec<f32>>,
+}
+
+impl FakeVad {
+    fn new(stats: &Arc<VadStats>) -> Box<Self> {
+        Box::new(Self {
+            stats: Arc::clone(stats),
+            speech: None,
+        })
+    }
+}
+
+#[async_trait]
+impl vox::traits::VadBackend for FakeVad {
+    async fn process_frame(
+        &mut self,
+        frame: &vox::AudioChunk,
+    ) -> Result<Vec<vox::VadEvent>, vox::VoxError> {
+        assert_eq!(frame.samples.len(), FRAME);
+        self.stats.frames.fetch_add(1, Ordering::SeqCst);
+        let level = frame.samples.iter().map(|s| s.abs()).sum::<f32>() / FRAME as f32;
+        let loud = level > 0.5;
+        let mut events = Vec::new();
+        match (&mut self.speech, loud) {
+            (None, true) => {
+                self.speech = Some(frame.samples.clone());
+                events.push(vox::VadEvent::SpeechStart);
+            }
+            (Some(buffer), true) => buffer.extend_from_slice(&frame.samples),
+            (Some(_), false) => {
+                let samples = self.speech.take().unwrap_or_default();
+                let duration_ms = samples.len() as u64 * 1000 / 16_000;
+                if self.stats.like_silero.load(Ordering::SeqCst) && duration_ms < 250 {
+                    events.push(vox::VadEvent::Silence);
+                    return Ok(events);
+                }
+                events.push(vox::VadEvent::SpeechEnd(vox::Utterance {
+                    audio: vox::AudioChunk {
+                        samples,
+                        sample_rate: 16_000,
+                        channels: 1,
+                    },
+                    duration_ms,
+                    #[cfg(feature = "diarization")]
+                    speaker_id: None,
+                }));
+            }
+            (None, false) => events.push(vox::VadEvent::Silence),
+        }
+        Ok(events)
+    }
+
+    fn reset(&mut self) {
+        self.stats.resets.fetch_add(1, Ordering::SeqCst);
+        self.speech = None;
+    }
+
+    fn voiced_ms(&self) -> Option<u32> {
+        if !self.stats.like_silero.load(Ordering::SeqCst) {
+            return None;
+        }
+        let samples = self.speech.as_ref().map_or(0, Vec::len);
+        Some((samples * 1000 / 16_000) as u32)
+    }
+
+    fn frame_size(&self) -> usize {
+        FRAME
+    }
+
+    fn sample_rate(&self) -> u32 {
+        16_000
+    }
+}
+
+/// An STT that answers "utterance 1", "utterance 2", ... and records how
+/// many samples each call got. `delays` are consumed one per call.
+#[derive(Default)]
+struct FakeStt {
+    calls: Mutex<Vec<usize>>,
+    delays: Mutex<VecDeque<Duration>>,
+}
+
+#[async_trait]
+impl vox::traits::SttBackend for FakeStt {
+    async fn transcribe(&self, audio: &vox::Utterance) -> Result<vox::SttResult, vox::VoxError> {
+        let n = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(audio.audio.samples.len());
+            calls.len()
+        };
+        let delay = self.delays.lock().unwrap().pop_front();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(vox::SttResult {
+            text: format!("utterance {n}"),
+            language: None,
+            duration_ms: audio.duration_ms,
+            processing_time_ms: 1,
+            #[cfg(feature = "diarization")]
+            speaker_id: None,
+        })
+    }
+}
+
+/// A TTS that returns 10 ms of silence and records what it was asked for.
+#[derive(Default)]
+struct FakeTts {
+    requests: Mutex<Vec<(String, Option<String>)>>,
+}
+
+#[async_trait]
+impl vox::traits::TtsBackend for FakeTts {
+    async fn synthesize(&self, request: &vox::TtsRequest) -> Result<vox::TtsOutput, vox::VoxError> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push((request.text.clone(), request.voice.clone()));
+        Ok(vox::TtsOutput::from_mono(vec![0.0; 160], 16_000))
+    }
+
+    fn backend_name(&self) -> &str {
+        "fake"
+    }
+}
+
+/// What the fake Ollama does with one request.
+#[derive(Clone, Default)]
+struct Script {
+    /// Reply text, one stream chunk per entry.
+    tokens: Vec<&'static str>,
+    /// Pause before each chunk after the first.
+    token_delay: Duration,
+    /// Pause before the first chunk.
+    start_delay: Duration,
+    /// Accept the request and never answer.
+    silent: bool,
+}
+
+fn reply(tokens: &[&'static str]) -> Script {
+    Script {
+        tokens: tokens.to_vec(),
+        ..Script::default()
+    }
+}
+
+/// One sentence, then the start of a second one that a script can pause
+/// in. The segmenter confirms a sentence end only once it has seen what
+/// follows, so the first chunk already carries the next word.
+const PAUSE_AFTER_FIRST_SENTENCE: [&str; 2] = ["Sentence one is here. And", " then a second one."];
+
+const THREE_SENTENCES: [&str; 3] = [
+    "Sentence one is here.",
+    " Sentence two follows.",
+    " Sentence three ends.",
+];
+
+/// Read one HTTP request and return its JSON body. `None` when the client
+/// went away first (a turn that was cancelled while sending).
+async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<Value> {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        if let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            let body_start = head_end + 4;
+            if buf.len() >= body_start + len {
+                return serde_json::from_slice(&buf[body_start..body_start + len]).ok();
+            }
+        }
+        match sock.read(&mut tmp).await {
+            Ok(n) if n > 0 => buf.extend_from_slice(&tmp[..n]),
+            _ => return None,
+        }
+    }
+}
+
+/// Fake Ollama: answers request N with script N. Returns its `host:port`
+/// and the request bodies it received.
+async fn fake_ollama(scripts: Vec<Script>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    tokio::spawn(async move {
+        for script in scripts {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let seen = Arc::clone(&seen);
+            tokio::spawn(async move {
+                let Some(request) = read_request(&mut sock).await else {
+                    return;
+                };
+                seen.lock().unwrap().push(request);
+                if script.silent {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    return;
+                }
+                tokio::time::sleep(script.start_delay).await;
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
+                if sock.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                for (i, token) in script.tokens.iter().enumerate() {
+                    if i > 0 {
+                        tokio::time::sleep(script.token_delay).await;
+                    }
+                    let line = json!({
+                        "message": { "role": "assistant", "content": token },
+                        "done": false,
+                    });
+                    if sock
+                        .write_all(format!("{line}\n").as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let _ = sock.flush().await;
+                }
+                let done = json!({ "done": true, "prompt_eval_count": 5, "eval_count": 7 });
+                let _ = sock.write_all(format!("{done}\n").as_bytes()).await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+    (host, requests)
+}
+
+// ─── Speakers ────────────────────────────────────────────────
+
+/// Loudness of the test voices. [`FakeSpeakers`] turns the level of an
+/// utterance into an embedding; the real registry decides who that is.
+const MERT_LEVEL: f32 = 0.9;
+const ADA_LEVEL: f32 = 0.75;
+const STRANGER_LEVEL: f32 = 0.6;
+
+/// A speaker service with a stand-in for the encoder model only: the
+/// embedding comes from the loudness of the audio, the decision from a real
+/// [`DiarizationPipeline`] in identify-only mode.
+struct FakeSpeakers {
+    pipeline: DiarizationPipeline,
+    /// Pause before answering `identify`.
+    delay: Mutex<Duration>,
+    identify_calls: AtomicUsize,
+    /// The `name` of every `enroll` call.
+    enroll_calls: Mutex<Vec<Option<String>>>,
+}
+
+impl FakeSpeakers {
+    /// A registry that knows Mert (`speaker_1`) and Ada (`speaker_2`).
+    fn new() -> Arc<Self> {
+        let mut registry = SpeakerRegistry::new();
+        registry
+            .enroll("speaker_1", "Mert", vec![1.0, 0.0])
+            .unwrap();
+        registry.enroll("speaker_2", "Ada", vec![0.0, 1.0]).unwrap();
+        Arc::new(Self {
+            pipeline: DiarizationPipeline::without_encoder(registry, DiarizationConfig::default()),
+            delay: Mutex::new(Duration::ZERO),
+            identify_calls: AtomicUsize::new(0),
+            enroll_calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn embedding(audio: &vox::AudioChunk) -> Vec<f32> {
+        let level =
+            audio.samples.iter().map(|s| s.abs()).sum::<f32>() / audio.samples.len().max(1) as f32;
+        if level > 0.85 {
+            vec![1.0, 0.0]
+        } else if level > 0.7 {
+            vec![0.0, 1.0]
+        } else {
+            vec![-1.0, -1.0]
+        }
+    }
+
+    fn speaker_count(&self) -> usize {
+        self.pipeline.with_registry(|r| r.speaker_count())
+    }
+}
+
+#[async_trait]
+impl SpeakerService for FakeSpeakers {
+    async fn identify(&self, audio: &vox::AudioChunk) -> Option<SpeakerTag> {
+        self.identify_calls.fetch_add(1, Ordering::SeqCst);
+        let delay = *self.delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
+        let id = self
+            .pipeline
+            .resolve_embedding(Self::embedding(audio), IdentifyMode::IdentifyOnly)
+            .unwrap()
+            .speaker_id?;
+        let name = self
+            .pipeline
+            .with_registry(|r| r.get_speaker(&id).map(|s| s.name.clone()))?;
+        Some(SpeakerTag {
+            color: format!("#{id}"),
+            id,
+            name,
+        })
+    }
+
+    async fn enroll(
+        &self,
+        _audio: &vox::AudioChunk,
+        name: Option<&str>,
+    ) -> Result<Enrollment, String> {
+        self.enroll_calls
+            .lock()
+            .unwrap()
+            .push(name.map(str::to_string));
+        Ok(Enrollment {
+            speaker: SpeakerTag {
+                id: "speaker_3".into(),
+                name: name.unwrap_or("Speaker 3").to_string(),
+                color: "#speaker_3".into(),
+            },
+            created: true,
+        })
+    }
+}
+
+fn diarization_config() -> Value {
+    json!({"type": "config", "model": "test-model", "diarization": true})
+}
+
+/// A speaker database that has Mert and Ada, as [`FakeSpeakers`] does.
+async fn speaker_db(path: &str) -> SpeakerDatabase {
+    let db = SpeakerDatabase::open(path).await.unwrap();
+    for (id, name) in [("speaker_1", "Mert"), ("speaker_2", "Ada")] {
+        if db.get_record(id).await.unwrap().is_none() {
+            db.store_speaker(&vox::Speaker {
+                id: id.into(),
+                name: name.into(),
+                embedding: vec![0.5, 0.5],
+            })
+            .await
+            .unwrap();
+        }
+    }
+    db
+}
+
+/// Wait until `count` memory rows are stored for a speaker. The write
+/// happens after the turn, off the turn task.
+async fn stored_rows(memory: &MemoryStore, speaker_id: &str, count: u64) {
+    for _ in 0..100 {
+        let status = memory.status(speaker_id).await.unwrap().unwrap();
+        if status.count == count {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("never saw {count} memory rows for {speaker_id}");
+}
+
+fn contents(request: &Value) -> Vec<String> {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["content"].as_str().unwrap().to_string())
+        .collect()
+}
+
+// ─── Test client ─────────────────────────────────────────────
+
+/// Everything a test wants to look at afterwards.
+struct Rig {
+    vad: Arc<VadStats>,
+    stt: Arc<FakeStt>,
+    tts: Arc<FakeTts>,
+    sessions: Arc<SessionStore>,
+    host: String,
+    llm_requests: Arc<Mutex<Vec<Value>>>,
+    stream_options: StreamOptions,
+    playback_grace: Duration,
+    speakers: Option<Arc<FakeSpeakers>>,
+    memory: Option<MemoryStore>,
+    identify_grace: Duration,
+    distill: bool,
+}
+
+impl Rig {
+    async fn new(scripts: Vec<Script>) -> Self {
+        let (host, llm_requests) = fake_ollama(scripts).await;
+        Self {
+            vad: Arc::new(VadStats::default()),
+            stt: Arc::new(FakeStt::default()),
+            tts: Arc::new(FakeTts::default()),
+            sessions: Arc::new(SessionStore::new(Duration::from_secs(600), 16)),
+            host,
+            llm_requests,
+            stream_options: StreamOptions {
+                first_token_timeout: Duration::from_secs(10),
+                idle_timeout: Duration::from_secs(10),
+            },
+            // Long, so a test that goes on after a spoken turn has to say
+            // `playback_done` (or cancel) like a real client.
+            playback_grace: Duration::from_secs(60),
+            speakers: None,
+            memory: None,
+            identify_grace: Duration::from_secs(5),
+            distill: true,
+        }
+    }
+
+    /// Open a Live Talk connection and send `config` as the first message.
+    fn live(&self, config: Value) -> Client {
+        let (client, sink, stream) = Client::pipe();
+        let deps = LiveTalkDeps {
+            stt: self.stt.clone(),
+            tts: self.tts.clone(),
+            vad: FakeVad::new(&self.vad),
+            http_client: reqwest::Client::new(),
+            ollama_host: self.host.clone(),
+            sessions: Arc::clone(&self.sessions),
+            stream_options: self.stream_options,
+            playback_grace: self.playback_grace,
+            speakers: self.speakers.clone().map(|s| s as Arc<dyn SpeakerService>),
+            memory: self.memory.clone(),
+            identify_grace: self.identify_grace,
+            distill: self.distill,
+        };
+        tokio::spawn(run_live_talk(sink, stream, deps));
+        client.send(config);
+        client
+    }
+
+    /// Open a converse connection and send `config` as the first message.
+    fn converse(&self, config: Value) -> Client {
+        let (client, sink, stream) = Client::pipe();
+        let deps = ConverseDeps {
+            stt: self.stt.clone(),
+            tts: self.tts.clone(),
+            vad: FakeVad::new(&self.vad),
+            http_client: reqwest::Client::new(),
+            ollama_host: self.host.clone(),
+            stream_options: self.stream_options,
+            post_turn_mute: Duration::ZERO,
+        };
+        tokio::spawn(run_converse(sink, stream, deps));
+        client.send(config);
+        client
+    }
+}
+
+type ServerSink = std::pin::Pin<Box<dyn futures_util::Sink<Message, Error = ()> + Send>>;
+type ServerStream = tokio_stream::wrappers::UnboundedReceiverStream<Result<Message, Infallible>>;
+
+/// The client end of an in-memory connection.
+struct Client {
+    tx: mpsc::UnboundedSender<Result<Message, Infallible>>,
+    rx: mpsc::UnboundedReceiver<Message>,
+}
+
+impl Client {
+    fn pipe() -> (Self, ServerSink, ServerStream) {
+        let (to_server, from_client) = mpsc::unbounded_channel();
+        let (to_client, from_server) = mpsc::unbounded_channel::<Message>();
+        let sink: ServerSink = Box::pin(futures_util::sink::unfold(
+            to_client,
+            |tx, msg: Message| async move {
+                tx.send(msg).map_err(|_| ())?;
+                Ok::<_, ()>(tx)
+            },
+        ));
+        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(from_client);
+        (
+            Self {
+                tx: to_server,
+                rx: from_server,
+            },
+            sink,
+            stream,
+        )
+    }
+
+    fn send(&self, msg: Value) {
+        self.tx
+            .send(Ok(Message::Text(msg.to_string().into())))
+            .expect("server is gone");
+    }
+
+    fn send_audio(&self, samples: &[f32]) {
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        self.tx
+            .send(Ok(Message::Binary(bytes.into())))
+            .expect("server is gone");
+    }
+
+    /// Three loud frames and a quiet one: one utterance for [`FakeVad`].
+    fn speak(&self) {
+        self.speak_at(MERT_LEVEL);
+    }
+
+    /// An utterance of `frames` loud frames, then a pause.
+    fn speak_long(&self, frames: usize) {
+        let mut samples = vec![MERT_LEVEL; FRAME * frames];
+        samples.extend(std::iter::repeat_n(0.0, FRAME));
+        self.send_audio(&samples);
+    }
+
+    /// An utterance at `level`, which is what [`FakeSpeakers`] tells voices
+    /// apart by.
+    fn speak_at(&self, level: f32) {
+        let mut samples = vec![level; FRAME * 3];
+        samples.extend(std::iter::repeat_n(0.0, FRAME));
+        self.send_audio(&samples);
+    }
+
+    /// Speak, read the turn to its end and report playback as finished, so
+    /// the microphone is open for the next utterance.
+    async fn turn_at(&mut self, level: f32) -> Vec<Value> {
+        self.speak_at(level);
+        let events = self.until("turn_done").await;
+        let turn_id = events.last().unwrap()["turn_id"].clone();
+        self.send(json!({"type": "playback_done", "turn_id": turn_id}));
+        settle().await;
+        events
+    }
+
+    /// The next message. A binary frame comes back as
+    /// `{"type":"<binary>","len":n}`. `None` when nothing arrives in `wait`.
+    async fn next_within(&mut self, wait: Duration) -> Option<Value> {
+        match tokio::time::timeout(wait, self.rx.recv()).await {
+            Ok(Some(Message::Text(text))) => {
+                Some(serde_json::from_str(text.as_str()).expect("server sent invalid JSON"))
+            }
+            Ok(Some(Message::Binary(data))) => Some(json!({"type": "<binary>", "len": data.len()})),
+            Ok(Some(_)) | Ok(None) | Err(_) => None,
+        }
+    }
+
+    /// Read until an event of type `ty`; returns everything read, that event
+    /// last. Panics if it does not come.
+    async fn until(&mut self, ty: &str) -> Vec<Value> {
+        let mut seen = Vec::new();
+        loop {
+            let Some(event) = self.next_within(Duration::from_secs(5)).await else {
+                panic!("no `{ty}` event; got {seen:#?}");
+            };
+            let found = event["type"] == ty;
+            seen.push(event);
+            if found {
+                return seen;
+            }
+        }
+    }
+
+    /// Read until an event of type `ty` and return it.
+    async fn expect(&mut self, ty: &str) -> Value {
+        self.until(ty).await.pop().expect("until returns the event")
+    }
+
+    /// Everything that arrives within `wait`.
+    async fn drain(&mut self, wait: Duration) -> Vec<Value> {
+        let deadline = tokio::time::Instant::now() + wait;
+        let mut seen = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                return seen;
+            }
+            match self.next_within(left).await {
+                Some(event) => seen.push(event),
+                None => return seen,
+            }
+        }
+    }
+}
+
+fn types(events: &[Value]) -> Vec<&str> {
+    events
+        .iter()
+        .map(|e| e["type"].as_str().unwrap_or("?"))
+        .collect()
+}
+
+fn of_type<'a>(events: &'a [Value], ty: &str) -> Vec<&'a Value> {
+    events.iter().filter(|e| e["type"] == ty).collect()
+}
+
+fn vad_config() -> Value {
+    json!({"type": "config", "model": "test-model"})
+}
+
+/// Give the session loop time to handle what was sent.
+async fn settle() {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+}
+
+// ─── Live Talk sessions ──────────────────────────────────────
+
+#[tokio::test]
+async fn a_turn_emits_the_v2_event_sequence() {
+    let rig = Rig::new(vec![reply(&THREE_SENTENCES)]).await;
+    let mut client = rig.live(vad_config());
+
+    let ready = client.expect("ready").await;
+    assert_eq!(ready["protocol_version"], 2);
+    assert_eq!(ready["model"], "test-model");
+    assert_eq!(ready["mode"], "vad");
+    let session_id = ready["session_id"].as_str().unwrap();
+    assert!(SessionStore::is_valid_id(session_id));
+    // A new session starts with an empty memory.
+    let memory = client.expect("memory").await;
+    assert_eq!(memory["turns"].as_array().unwrap().len(), 0);
+    assert!(memory["budget_tokens"].as_u64().unwrap() > 0);
+
+    client.speak();
+    let events = client.until("turn_done").await;
+    let kinds = types(&events);
+
+    // speech_start, speech_end, transcript and thinking come in this order,
+    // before any reply.
+    let position = |ty: &str| {
+        kinds
+            .iter()
+            .position(|k| *k == ty)
+            .unwrap_or_else(|| panic!("no `{ty}` in {kinds:?}"))
+    };
+    assert!(position("speech_start") < position("speech_end"));
+    assert!(position("speech_end") < position("transcript"));
+    assert!(position("transcript") < position("thinking"));
+    assert!(position("thinking") < position("token"));
+    assert!(position("token") < position("sentence"));
+    assert!(position("turn_metrics") < position("turn_done"));
+
+    assert_eq!(of_type(&events, "transcript")[0]["text"], "utterance 1");
+
+    // Raw tokens are forwarded as they came.
+    let tokens: Vec<&str> = of_type(&events, "token")
+        .iter()
+        .map(|t| t["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(tokens, THREE_SENTENCES);
+
+    // Each sentence is followed by its audio header, which is followed by
+    // exactly one binary frame.
+    let sentences = of_type(&events, "sentence");
+    assert_eq!(sentences.len(), 3);
+    assert_eq!(sentences[0]["text"], "Sentence one is here.");
+    for (i, kind) in kinds.iter().enumerate() {
+        if *kind == "audio_chunk" {
+            assert_eq!(kinds[i - 1], "sentence");
+            assert_eq!(kinds[i + 1], "<binary>");
+            assert_eq!(events[i]["sentence_index"], events[i - 1]["index"]);
+            assert_eq!(events[i]["sample_rate"], 16_000);
+        }
+    }
+    assert_eq!(of_type(&events, "audio_chunk").len(), 3);
+    assert_eq!(of_type(&events, "<binary>").len(), 3);
+
+    // Every turn-scoped event carries the turn id.
+    for event in &events {
+        let ty = event["type"].as_str().unwrap();
+        if [
+            "transcript",
+            "thinking",
+            "token",
+            "sentence",
+            "audio_chunk",
+            "turn_metrics",
+            "turn_done",
+        ]
+        .contains(&ty)
+        {
+            assert_eq!(event["turn_id"], 1, "{event}");
+        }
+    }
+
+    let metrics = of_type(&events, "turn_metrics")[0];
+    assert!(metrics["stt_ms"].is_u64());
+    assert!(metrics["llm_first_token_ms"].is_u64());
+    assert!(metrics["tts_first_audio_ms"].is_u64());
+
+    assert_eq!(events.last().unwrap()["sentences"], 3);
+
+    // The turn is in memory, as heard so far (everything that was sent).
+    let memory = of_type(&events, "memory");
+    let memory = memory.last().expect("a memory event after the commit");
+    assert_eq!(memory["turns"][0]["user"], "utterance 1");
+    assert_eq!(
+        memory["turns"][0]["assistant"],
+        "Sentence one is here. Sentence two follows. Sentence three ends."
+    );
+    assert_eq!(memory["turns"][0]["interrupted"], false);
+
+    // The LLM was asked with the configured model, through the server's
+    // host.
+    let requests = rig.llm_requests.lock().unwrap();
+    assert_eq!(requests[0]["model"], "test-model");
+}
+
+#[tokio::test]
+async fn turn_ids_increase_and_the_mic_waits_for_playback_done() {
+    let rig = Rig::new(vec![reply(&THREE_SENTENCES), reply(&["Second reply."])]).await;
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak();
+    let first = client.until("turn_done").await;
+    assert_eq!(first.last().unwrap()["turn_id"], 1);
+
+    // The browser is still playing: the microphone hears the loudspeaker,
+    // so this must not start a turn or even reach the VAD.
+    let frames_before = rig.vad.frames.load(Ordering::SeqCst);
+    client.speak();
+    let quiet = client.drain(Duration::from_millis(300)).await;
+    assert!(quiet.is_empty(), "gated audio caused {quiet:#?}");
+    assert_eq!(rig.vad.frames.load(Ordering::SeqCst), frames_before);
+
+    // Playback is over: listening again.
+    client.send(json!({"type": "playback_done", "turn_id": 1, "heard_sentences": 3}));
+    settle().await;
+    client.speak();
+    let second = client.until("turn_done").await;
+    for event in &second {
+        if let Some(turn_id) = event.get("turn_id") {
+            assert_eq!(turn_id, 2, "{event}");
+        }
+    }
+    assert_eq!(of_type(&second, "transcript")[0]["text"], "utterance 2");
+    assert_eq!(of_type(&second, "speech_end").len(), 1);
+
+    // Having heard everything, the first turn stays whole in memory.
+    let memory = of_type(&second, "memory");
+    let turns = memory.last().unwrap()["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0]["interrupted"], false);
+    assert_eq!(turns[1]["assistant"], "Second reply.");
+
+    // The second request carried the first turn as history.
+    let requests = rig.llm_requests.lock().unwrap();
+    let messages = requests[1]["messages"].as_array().unwrap();
+    let roles: Vec<&str> = messages
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, ["system", "user", "assistant", "user"]);
+    assert_eq!(messages[1]["content"], "utterance 1");
+    assert_eq!(messages[3]["content"], "utterance 2");
+}
+
+#[tokio::test]
+async fn the_gate_opens_by_itself_when_the_audio_must_be_over() {
+    let mut rig = Rig::new(vec![reply(&["One reply."]), reply(&["Second reply."])]).await;
+    // 10 ms of audio + 150 ms margin, and no `playback_done` from the client.
+    rig.playback_grace = Duration::from_millis(150);
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak();
+    client.until("turn_done").await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    client.speak();
+    let second = client.until("turn_done").await;
+    assert_eq!(second.last().unwrap()["turn_id"], 2);
+}
+
+#[tokio::test]
+async fn cancel_after_turn_done_cuts_memory_to_what_was_heard() {
+    let rig = Rig::new(vec![reply(&THREE_SENTENCES)]).await;
+    let mut client = rig.live(vad_config());
+    let session_id = client.expect("ready").await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client.speak();
+    let events = client.until("turn_done").await;
+    let memory = of_type(&events, "memory");
+    assert_eq!(memory.last().unwrap()["turns"][0]["interrupted"], false);
+    let tokens_before = memory.last().unwrap()["total_tokens"].as_u64().unwrap();
+
+    // The user interrupts while the browser is still on the first sentence.
+    // The server finished the turn long ago.
+    client.send(json!({"type": "cancel", "turn_id": 1, "heard_sentences": 1}));
+    let events = client.until("cancelled").await;
+
+    let cancelled = events.last().unwrap();
+    assert_eq!(cancelled["turn_id"], 1);
+    assert_eq!(cancelled["reason"], "client_request");
+
+    let memory = of_type(&events, "memory");
+    assert_eq!(memory.len(), 1, "one memory event for the correction");
+    let turns = memory[0]["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0]["assistant"], "Sentence one is here.");
+    assert_eq!(turns[0]["interrupted"], true);
+    assert!(memory[0]["total_tokens"].as_u64().unwrap() < tokens_before);
+
+    // The same correction again changes nothing and says nothing new.
+    client.send(json!({"type": "cancel", "heard_sentences": 1}));
+    let events = client.until("cancelled").await;
+    assert!(of_type(&events, "memory").is_empty());
+
+    // What the model will see next time.
+    let handle = rig.sessions.attach(Some(&session_id));
+    assert!(handle.resumed);
+    let conversation = handle.conversation.lock().unwrap();
+    assert_eq!(
+        conversation.messages_for(None, "next")[1].content,
+        format!(
+            "Sentence one is here. {}",
+            vox::conversation::INTERRUPTED_MARKER
+        )
+    );
+}
+
+#[tokio::test]
+async fn cancel_without_a_turn_leaves_the_vad_alone() {
+    let rig = Rig::new(vec![]).await;
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+    client.expect("memory").await;
+
+    // 300 loud samples: not a whole frame yet, so they wait.
+    client.send_audio(&[0.9; 300]);
+    settle().await;
+    assert_eq!(rig.vad.frames.load(Ordering::SeqCst), 0);
+    let resets_before = rig.vad.resets.load(Ordering::SeqCst);
+
+    client.send(json!({"type": "cancel"}));
+    let cancelled = client.expect("cancelled").await;
+    assert_eq!(cancelled["reason"], "client_request");
+    // No turn ever existed.
+    assert_eq!(cancelled["turn_id"], 0);
+
+    // The VAD was not reset and nothing was fed to it.
+    assert_eq!(rig.vad.resets.load(Ordering::SeqCst), resets_before);
+    assert_eq!(rig.vad.frames.load(Ordering::SeqCst), 0);
+
+    // The waiting samples are still there: 212 more loud samples complete a
+    // loud frame. Had the 300 been dropped, the frame would be 212 loud +
+    // 300 quiet samples, which is below the fake VAD's threshold.
+    let mut rest = vec![0.9f32; 212];
+    rest.extend(std::iter::repeat_n(0.0, 300));
+    client.send_audio(&rest);
+    let events = client.drain(Duration::from_millis(300)).await;
+    assert_eq!(types(&events), ["speech_start"]);
+    assert_eq!(rig.vad.frames.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.vad.resets.load(Ordering::SeqCst), resets_before);
+}
+
+#[tokio::test]
+async fn cancel_during_a_reply_stops_it_and_records_what_was_heard() {
+    let script = Script {
+        tokens: vec![
+            "Sentence one is here.",
+            " Sentence two follows.",
+            " Sentence three follows.",
+            " Sentence four follows.",
+            " Sentence five follows.",
+            " Sentence six ends.",
+        ],
+        token_delay: Duration::from_millis(150),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![script, reply(&["Second reply."])]).await;
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak();
+    // Two sentences have been sent when the user interrupts; the browser
+    // had only started the first.
+    let mut events = client.until("<binary>").await;
+    events.extend(client.until("<binary>").await);
+    client.send(json!({"type": "cancel", "turn_id": 1, "heard_sentences": 1}));
+    events.extend(client.until("cancelled").await);
+    let cancelled = events.last().unwrap();
+    assert_eq!(cancelled["turn_id"], 1);
+    assert_eq!(cancelled["reason"], "client_request");
+
+    // Nothing of the cancelled turn arrives any more.
+    let after = client.drain(Duration::from_millis(500)).await;
+    events.extend(after.iter().cloned());
+    for event in &after {
+        assert!(
+            event.get("turn_id").is_none(),
+            "event of a cancelled turn: {event}"
+        );
+        assert_ne!(event["type"], "<binary>");
+    }
+    assert!(of_type(&events, "turn_done").is_empty());
+
+    // Memory has the turn as interrupted, with the one sentence heard.
+    let memory = of_type(&events, "memory");
+    let turns = memory.last().expect("memory after the cancel")["turns"]
+        .as_array()
+        .unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0]["assistant"], "Sentence one is here.");
+    assert_eq!(turns[0]["interrupted"], true);
+
+    // The session goes on: the cancel opened the microphone again.
+    client.speak();
+    let second = client.until("turn_done").await;
+    assert_eq!(second.last().unwrap()["turn_id"], 2);
+}
+
+#[tokio::test]
+async fn cancel_while_speaking_replays_the_gated_audio() {
+    let script = Script {
+        tokens: PAUSE_AFTER_FIRST_SENTENCE.to_vec(),
+        token_delay: Duration::from_secs(5),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![script]).await;
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak();
+    client.until("<binary>").await;
+    let frames_before = rig.vad.frames.load(Ordering::SeqCst);
+
+    // The user starts talking over the reply. The server keeps this audio
+    // away from the VAD (it cannot tell it from the loudspeaker)...
+    client.send_audio(&[0.9f32; FRAME * 2]);
+    let quiet = client.drain(Duration::from_millis(200)).await;
+    assert!(of_type(&quiet, "speech_start").is_empty(), "{quiet:#?}");
+    assert_eq!(rig.vad.frames.load(Ordering::SeqCst), frames_before);
+
+    // ...until the client's own detection fires and cancels. Then the held
+    // audio goes to the VAD, so the start of the sentence is not lost.
+    client.send(json!({"type": "cancel", "heard_sentences": 1}));
+    let events = client.until("speech_start").await;
+    assert_eq!(of_type(&events, "cancelled").len(), 1);
+    assert_eq!(rig.vad.frames.load(Ordering::SeqCst), frames_before + 2);
+}
+
+#[tokio::test]
+async fn speech_while_thinking_is_a_voice_barge_in() {
+    let slow = Script {
+        tokens: vec!["Too late."],
+        start_delay: Duration::from_secs(5),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow, reply(&["Second reply."])]).await;
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak();
+    client.until("thinking").await;
+    settle().await;
+
+    // No reply audio yet, so the microphone is live.
+    client.speak();
+    let events = client.until("turn_done").await;
+    let cancelled = of_type(&events, "cancelled");
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(cancelled[0]["turn_id"], 1);
+    assert_eq!(cancelled[0]["reason"], "user_barge_in");
+    let kinds = types(&events);
+    let position = |ty: &str| kinds.iter().position(|k| *k == ty).unwrap();
+    assert!(position("cancelled") < position("speech_start"));
+    assert_eq!(events.last().unwrap()["turn_id"], 2);
+
+    // The unanswered question stays in memory as interrupted, so the model
+    // knows what came before.
+    let requests = rig.llm_requests.lock().unwrap();
+    let messages = requests[1]["messages"].as_array().unwrap();
+    assert_eq!(messages[1]["content"], "utterance 1");
+    assert_eq!(
+        messages[2]["content"],
+        vox::conversation::INTERRUPTED_MARKER
+    );
+    assert_eq!(messages[3]["content"], "utterance 2");
+}
+
+#[tokio::test]
+async fn a_short_noise_while_thinking_does_not_cancel_the_turn() {
+    let slow = Script {
+        tokens: vec!["Still here."],
+        start_delay: Duration::from_millis(600),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow]).await;
+    rig.vad.like_silero.store(true, Ordering::SeqCst);
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak_long(10);
+    client.until("thinking").await;
+    settle().await;
+
+    // A cough: one loud frame (32 ms), then silence.
+    let mut cough = vec![MERT_LEVEL; FRAME];
+    cough.extend(std::iter::repeat_n(0.0, FRAME * 2));
+    client.send_audio(&cough);
+
+    let events = client.until("turn_done").await;
+    assert!(of_type(&events, "cancelled").is_empty(), "{events:?}");
+    assert!(of_type(&events, "speech_start").is_empty(), "{events:?}");
+    assert_eq!(events.last().unwrap()["turn_id"], 1);
+}
+
+#[tokio::test]
+async fn sustained_speech_while_thinking_cancels_before_it_ends() {
+    let slow = Script {
+        tokens: vec!["Too late."],
+        start_delay: Duration::from_secs(5),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow, reply(&["Second reply."])]).await;
+    rig.vad.like_silero.store(true, Ordering::SeqCst);
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak_long(10);
+    client.until("thinking").await;
+    settle().await;
+
+    // 10 loud frames (320 ms) and no pause yet: the user is talking.
+    client.send_audio(&vec![MERT_LEVEL; FRAME * 10]);
+    let events = client.until("speech_start").await;
+    let cancelled = of_type(&events, "cancelled");
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(cancelled[0]["reason"], "user_barge_in");
+    assert!(of_type(&events, "speech_end").is_empty());
+}
+
+#[tokio::test]
+async fn barge_in_can_be_switched_off() {
+    let slow = Script {
+        tokens: vec!["Late reply."],
+        start_delay: Duration::from_millis(400),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow]).await;
+    let mut client =
+        rig.live(json!({"type": "config", "model": "test-model", "barge_in_enabled": false}));
+    client.expect("ready").await;
+
+    client.speak();
+    client.until("thinking").await;
+    client.speak();
+    let events = client.until("turn_done").await;
+    assert!(of_type(&events, "cancelled").is_empty());
+    assert!(of_type(&events, "speech_start").is_empty());
+    assert_eq!(events.last().unwrap()["turn_id"], 1);
+}
+
+#[tokio::test]
+async fn cancel_during_transcription_does_not_wait_for_the_stt() {
+    let rig = Rig::new(vec![reply(&["Second reply."])]).await;
+    rig.stt
+        .delays
+        .lock()
+        .unwrap()
+        .push_back(Duration::from_secs(30));
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    client.speak();
+    client.until("speech_end").await;
+    settle().await;
+
+    let started = std::time::Instant::now();
+    client.send(json!({"type": "cancel"}));
+    let cancelled = client.expect("cancelled").await;
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(cancelled["turn_id"], 1);
+
+    // Nothing was transcribed, so nothing was remembered, and the next
+    // utterance is its own turn.
+    client.speak();
+    let events = client.until("turn_done").await;
+    assert_eq!(events.last().unwrap()["turn_id"], 2);
+    assert_eq!(of_type(&events, "transcript")[0]["text"], "utterance 2");
+    let memory = of_type(&events, "memory");
+    assert_eq!(memory.last().unwrap()["turns"].as_array().unwrap().len(), 1);
+    assert_eq!(*rig.stt.calls.lock().unwrap(), [FRAME * 3, FRAME * 3]);
+}
+
+#[tokio::test]
+async fn speech_during_transcription_is_merged_into_the_next_turn() {
+    let rig = Rig::new(vec![reply(&["One reply."])]).await;
+    rig.stt
+        .delays
+        .lock()
+        .unwrap()
+        .push_back(Duration::from_secs(30));
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+
+    // The VAD ended the utterance at a pause, but the user goes on.
+    client.speak();
+    client.until("speech_end").await;
+    settle().await;
+    client.speak();
+
+    let events = client.until("turn_done").await;
+    assert_eq!(of_type(&events, "cancelled")[0]["reason"], "user_barge_in");
+    assert_eq!(events.last().unwrap()["turn_id"], 2);
+    // The second transcription got both parts.
+    assert_eq!(*rig.stt.calls.lock().unwrap(), [FRAME * 3, FRAME * 6]);
+}
+
+#[tokio::test]
+async fn a_stalled_llm_ends_the_turn_and_the_mic_is_accepted_again() {
+    let stalled = Script {
+        silent: true,
+        ..Script::default()
+    };
+    let mut rig = Rig::new(vec![stalled, reply(&["Second reply."])]).await;
+    rig.stream_options = StreamOptions {
+        first_token_timeout: Duration::from_millis(300),
+        idle_timeout: Duration::from_millis(300),
+    };
+    // Barge-in off: while the turn hangs the microphone is gated, so the
+    // only way the next utterance can start a turn is the gate lifting.
+    let mut client =
+        rig.live(json!({"type": "config", "model": "test-model", "barge_in_enabled": false}));
+    client.expect("ready").await;
+    client.expect("memory").await;
+
+    client.speak();
+    let events = client.until("error").await;
+    let error = events.last().unwrap();
+    assert_eq!(error["fatal"], false);
+    assert_eq!(error["turn_id"], 1);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("did not start responding"),
+        "{error}"
+    );
+    // The metrics say how far the turn got.
+    let metrics = of_type(&events, "turn_metrics")[0];
+    assert!(metrics["stt_ms"].is_u64());
+    assert!(metrics["llm_first_token_ms"].is_null());
+    assert!(metrics["tts_first_audio_ms"].is_null());
+    // A turn that produced nothing is not remembered.
+    assert!(of_type(&events, "memory").is_empty());
+
+    settle().await;
+    client.speak();
+    let events = client.until("turn_done").await;
+    assert_eq!(of_type(&events, "speech_start").len(), 1);
+    assert_eq!(events.last().unwrap()["turn_id"], 2);
+    assert_eq!(events.last().unwrap()["sentences"], 1);
+}
+
+#[tokio::test]
+async fn reconnecting_with_the_session_id_keeps_memory_until_forget() {
+    let rig = Rig::new(vec![reply(&["First reply."]), reply(&["Second reply."])]).await;
+
+    let mut client = rig.live(vad_config());
+    let ready = client.expect("ready").await;
+    let session_id = ready["session_id"].as_str().unwrap().to_string();
+    client.speak();
+    client.until("turn_done").await;
+    // The microphone is toggled off: the socket closes.
+    drop(client);
+    settle().await;
+
+    let mut client = rig.live(json!({
+        "type": "config",
+        "model": "test-model",
+        "session_id": session_id,
+    }));
+    let ready = client.expect("ready").await;
+    assert_eq!(ready["session_id"], session_id.as_str());
+    // The memory is sent right away so the client can show it.
+    let memory = client.expect("memory").await;
+    let turns = memory["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0]["user"], "utterance 1");
+    assert_eq!(turns[0]["assistant"], "First reply.");
+
+    // Turn ids restart with the connection; the history does not.
+    client.speak();
+    let events = client.until("turn_done").await;
+    assert_eq!(events.last().unwrap()["turn_id"], 1);
+    {
+        let requests = rig.llm_requests.lock().unwrap();
+        let messages = requests[1]["messages"].as_array().unwrap();
+        assert_eq!(messages[1]["content"], "utterance 1");
+        assert_eq!(messages[2]["content"], "First reply.");
+    }
+    let memory = of_type(&events, "memory");
+    assert_eq!(memory.last().unwrap()["turns"].as_array().unwrap().len(), 2);
+
+    client.send(json!({"type": "forget_memory"}));
+    let memory = client.expect("memory").await;
+    assert_eq!(memory["turns"].as_array().unwrap().len(), 0);
+    assert_eq!(memory["total_tokens"], 0);
+
+    // Forgotten for good: a third connection finds the session, empty.
+    drop(client);
+    settle().await;
+    let mut client = rig.live(json!({"type": "config", "session_id": session_id}));
+    assert_eq!(
+        client.expect("ready").await["session_id"],
+        session_id.as_str()
+    );
+    let memory = client.expect("memory").await;
+    assert_eq!(memory["turns"].as_array().unwrap().len(), 0);
+    assert_eq!(rig.sessions.len(), 1);
+}
+
+#[tokio::test]
+async fn an_open_connection_keeps_its_session_past_the_ttl() {
+    let mut rig = Rig::new(vec![reply(&["First reply."])]).await;
+    rig.sessions = Arc::new(SessionStore::new(Duration::from_millis(400), 16));
+
+    let mut client = rig.live(vad_config());
+    let session_id = client.expect("ready").await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client.turn_at(MERT_LEVEL).await;
+
+    // The connection stays open, microphone streaming, for longer than the
+    // time-to-live.
+    for _ in 0..16 {
+        client.send_audio(&[0.0; FRAME]);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Another connection attaches, which is when idle sessions are dropped.
+    let mut other = rig.live(vad_config());
+    other.expect("ready").await;
+
+    // The microphone is toggled: the conversation is still there.
+    drop(client);
+    settle().await;
+    let mut client = rig.live(json!({"type": "config", "session_id": session_id}));
+    client.expect("ready").await;
+    let memory = client.expect("memory").await;
+    assert_eq!(memory["turns"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_connection_without_session_id_gets_its_own_memory() {
+    let rig = Rig::new(vec![reply(&["First reply."])]).await;
+    let mut first = rig.live(vad_config());
+    let first_id = first.expect("ready").await["session_id"].clone();
+    first.speak();
+    first.until("turn_done").await;
+
+    let mut second = rig.live(vad_config());
+    let ready = second.expect("ready").await;
+    assert_ne!(ready["session_id"], first_id);
+    let memory = second.expect("memory").await;
+    assert_eq!(memory["turns"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn config_changes_apply_to_the_next_live_talk_turn() {
+    let rig = Rig::new(vec![reply(&["First reply."]), reply(&["Second reply."])]).await;
+    let mut client = rig.live(json!({"type": "config", "model": "model-a", "voice": "voice-a"}));
+    client.expect("ready").await;
+
+    client.speak();
+    client.until("turn_done").await;
+    client.send(json!({"type": "config", "model": "model-b", "voice": "voice-b"}));
+    client.send(json!({"type": "playback_done", "turn_id": 1}));
+    settle().await;
+    client.speak();
+    client.until("turn_done").await;
+
+    let requests = rig.llm_requests.lock().unwrap();
+    assert_eq!(requests[0]["model"], "model-a");
+    assert_eq!(requests[1]["model"], "model-b");
+    let voices: Vec<Option<String>> = rig
+        .tts
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, voice)| voice.clone())
+        .collect();
+    assert_eq!(
+        voices,
+        [Some("voice-a".to_string()), Some("voice-b".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn push_to_talk_runs_a_turn_and_ptt_start_interrupts_it() {
+    let slow = Script {
+        tokens: vec!["Too late."],
+        start_delay: Duration::from_secs(5),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow, reply(&["Second reply."])]).await;
+    let mut client =
+        rig.live(json!({"type": "config", "model": "test-model", "mode": "push_to_talk"}));
+    assert_eq!(client.expect("ready").await["mode"], "push_to_talk");
+
+    // Audio outside a key press is ignored.
+    client.send_audio(&[0.9f32; FRAME * 2]);
+    client.send(json!({"type": "ptt_start"}));
+    client.send_audio(&[0.9f32; FRAME * 4]);
+    client.send(json!({"type": "ptt_end"}));
+    let events = client.until("thinking").await;
+    let kinds = types(&events);
+    let position = |ty: &str| kinds.iter().position(|k| *k == ty).unwrap();
+    assert!(position("speech_start") < position("speech_end"));
+    assert!(position("speech_end") < position("transcript"));
+
+    // Pressing the key again while the reply is pending interrupts it.
+    settle().await;
+    client.send(json!({"type": "ptt_start"}));
+    client.send_audio(&[0.9f32; FRAME]);
+    client.send(json!({"type": "ptt_end"}));
+    let events = client.until("turn_done").await;
+    let cancelled = of_type(&events, "cancelled");
+    assert_eq!(cancelled[0]["turn_id"], 1);
+    assert_eq!(cancelled[0]["reason"], "user_barge_in");
+    assert_eq!(events.last().unwrap()["turn_id"], 2);
+
+    // The VAD is not involved in push-to-talk.
+    assert_eq!(rig.vad.frames.load(Ordering::SeqCst), 0);
+    assert_eq!(*rig.stt.calls.lock().unwrap(), [FRAME * 4, FRAME]);
+}
+
+#[tokio::test]
+async fn the_session_ends_when_the_client_leaves_mid_turn() {
+    let slow = Script {
+        tokens: PAUSE_AFTER_FIRST_SENTENCE.to_vec(),
+        token_delay: Duration::from_secs(5),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow]).await;
+    let mut client = rig.live(vad_config());
+    let session_id = client.expect("ready").await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client.speak();
+    client.until("<binary>").await;
+
+    // Closing the socket ends the session: the server's sending half is
+    // dropped, which the client sees as the end of the stream.
+    let Client { tx, mut rx } = client;
+    drop(tx);
+    let closed = tokio::time::timeout(Duration::from_secs(3), async {
+        while rx.recv().await.is_some() {}
+    })
+    .await;
+    assert!(closed.is_ok(), "session did not end after the client left");
+
+    // What had been sent is remembered as an interrupted turn.
+    let handle = rig.sessions.attach(Some(&session_id));
+    assert!(handle.resumed);
+    let snapshot = handle.conversation.lock().unwrap().snapshot();
+    assert_eq!(snapshot.turns.len(), 1);
+    assert_eq!(snapshot.turns[0].assistant, "Sentence one is here.");
+    assert!(snapshot.turns[0].interrupted);
+}
+
+// ─── Converse sessions ───────────────────────────────────────
+
+#[tokio::test]
+async fn converse_applies_a_mid_turn_config_to_the_next_turn() {
+    let slow = Script {
+        tokens: vec!["First reply."],
+        start_delay: Duration::from_millis(400),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow, reply(&["Second reply."])]).await;
+    let mut client = rig.converse(json!({"model": "model-a", "voice": "voice-a"}));
+    let ready = client.expect("ready").await;
+    assert_eq!(ready["model"], "model-a");
+    assert_eq!(ready["voice"], "voice-a");
+
+    client.speak();
+    client.until("thinking").await;
+    // The turn is running; the socket is still being read.
+    client.send(json!({"model": "model-b", "voice": "voice-b"}));
+    let events = client.until("done").await;
+    assert_eq!(of_type(&events, "sentence")[0]["text"], "First reply.");
+    assert!(
+        of_type(&events, "sentence")[0]["audio_b64"]
+            .as_str()
+            .unwrap()
+            .starts_with("UklGR"),
+        "audio is a base64 RIFF file"
+    );
+
+    settle().await;
+    client.speak();
+    let events = client.until("done").await;
+    assert_eq!(of_type(&events, "transcript")[0]["text"], "utterance 2");
+
+    let requests = rig.llm_requests.lock().unwrap();
+    // The running turn kept what it started with; the next one has the new
+    // model and voice.
+    assert_eq!(requests[0]["model"], "model-a");
+    assert_eq!(requests[1]["model"], "model-b");
+    let voices: Vec<Option<String>> = rig
+        .tts
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, voice)| voice.clone())
+        .collect();
+    assert_eq!(
+        voices,
+        [Some("voice-a".to_string()), Some("voice-b".to_string())]
+    );
+
+    // Converse has a memory now: the second request carries the first turn.
+    let messages = requests[1]["messages"].as_array().unwrap();
+    let roles: Vec<&str> = messages
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, ["system", "user", "assistant", "user"]);
+    assert_eq!(messages[1]["content"], "utterance 1");
+    assert_eq!(messages[2]["content"], "First reply.");
+}
+
+#[tokio::test]
+async fn converse_ignores_the_microphone_while_a_turn_runs() {
+    let slow = Script {
+        tokens: vec!["First reply."],
+        start_delay: Duration::from_millis(300),
+        ..Script::default()
+    };
+    let rig = Rig::new(vec![slow]).await;
+    let mut client = rig.converse(json!({}));
+    client.expect("ready").await;
+
+    client.speak();
+    client.until("thinking").await;
+    let frames_before = rig.vad.frames.load(Ordering::SeqCst);
+    client.speak();
+    let events = client.until("done").await;
+    assert!(of_type(&events, "speech_start").is_empty());
+    assert_eq!(rig.vad.frames.load(Ordering::SeqCst), frames_before);
+    assert_eq!(rig.stt.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn converse_reports_a_stalled_llm_and_takes_the_next_turn() {
+    let stalled = Script {
+        silent: true,
+        ..Script::default()
+    };
+    let mut rig = Rig::new(vec![stalled, reply(&["Second reply."])]).await;
+    rig.stream_options = StreamOptions {
+        first_token_timeout: Duration::from_millis(300),
+        idle_timeout: Duration::from_millis(300),
+    };
+    let mut client = rig.converse(json!({}));
+    client.expect("ready").await;
+
+    client.speak();
+    let error = client.expect("error").await;
+    assert!(
+        error["message"].as_str().unwrap().contains("LLM/TTS error"),
+        "{error}"
+    );
+
+    settle().await;
+    client.speak();
+    let events = client.until("done").await;
+    assert_eq!(events.last().unwrap()["sentences"], 1);
+    // The failed turn left nothing in memory.
+    let requests = rig.llm_requests.lock().unwrap();
+    assert_eq!(requests[1]["messages"].as_array().unwrap().len(), 2);
+}
+
+// ─── Cancellable streaming ───────────────────────────────────
 
 #[allow(dead_code)]
 struct NoopTts;
@@ -326,4 +2068,699 @@ async fn precancelled_token_returns_immediately() {
         Ok(reason) => assert_eq!(reason, vox::streaming_chat::StopReason::Cancelled),
         Err(e) => panic!("expected Cancelled, got error: {e:?}"),
     }
+}
+
+// ─── Speaker-aware Live Talk ─────────────────────────────────
+
+#[tokio::test]
+async fn two_voices_get_two_speaker_ids_and_tagged_messages() {
+    let mut rig = Rig::new(vec![
+        reply(&["Hello Mert."]),
+        reply(&["Hello Ada."]),
+        reply(&["Hello again."]),
+        reply(&["Who is this?"]),
+    ])
+    .await;
+    let speakers = FakeSpeakers::new();
+    rig.speakers = Some(Arc::clone(&speakers));
+    let mut client = rig.live(diarization_config());
+    assert_eq!(client.expect("ready").await["diarization"], true);
+
+    let events = client.turn_at(MERT_LEVEL).await;
+    let first = of_type(&events, "transcript")[0].clone();
+    assert_eq!(first["speaker_id"], "speaker_1");
+    assert_eq!(first["speaker_name"], "Mert");
+    assert_eq!(first["speaker_color"], "#speaker_1");
+    let memory = of_type(&events, "memory");
+    let turn = &memory.last().unwrap()["turns"][0];
+    // The client is shown what was said and who said it, not the tag.
+    assert_eq!(turn["user"], "utterance 1");
+    assert_eq!(turn["speaker_id"], "speaker_1");
+    assert_eq!(turn["speaker_name"], "Mert");
+
+    let events = client.turn_at(ADA_LEVEL).await;
+    let second = of_type(&events, "transcript")[0].clone();
+    assert_eq!(second["speaker_id"], "speaker_2");
+    assert_eq!(second["speaker_name"], "Ada");
+    assert_ne!(first["speaker_id"], second["speaker_id"]);
+
+    client.turn_at(MERT_LEVEL).await;
+    // A voice nobody enrolled: no speaker fields, no tag.
+    let events = client.turn_at(STRANGER_LEVEL).await;
+    let stranger = of_type(&events, "transcript")[0].clone();
+    assert!(stranger.get("speaker_id").is_none());
+    assert!(stranger.get("speaker_name").is_none());
+
+    let requests = rig.llm_requests.lock().unwrap();
+    let system = contents(&requests[0])[0].clone();
+    assert!(system.contains("square brackets"), "{system}");
+    assert_eq!(contents(&requests[0])[1], "[Mert] utterance 1");
+    assert_eq!(
+        contents(&requests[3])[1..],
+        [
+            "[Mert] utterance 1",
+            "Hello Mert.",
+            "[Ada] utterance 2",
+            "Hello Ada.",
+            "[Mert] utterance 3",
+            "Hello again.",
+            "utterance 4",
+        ]
+    );
+    // The history is sent again byte for byte: every request starts with
+    // the whole message list of the one before it.
+    for pair in requests.windows(2) {
+        let earlier = pair[0]["messages"].as_array().unwrap();
+        let later = pair[1]["messages"].as_array().unwrap();
+        assert_eq!(
+            serde_json::to_string(earlier).unwrap(),
+            serde_json::to_string(&later[..earlier.len()]).unwrap()
+        );
+    }
+    // Talking never enrolls anyone.
+    assert_eq!(speakers.speaker_count(), 2);
+    assert!(speakers.enroll_calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn speakers_are_not_identified_unless_the_client_asks() {
+    let mut rig = Rig::new(vec![reply(&["Hello."])]).await;
+    let speakers = FakeSpeakers::new();
+    rig.speakers = Some(Arc::clone(&speakers));
+    let mut client = rig.live(vad_config());
+    assert_eq!(client.expect("ready").await["diarization"], false);
+
+    let events = client.turn_at(MERT_LEVEL).await;
+    assert!(
+        of_type(&events, "transcript")[0]
+            .get("speaker_id")
+            .is_none()
+    );
+    assert_eq!(speakers.identify_calls.load(Ordering::SeqCst), 0);
+    let requests = rig.llm_requests.lock().unwrap();
+    let sent = contents(&requests[0]);
+    assert_eq!(
+        sent[0],
+        vox::build_system_prompt(vox::VoicePromptMode::Voice)
+    );
+    assert_eq!(sent[1], "utterance 1");
+}
+
+#[tokio::test]
+async fn asking_for_diarization_without_a_speaker_model_changes_nothing() {
+    let rig = Rig::new(vec![reply(&["Hello."])]).await;
+    let mut client = rig.live(diarization_config());
+    assert_eq!(client.expect("ready").await["diarization"], false);
+    let events = client.turn_at(MERT_LEVEL).await;
+    assert!(
+        of_type(&events, "transcript")[0]
+            .get("speaker_id")
+            .is_none()
+    );
+    let requests = rig.llm_requests.lock().unwrap();
+    assert_eq!(
+        contents(&requests[0])[0],
+        vox::build_system_prompt(vox::VoicePromptMode::Voice)
+    );
+}
+
+#[tokio::test]
+async fn a_slow_speaker_lookup_leaves_the_turn_unlabelled() {
+    let mut rig = Rig::new(vec![reply(&["Hello."])]).await;
+    let speakers = FakeSpeakers::new();
+    *speakers.delay.lock().unwrap() = Duration::from_secs(30);
+    rig.speakers = Some(Arc::clone(&speakers));
+    rig.identify_grace = Duration::from_millis(40);
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    let started = std::time::Instant::now();
+    client.speak();
+    let events = client.until("turn_done").await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the turn waited for the speaker lookup"
+    );
+    assert_eq!(speakers.identify_calls.load(Ordering::SeqCst), 1);
+    let transcript = of_type(&events, "transcript")[0].clone();
+    assert_eq!(transcript["text"], "utterance 1");
+    assert!(transcript.get("speaker_id").is_none());
+    assert_eq!(of_type(&events, "sentence").len(), 1);
+    let requests = rig.llm_requests.lock().unwrap();
+    assert_eq!(contents(&requests[0])[1], "utterance 1");
+}
+
+#[tokio::test]
+async fn a_known_person_is_remembered_after_a_restart_and_nobody_else_is() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "vox-live-talk-memory-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("speakers.db").to_string_lossy().to_string();
+
+    // First run: Mert, who switched memory on, and Ada, who did not.
+    {
+        let db = speaker_db(&path).await;
+        let memory = MemoryStore::new(&db);
+        memory
+            .set_enabled("speaker_1", true)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut rig = Rig::new(vec![reply(&["Izmir is lovely."]), reply(&["Hello Ada."])]).await;
+        rig.speakers = Some(FakeSpeakers::new());
+        rig.memory = Some(memory.clone());
+        let mut client = rig.live(diarization_config());
+        client.expect("ready").await;
+        client.turn_at(MERT_LEVEL).await;
+        client.turn_at(ADA_LEVEL).await;
+        {
+            let requests = rig.llm_requests.lock().unwrap();
+            // Nothing was known yet: no block.
+            assert_eq!(contents(&requests[0])[1], "[Mert] utterance 1");
+        }
+        stored_rows(&memory, "speaker_1", 2).await;
+        stored_rows(&memory, "speaker_2", 0).await;
+        drop(client);
+        settle().await;
+        db.close().await;
+    }
+
+    // The server is started again: new database handle, new sessions.
+    let db = speaker_db(&path).await;
+    let memory = MemoryStore::new(&db);
+    let mut rig = Rig::new(vec![
+        reply(&["Hello Ada."]),
+        reply(&["Welcome back."]),
+        reply(&["Sure."]),
+    ])
+    .await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+    client.turn_at(ADA_LEVEL).await;
+    let events = client.turn_at(MERT_LEVEL).await;
+    client.turn_at(MERT_LEVEL).await;
+
+    {
+        let requests = rig.llm_requests.lock().unwrap();
+        // Ada: nothing of Mert's.
+        let ada = contents(&requests[0]);
+        assert_eq!(ada[1], "[Ada] utterance 1");
+        assert!(!ada.join("\n").contains("Izmir"));
+
+        // Mert's first message carries what was said last time.
+        let mert = contents(&requests[1]);
+        let message = mert.last().unwrap();
+        assert!(message.starts_with("[Memory: notes from earlier conversations with Mert."));
+        assert!(message.contains("- Mert: utterance 1"));
+        assert!(message.contains("- You: Izmir is lovely."));
+        assert!(message.ends_with("End of memory.]\n\n[Mert] utterance 2"));
+        // The client sees the plain text; the block counts as tokens.
+        let memory_event = of_type(&events, "memory");
+        let turn = &memory_event.last().unwrap()["turns"][1];
+        assert_eq!(turn["user"], "utterance 2");
+
+        // Once per session: his next message has no block, and the one that
+        // carried it is still in the history exactly as it was sent.
+        let again = contents(&requests[2]);
+        assert_eq!(again.last().unwrap(), "[Mert] utterance 3");
+        assert_eq!(&again[3], message);
+    }
+
+    drop(client);
+    settle().await;
+    db.close().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn nothing_is_stored_without_opt_in_or_for_an_unknown_voice() {
+    let db = speaker_db(":memory:").await;
+    let memory = MemoryStore::new(&db);
+    // Ada switched memory on; Mert did not.
+    memory
+        .set_enabled("speaker_2", true)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut rig = Rig::new(vec![reply(&["One."]), reply(&["Two."]), reply(&["Three."])]).await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    client.turn_at(MERT_LEVEL).await;
+    client.turn_at(STRANGER_LEVEL).await;
+    client.turn_at(ADA_LEVEL).await;
+
+    // Ada's turn is the last one, so once it is stored the two before it
+    // have been handled too.
+    stored_rows(&memory, "speaker_2", 2).await;
+    stored_rows(&memory, "speaker_1", 0).await;
+    let rows = memory.list("speaker_2", 10).await.unwrap();
+    assert_eq!(rows[1].role, MemoryRole::User);
+    assert_eq!(rows[1].content, "utterance 3");
+    assert_eq!(rows[0].role, MemoryRole::Assistant);
+    assert_eq!(rows[0].content, "Three.");
+    // Nothing belongs to anyone else: the stranger's words are nowhere.
+    let export = memory.export("speaker_1").await.unwrap().unwrap();
+    assert!(export.memories.is_empty());
+}
+
+#[tokio::test]
+async fn long_term_memory_keeps_only_what_was_heard() {
+    let db = speaker_db(":memory:").await;
+    let memory = MemoryStore::new(&db);
+    memory
+        .set_enabled("speaker_1", true)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut rig = Rig::new(vec![reply(&THREE_SENTENCES)]).await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    client.speak();
+    client.until("turn_done").await;
+    stored_rows(&memory, "speaker_1", 2).await;
+    // The user interrupts during the first sentence of the playback.
+    client.send(json!({"type": "cancel", "turn_id": 1, "heard_sentences": 1}));
+    client.until("cancelled").await;
+
+    for _ in 0..100 {
+        let rows = memory.list("speaker_1", 10).await.unwrap();
+        if rows[0].interrupted {
+            assert_eq!(rows[0].content, "Sentence one is here.");
+            assert_eq!(rows[1].content, "utterance 1");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the stored reply was never cut down");
+}
+
+#[tokio::test]
+async fn forget_memory_stops_recall_and_drops_a_running_turn() {
+    let db = speaker_db(":memory:").await;
+    let memory = MemoryStore::new(&db);
+    memory
+        .set_enabled("speaker_1", true)
+        .await
+        .unwrap()
+        .unwrap();
+    memory
+        .record_exchange("speaker_1", "I live in Izmir", Some("Noted."), false)
+        .await
+        .unwrap()
+        .unwrap();
+    let slow = Script {
+        tokens: vec!["A late reply."],
+        start_delay: Duration::from_millis(300),
+        ..Script::default()
+    };
+    let mut rig = Rig::new(vec![slow, reply(&["Fresh start."])]).await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    // "Forget" arrives while the model is still thinking about turn 1.
+    client.speak();
+    client.until("thinking").await;
+    for _ in 0..100 {
+        if !rig.llm_requests.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    client.send(json!({"type": "forget_memory"}));
+    let events = client.until("turn_done").await;
+    for memory_event in of_type(&events, "memory") {
+        assert_eq!(memory_event["turns"].as_array().unwrap().len(), 0);
+    }
+    client.send(json!({"type": "playback_done", "turn_id": 1}));
+    settle().await;
+
+    client.turn_at(MERT_LEVEL).await;
+    {
+        let requests = rig.llm_requests.lock().unwrap();
+        // Turn 1 was sent with the recall block...
+        assert!(contents(&requests[0])[1].contains("I live in Izmir"));
+        // ...and after "forget" neither that turn nor the block comes back.
+        let after = contents(&requests[1]);
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[1], "[Mert] utterance 2");
+    }
+    // The forgotten turn did not go to long-term memory either; the new
+    // one did (the stored memory itself is deleted through the REST API).
+    stored_rows(&memory, "speaker_1", 4).await;
+    let rows = memory.list("speaker_1", 10).await.unwrap();
+    assert!(rows.iter().all(|r| r.content != "utterance 1"));
+}
+
+#[tokio::test]
+async fn a_voice_is_enrolled_only_on_request() {
+    let mut rig = Rig::new(vec![reply(&["Hello."])]).await;
+    let speakers = FakeSpeakers::new();
+    rig.speakers = Some(Arc::clone(&speakers));
+    let mut client = rig.live(diarization_config());
+    client.expect("ready").await;
+
+    // Nothing was said yet: there is no voice to store.
+    client.send(json!({"type": "enroll_speaker", "name": "Deniz"}));
+    let error = client.expect("error").await;
+    assert_eq!(error["fatal"], false);
+    assert!(speakers.enroll_calls.lock().unwrap().is_empty());
+
+    client.turn_at(STRANGER_LEVEL).await;
+    assert!(speakers.enroll_calls.lock().unwrap().is_empty());
+
+    client.send(json!({"type": "enroll_speaker", "name": "Deniz"}));
+    let enrolled = client.expect("speaker_enrolled").await;
+    assert_eq!(enrolled["speaker_id"], "speaker_3");
+    assert_eq!(enrolled["speaker_name"], "Deniz");
+    assert_eq!(enrolled["created"], true);
+    assert_eq!(
+        *speakers.enroll_calls.lock().unwrap(),
+        [Some("Deniz".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn enroll_speaker_without_a_speaker_model_is_refused() {
+    let rig = Rig::new(vec![]).await;
+    let mut client = rig.live(vad_config());
+    client.expect("ready").await;
+    client.send(json!({"type": "enroll_speaker"}));
+    let error = client.expect("error").await;
+    assert_eq!(error["fatal"], false);
+    assert!(error["message"].as_str().unwrap().contains("not available"));
+}
+
+// ─── Distill on evict ────────────────────────────────────────
+
+/// A session whose context window holds two of the short test turns: every
+/// third turn pushes the two before it out. Returns the config that joins
+/// it and its conversation.
+fn tiny_session(rig: &Rig, id: &str) -> (Value, SharedConversation) {
+    let handle = rig.sessions.attach(Some(id));
+    assert!(!handle.resumed);
+    *handle.conversation.lock().unwrap() = Conversation::with_budget(40);
+    let config = json!({
+        "type": "config",
+        "model": "test-model",
+        "diarization": true,
+        "session_id": id,
+    });
+    (config, handle.conversation)
+}
+
+/// A rig with speakers and a memory in which Mert has memory switched on.
+async fn memory_rig(scripts: Vec<Script>) -> (Rig, MemoryStore, SpeakerDatabase) {
+    let db = speaker_db(":memory:").await;
+    let memory = MemoryStore::new(&db);
+    memory
+        .set_enabled("speaker_1", true)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut rig = Rig::new(scripts).await;
+    rig.speakers = Some(FakeSpeakers::new());
+    rig.memory = Some(memory.clone());
+    (rig, memory, db)
+}
+
+async fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+    for _ in 0..300 {
+        if check() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("never happened: {what}");
+}
+
+fn is_distill_request(request: &Value) -> bool {
+    request["messages"][0]["content"] == DISTILL_SYSTEM_PROMPT
+}
+
+#[tokio::test]
+async fn trimmed_turns_are_distilled_into_facts_for_people_with_memory_on() {
+    let (rig, memory, _db) = memory_rig(vec![
+        reply(&["One."]),
+        reply(&["Two."]),
+        reply(&["Three."]),
+        reply(&[
+            "<think>What did Mert say?</think>\n- Mert lives",
+            " in Izmir.\n- Mert has a dog named Zeytin.\n",
+        ]),
+    ])
+    .await;
+    let (config, conversation) = tiny_session(&rig, "distill-facts-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+
+    // Mert has memory on, Ada has not. The third turn pushes both of the
+    // earlier ones out of the context.
+    client.turn_at(MERT_LEVEL).await;
+    client.turn_at(ADA_LEVEL).await;
+    let events = client.turn_at(MERT_LEVEL).await;
+    let memory_event = of_type(&events, "memory");
+    assert_eq!(memory_event.last().unwrap()["dropped_turns"], 2);
+
+    let distilled = client.expect("memory_distilled").await;
+    assert_eq!(distilled["speaker_id"], "speaker_1");
+    assert_eq!(distilled["speaker_name"], "Mert");
+    assert_eq!(
+        distilled["facts"],
+        json!(["Mert lives in Izmir.", "Mert has a dog named Zeytin."])
+    );
+    assert_eq!(
+        memory.facts("speaker_1", 10).await.unwrap(),
+        ["Mert lives in Izmir.", "Mert has a dog named Zeytin."]
+    );
+
+    settle().await;
+    {
+        let requests = rig.llm_requests.lock().unwrap();
+        // One request for Mert's turn; none for Ada, whose words stay put.
+        assert_eq!(requests.len(), 4);
+        assert!(!requests[..3].iter().any(is_distill_request));
+        assert!(is_distill_request(&requests[3]));
+        assert_eq!(requests[3]["model"], "test-model");
+        assert_eq!(requests[3]["options"], requests[0]["options"]);
+        let excerpt = &contents(&requests[3])[1];
+        assert!(excerpt.starts_with("Person: Mert\n"), "{excerpt}");
+        assert!(excerpt.contains("Mert: utterance 1\nAssistant: One.\n"));
+        // Not Ada's turn, and not the one that is still in the context.
+        assert!(!excerpt.contains("utterance 2"));
+        assert!(!excerpt.contains("utterance 3"));
+    }
+    let ada = memory.export("speaker_2").await.unwrap().unwrap();
+    assert!(ada.memories.is_empty());
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 0);
+
+    // The facts are what the next session is reminded of first.
+    let block = memory
+        .recall_block("speaker_1", "Mert", None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(block.contains("Known about them:\n- Mert lives in Izmir.\n"));
+}
+
+#[tokio::test]
+async fn speech_interrupts_a_distillation_and_its_turns_wait_for_the_next_trim() {
+    let never = Script {
+        silent: true,
+        ..Script::default()
+    };
+    let (rig, memory, _db) = memory_rig(vec![
+        reply(&["One."]),
+        reply(&["Two."]),
+        reply(&["Three."]),
+        never,
+        reply(&["Four."]),
+        reply(&["Five."]),
+        reply(&["- Mert lives in Izmir.\n"]),
+    ])
+    .await;
+    let (config, conversation) = tiny_session(&rig, "distill-cancel-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    // The distillation of turns 1 and 2 is with the model, which is slow.
+    eventually("the distillation request", || {
+        rig.llm_requests.lock().unwrap().len() == 4
+    })
+    .await;
+    assert!(is_distill_request(&rig.llm_requests.lock().unwrap()[3]));
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 0);
+
+    // The user starts to speak: the request is dropped at once, before the
+    // utterance is even complete, and the two turns are back in the queue.
+    client.send_audio(&vec![MERT_LEVEL; FRAME * 3]);
+    client.expect("speech_start").await;
+    eventually("the turns going back in the queue", || {
+        conversation.lock().unwrap().evicted_len() == 2
+    })
+    .await;
+
+    // The turn runs as usual. It trims nothing, so nothing is distilled.
+    client.send_audio(&vec![0.0; FRAME]);
+    let events = client.until("turn_done").await;
+    assert_eq!(of_type(&events, "sentence")[0]["text"], "Four.");
+    assert!(of_type(&events, "memory_distilled").is_empty());
+    client.send(json!({"type": "playback_done", "turn_id": 4}));
+    settle().await;
+    assert_eq!(rig.llm_requests.lock().unwrap().len(), 5);
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 2);
+    assert!(memory.facts("speaker_1", 10).await.unwrap().is_empty());
+
+    // The next trim takes the turns that were left over along.
+    client.turn_at(MERT_LEVEL).await;
+    let distilled = client.expect("memory_distilled").await;
+    assert_eq!(distilled["facts"], json!(["Mert lives in Izmir."]));
+    let requests = rig.llm_requests.lock().unwrap();
+    assert_eq!(requests.len(), 7);
+    assert!(!is_distill_request(&requests[4]));
+    assert!(!is_distill_request(&requests[5]));
+    let excerpt = &contents(&requests[6])[1];
+    for n in 1..=4 {
+        assert!(
+            excerpt.contains(&format!("Mert: utterance {n}\n")),
+            "{excerpt}"
+        );
+    }
+    assert!(!excerpt.contains("utterance 5"));
+}
+
+#[tokio::test]
+async fn forget_memory_drops_a_running_distillation_and_its_turns() {
+    let never = Script {
+        silent: true,
+        ..Script::default()
+    };
+    let (rig, memory, _db) = memory_rig(vec![
+        reply(&["One."]),
+        reply(&["Two."]),
+        reply(&["Three."]),
+        never,
+    ])
+    .await;
+    let (config, conversation) = tiny_session(&rig, "distill-forget-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    eventually("the distillation request", || {
+        rig.llm_requests.lock().unwrap().len() == 4
+    })
+    .await;
+
+    client.send(json!({"type": "forget_memory"}));
+    let cleared = client.expect("memory").await;
+    assert_eq!(cleared["turns"].as_array().unwrap().len(), 0);
+    settle().await;
+    // Not put back, and nothing came of it.
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 0);
+    assert!(memory.facts("speaker_1", 10).await.unwrap().is_empty());
+    assert!(client.drain(Duration::from_millis(100)).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_distillation_is_stopped_when_the_client_leaves() {
+    let never = Script {
+        silent: true,
+        ..Script::default()
+    };
+    let (rig, _memory, _db) = memory_rig(vec![
+        reply(&["One."]),
+        reply(&["Two."]),
+        reply(&["Three."]),
+        never,
+    ])
+    .await;
+    let (config, conversation) = tiny_session(&rig, "distill-leave-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    eventually("the distillation request", || {
+        rig.llm_requests.lock().unwrap().len() == 4
+    })
+    .await;
+
+    // The turns stay with the session for a reconnect.
+    drop(client);
+    eventually("the turns going back in the queue", || {
+        conversation.lock().unwrap().evicted_len() == 2
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn nothing_is_sent_to_the_model_when_distilling_or_memory_is_off() {
+    let three = || vec![reply(&["One."]), reply(&["Two."]), reply(&["Three."])];
+
+    // Distilling is switched off on the server.
+    let (mut rig, memory, _db) = memory_rig(three()).await;
+    rig.distill = false;
+    let (config, _conversation) = tiny_session(&rig, "distill-off-1");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    settle().await;
+    assert_eq!(rig.llm_requests.lock().unwrap().len(), 3);
+    assert!(memory.facts("speaker_1", 10).await.unwrap().is_empty());
+
+    // Distilling is on, but the only speaker has memory off.
+    let (rig, memory, _db) = memory_rig(three()).await;
+    memory.set_enabled("speaker_1", false).await.unwrap();
+    let (config, conversation) = tiny_session(&rig, "distill-off-2");
+    let mut client = rig.live(config);
+    client.expect("ready").await;
+    for _ in 0..3 {
+        client.turn_at(MERT_LEVEL).await;
+    }
+    settle().await;
+    assert_eq!(rig.llm_requests.lock().unwrap().len(), 3);
+    // The turns were looked at and let go.
+    assert_eq!(conversation.lock().unwrap().evicted_len(), 0);
+    assert_eq!(memory.status("speaker_1").await.unwrap().unwrap().count, 0);
+    assert!(client.drain(Duration::from_millis(50)).await.is_empty());
+}
+
+#[test]
+fn memory_distilled_event_is_flat() {
+    let event = LiveTalkWsEvent::MemoryDistilled {
+        speaker_id: "speaker_1".into(),
+        speaker_name: "Mert".into(),
+        facts: vec!["Mert lives in Izmir.".into()],
+    };
+    assert_eq!(
+        serde_json::to_value(&event).unwrap(),
+        json!({
+            "type": "memory_distilled",
+            "speaker_id": "speaker_1",
+            "speaker_name": "Mert",
+            "facts": ["Mert lives in Izmir."],
+        })
+    );
 }

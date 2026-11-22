@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "vox-voice"
-version = "0.2.0"
-description = "Local voice AI framework. Whisper + TTS + VAD. No cloud."
+version = "0.7.0"
+description = "Offline voice AI runtime. Whisper STT, Kokoro TTS, Silero VAD. No cloud APIs."
 requires-python = ">=3.9"
 license = "MIT OR Apache-2.0"
 keywords = ["voice", "speech", "whisper", "tts", "ai"]

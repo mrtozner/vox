@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify expectations
     println!("\n=== Verification ===");
-    let first_chunk_ok = final_first_chunk_time.map_or(false, |t| t.as_millis() < 1000);
+    let first_chunk_ok = final_first_chunk_time.is_some_and(|t| t.as_millis() < 1000);
     let streaming_ok = final_chunk_count > 1;
     let rtf_ok = rtf < 1.0;
 

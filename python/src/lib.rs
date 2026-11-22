@@ -1,8 +1,7 @@
 //! PyO3 bindings for the Vox voice AI framework.
 //!
 //! This crate exposes Vox's Rust pipeline to Python as `vox_voice._vox_voice`.
-//! Install with `pip install vox-voice` (or `maturin develop` during
-//! development).
+//! Build and install with `maturin develop`; there is no package on PyPI.
 
 use pyo3::prelude::*;
 

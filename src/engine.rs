@@ -3,12 +3,34 @@
 //! The [`Vox`] struct is the primary entry point. Use [`VoxBuilder`]
 //! to configure backends and options, then call `build()` to create
 //! a running pipeline.
+//!
+//! # Audio sources
+//!
+//! [`VoxBuilder::build`] captures from the default microphone and needs the
+//! `mic` feature (on by default). [`VoxBuilder::build_with_source`] and
+//! [`VoxBuilder::build_with_channel`] run the same pipeline on audio you
+//! supply -- a file, a socket, a telephony stream -- and work without `mic`,
+//! so an embedding application does not have to link an audio driver.
+//!
+//! With `mic` enabled [`Vox`] holds a `cpal` stream handle, which is not
+//! `Send` on every platform: drive the pipeline on the task that built it
+//! (or a `LocalSet`). Without `mic` it is `Send` and can be `tokio::spawn`ed.
+//!
+//! # Stopping
+//!
+//! [`Vox::listen`] runs until the source ends or, with the `signal` feature
+//! (on by default), until Ctrl-C. [`Vox::listen_until`] takes the stop
+//! condition from the caller and never installs a signal handler.
+
+use std::future::Future;
 
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::audio::{AudioCapture, AudioResampler};
+#[cfg(feature = "mic")]
+use crate::audio::AudioCapture;
+use crate::audio::{AudioResampler, FrameAssembler};
 use crate::error::VoxError;
 use crate::traits::{
     StreamingSttBackend, SttBackend, SttSession, TtsBackend, VadBackend, VadEvent,
@@ -18,9 +40,12 @@ use crate::types::{AudioChunk, PipelineStats, SttResult, TtsOutput, TtsRequest};
 /// Configuration for the Vox pipeline.
 #[derive(Debug, Clone)]
 pub struct VoxConfig {
-    /// Sample rate for audio capture (default: 16000).
+    /// Preferred sample rate for audio capture (default: 16000).
+    ///
+    /// If the input device does not support it, the device's own rate is
+    /// used and the audio is resampled for the VAD.
     pub sample_rate: u32,
-    /// Number of audio channels (default: 1 -- mono).
+    /// Preferred number of audio channels (default: 1 -- mono).
     pub channels: u16,
     /// Whether to enable TTS output (default: false).
     pub enable_tts: bool,
@@ -171,23 +196,97 @@ impl VoxBuilder {
         self
     }
 
-    /// Build the Vox pipeline.
+    /// Build the Vox pipeline on the default microphone.
     ///
     /// Initializes audio capture and resampler. Requires at minimum a VAD
     /// and STT backend to be configured.
+    ///
+    /// Without the `mic` feature there is no capture code in the crate and
+    /// this returns [`VoxError::Audio`]; use
+    /// [`build_with_source`](Self::build_with_source) or
+    /// [`build_with_channel`](Self::build_with_channel) instead.
     pub fn build(self) -> Result<Vox, VoxError> {
-        let vad = self.vad.ok_or(VoxError::NoVad)?;
-        let stt = self.stt.ok_or(VoxError::NoStt)?;
+        if self.vad.is_none() {
+            return Err(VoxError::NoVad);
+        }
+        if self.stt.is_none() {
+            return Err(VoxError::NoStt);
+        }
+
+        #[cfg(feature = "mic")]
+        {
+            let (capture, audio_rx) =
+                AudioCapture::new(self.config.sample_rate, self.config.channels)?;
+            // The device may have fallen back to its own format (commonly 44.1
+            // or 48 kHz); the resampler must be built from what is actually
+            // captured.
+            let source_rate = capture.sample_rate();
+
+            let mut vox = self.assemble(audio_rx, source_rate)?;
+            vox.capture = Some(capture);
+            Ok(vox)
+        }
+        #[cfg(not(feature = "mic"))]
+        Err(VoxError::Audio(
+            "microphone capture is not compiled in (the `mic` feature is off); \
+             build the pipeline with `build_with_source` or `build_with_channel`"
+                .into(),
+        ))
+    }
+
+    /// Build the Vox pipeline and return the sender that feeds it.
+    ///
+    /// Shorthand for creating a bounded channel of `capacity` chunks and
+    /// calling [`build_with_source`](Self::build_with_source). Send
+    /// [`AudioChunk`]s of any length and channel count; drop the sender to
+    /// end the stream. A full channel applies backpressure to the sender, so
+    /// no audio is dropped.
+    pub fn build_with_channel(
+        self,
+        source_rate: u32,
+        capacity: usize,
+    ) -> Result<(Vox, mpsc::Sender<AudioChunk>), VoxError> {
+        let (tx, rx) = mpsc::channel(capacity.max(1));
+        Ok((self.build_with_source(rx, source_rate)?, tx))
+    }
+
+    /// Build the Vox pipeline on top of an external audio source instead of
+    /// the microphone (a file reader, a network stream, a test harness).
+    ///
+    /// `source_rate` is the expected sample rate of the chunks; chunks may be
+    /// of any length and channel count, and a chunk carrying a different
+    /// `sample_rate` reconfigures the resampler. [`Vox::listen`] returns when
+    /// the sending side of `audio_rx` is dropped.
+    pub fn build_with_source(
+        self,
+        audio_rx: mpsc::Receiver<AudioChunk>,
+        source_rate: u32,
+    ) -> Result<Vox, VoxError> {
+        if self.vad.is_none() {
+            return Err(VoxError::NoVad);
+        }
+        if self.stt.is_none() {
+            return Err(VoxError::NoStt);
+        }
+
+        self.assemble(audio_rx, source_rate)
+    }
+
+    fn assemble(
+        mut self,
+        audio_rx: mpsc::Receiver<AudioChunk>,
+        source_rate: u32,
+    ) -> Result<Vox, VoxError> {
+        let vad = self.vad.take().ok_or(VoxError::NoVad)?;
+        let stt = self.stt.take().ok_or(VoxError::NoStt)?;
         let callback = self.callback.unwrap_or_else(|| {
             Box::new(|result: SttResult, _ctx: VoxContext| {
                 tracing::info!(text = %result.text, "utterance received (no callback registered)");
             })
         });
 
-        let (capture, audio_rx) = AudioCapture::new(self.config.sample_rate, self.config.channels)?;
-
-        let target_rate = vad.sample_rate();
-        let resampler = AudioResampler::new(self.config.sample_rate, target_rate)?;
+        let resampler = AudioResampler::new(source_rate, vad.sample_rate())?;
+        let framer = FrameAssembler::new(vad.frame_size());
 
         let tts: Option<Arc<dyn TtsBackend>> = self.tts.map(Arc::from);
 
@@ -214,7 +313,9 @@ impl VoxBuilder {
             active_session: None,
             audio_rx,
             resampler,
-            _capture: capture,
+            framer,
+            #[cfg(feature = "mic")]
+            capture: None,
             callback,
             stats: Arc::new(Mutex::new(PipelineStats::default())),
             #[cfg(any(
@@ -249,7 +350,12 @@ pub struct Vox {
     active_session: Option<Box<dyn SttSession>>,
     audio_rx: mpsc::Receiver<AudioChunk>,
     resampler: AudioResampler,
-    _capture: AudioCapture,
+    /// Carries resampled samples across chunks so the VAD only ever sees
+    /// complete frames and no sample is dropped at a chunk boundary.
+    framer: FrameAssembler,
+    /// Microphone capture; `None` when built with an external audio source.
+    #[cfg(feature = "mic")]
+    capture: Option<AudioCapture>,
     callback: Box<dyn Fn(SttResult, VoxContext) + Send + Sync>,
     stats: Arc<Mutex<PipelineStats>>,
     #[cfg(any(
@@ -270,21 +376,57 @@ impl Vox {
 
     /// Run the voice pipeline until shutdown.
     ///
-    /// Captures audio from the microphone, runs VAD to detect speech,
-    /// transcribes speech segments via STT, and calls the registered
-    /// callback with each result.
+    /// Takes audio from the microphone or the external source, runs VAD to
+    /// detect speech, transcribes speech segments via STT, and calls the
+    /// registered callback with each result.
     ///
     /// The loop terminates when:
-    /// - The audio capture channel closes (e.g. device disconnected)
-    /// - Ctrl+C is received
-    pub async fn listen(mut self) -> Result<(), VoxError> {
-        self._capture.start()?;
+    /// - The audio channel closes (device disconnected, sender dropped)
+    /// - Ctrl+C is received (only with the `signal` feature)
+    ///
+    /// An application that handles signals itself should call
+    /// [`listen_until`](Self::listen_until), which installs no handler.
+    pub async fn listen(self) -> Result<(), VoxError> {
+        #[cfg(feature = "signal")]
+        let shutdown = async {
+            // A failed handler registration also ends the loop, as before.
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("ctrl+c received, shutting down");
+        };
+        #[cfg(not(feature = "signal"))]
+        let shutdown = std::future::pending::<()>();
+
+        self.listen_until(shutdown).await
+    }
+
+    /// Run the voice pipeline until the audio source ends or `shutdown`
+    /// resolves, whichever comes first.
+    ///
+    /// Unlike [`listen`](Self::listen) this never touches process signals,
+    /// which makes it the entry point for a pipeline embedded in a larger
+    /// application: pass a cancellation token, a channel receive or a timer.
+    ///
+    /// When the source ends, buffered audio is flushed through VAD and STT
+    /// before returning. When `shutdown` resolves first the loop stops at
+    /// once and audio still in flight is discarded.
+    pub async fn listen_until(
+        mut self,
+        shutdown: impl Future<Output = ()>,
+    ) -> Result<(), VoxError> {
+        #[cfg(feature = "mic")]
+        if let Some(capture) = &self.capture {
+            capture.start()?;
+        }
+        tokio::pin!(shutdown);
 
         let start_time = std::time::Instant::now();
 
         tracing::info!(
-            sample_rate = self.config.sample_rate,
-            channels = self.config.channels,
+            requested_sample_rate = self.config.sample_rate,
+            requested_channels = self.config.channels,
+            source_sample_rate = self.resampler.source_rate(),
+            vad_sample_rate = self.resampler.target_rate(),
+            vad_frame_size = self.framer.frame_size(),
             "vox pipeline started, listening..."
         );
 
@@ -295,20 +437,24 @@ impl Vox {
                         Some(c) => c,
                         None => {
                             tracing::info!("audio channel closed, shutting down");
+                            self.finish_stream(start_time).await?;
                             break;
                         }
                     };
 
                     self.process_chunk(chunk, start_time).await?;
                 }
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("ctrl+c received, shutting down");
+                () = &mut shutdown => {
+                    tracing::info!("shutdown requested, stopping pipeline");
                     break;
                 }
             }
         }
 
-        self._capture.stop()?;
+        #[cfg(feature = "mic")]
+        if let Some(capture) = &self.capture {
+            capture.stop()?;
+        }
         tracing::info!(
             uptime_secs = start_time.elapsed().as_secs(),
             "vox pipeline stopped"
@@ -318,24 +464,63 @@ impl Vox {
     }
 
     /// Process a single audio chunk through the VAD/STT pipeline.
+    ///
+    /// The chunk is resampled to the VAD rate and appended to the frame
+    /// assembler; every complete VAD frame is then processed. Samples that do
+    /// not fill a frame wait for the next chunk.
     async fn process_chunk(
         &mut self,
         chunk: AudioChunk,
         start_time: std::time::Instant,
     ) -> Result<(), VoxError> {
         let t_chunk = std::time::Instant::now();
+
+        if chunk.sample_rate != self.resampler.source_rate() {
+            tracing::warn!(
+                expected = self.resampler.source_rate(),
+                actual = chunk.sample_rate,
+                "audio source sample rate changed, rebuilding resampler"
+            );
+            self.resampler = AudioResampler::new(chunk.sample_rate, self.resampler.target_rate())?;
+        }
+
         let resampled = self.resampler.process(&chunk)?;
-        let frame_size = self.vad.frame_size();
-        let frames = resampled.samples.chunks(frame_size);
+        self.framer.push(&resampled.samples);
+        self.drain_frames(start_time).await?;
 
-        for frame_samples in frames {
-            if frame_samples.len() < frame_size {
-                continue; // skip incomplete trailing frames
-            }
+        tracing::debug!(
+            elapsed_us = t_chunk.elapsed().as_micros(),
+            "process_chunk total"
+        );
 
+        Ok(())
+    }
+
+    /// Push out what is still buffered when the audio source ends.
+    ///
+    /// The resampler tail is flushed and the last partial frame is padded
+    /// with silence, so the end of the stream reaches the VAD too.
+    async fn finish_stream(&mut self, start_time: std::time::Instant) -> Result<(), VoxError> {
+        let tail = self.resampler.flush()?;
+        self.framer.push(&tail.samples);
+
+        let pending = self.framer.pending() % self.framer.frame_size();
+        if pending > 0 {
+            let padding = vec![0.0; self.framer.frame_size() - pending];
+            self.framer.push(&padding);
+        }
+
+        self.drain_frames(start_time).await
+    }
+
+    /// Run every complete frame in the assembler through VAD and STT.
+    async fn drain_frames(&mut self, start_time: std::time::Instant) -> Result<(), VoxError> {
+        let sample_rate = self.resampler.target_rate();
+
+        while let Some(samples) = self.framer.pop() {
             let frame = AudioChunk {
-                samples: frame_samples.to_vec(),
-                sample_rate: resampled.sample_rate,
+                samples,
+                sample_rate,
                 channels: 1,
             };
 
@@ -348,7 +533,7 @@ impl Vox {
 
             if let Some(session) = &mut self.active_session {
                 let t_push = std::time::Instant::now();
-                match session.push_audio(&frame.samples, 16000) {
+                match session.push_audio(&frame.samples, sample_rate) {
                     Ok(Some(partial)) => {
                         if let Some(on_partial) = &self.on_partial {
                             on_partial(partial);
@@ -438,11 +623,6 @@ impl Vox {
                 }
             }
         }
-
-        tracing::debug!(
-            elapsed_us = t_chunk.elapsed().as_micros(),
-            "process_chunk total"
-        );
 
         Ok(())
     }

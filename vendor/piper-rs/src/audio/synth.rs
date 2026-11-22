@@ -187,12 +187,7 @@ impl PiperSpeechSynthesizer {
     ) -> PiperResult<()> {
         let mut samples: Vec<f32> = Vec::new();
         for result in self.synthesize_parallel(text, output_config)? {
-            match result {
-                Ok(ws) => {
-                    samples.append(&mut ws.into_vec());
-                }
-                Err(e) => return Err(e),
-            };
+            samples.append(&mut result?.into_vec());
         }
         if samples.is_empty() {
             return Err(PiperError::OperationError(

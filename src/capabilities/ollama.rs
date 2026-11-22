@@ -25,7 +25,13 @@ pub async fn probe(
     http: &reqwest::Client,
     ollama_host: &str,
 ) -> Result<Vec<OllamaModelSummary>, reqwest::Error> {
-    let url = format!("http://{ollama_host}/api/tags");
+    // Offline mode refuses a non-loopback host here; like every other
+    // failure of this probe that reads as "no models".
+    let Ok((url, egress)) =
+        crate::privacy::ollama_request(ollama_host, "/api/tags", "llm model list", 0)
+    else {
+        return Ok(Vec::new());
+    };
     let resp = match tokio::time::timeout(Duration::from_millis(1200), http.get(&url).send()).await
     {
         Ok(Ok(r)) => r,
@@ -36,7 +42,12 @@ pub async fn probe(
         return Ok(Vec::new());
     }
 
-    let body: serde_json::Value = match resp.json().await {
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(_) => return Ok(Vec::new()),
+    };
+    egress.add_received(bytes.len() as u64);
+    let body: serde_json::Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(_) => return Ok(Vec::new()),
     };
@@ -59,10 +70,10 @@ pub async fn probe(
                 None => continue,
             };
             let family = m["details"]["family"].as_str().map(|s| s.to_lowercase());
-            if let Some(f) = &family {
-                if embedding_families.iter().any(|e| f == e) {
-                    continue;
-                }
+            if let Some(f) = &family
+                && embedding_families.iter().any(|e| f == e)
+            {
+                continue;
             }
             let size_mb = m["size"].as_u64().map(|b| b / (1024 * 1024));
             out.push(OllamaModelSummary {

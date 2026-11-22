@@ -10,8 +10,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Qwen3-TTS Audio Playback Test ===\n");
 
     // Initialize backend with Metal
-    let mut config = Qwen3Config::default();
-    config.device = "metal".into();
+    let config = Qwen3Config {
+        device: "metal".into(),
+        ..Qwen3Config::default()
+    };
 
     println!("Initializing Qwen3 backend with Metal GPU...");
     let backend = Qwen3Backend::with_config(config).await?;

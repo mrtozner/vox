@@ -1,4 +1,4 @@
-//! # Vox — The open-source voice AI framework
+//! # Vox: offline voice AI runtime
 //!
 //! Vox assembles a local voice pipeline into a single crate:
 //!
@@ -29,8 +29,7 @@
 pub mod audio;
 pub mod engine;
 pub mod error;
-pub mod model_cache;
-pub mod streaming_pipeline;
+pub mod paths;
 pub mod stt;
 pub mod traits;
 pub mod tts;
@@ -39,11 +38,13 @@ pub mod vad;
 
 #[cfg(feature = "diarization")]
 pub mod diarization;
-
-#[cfg(feature = "intelligence")]
-pub mod intelligence;
+// Per-person long-term memory, stored next to the voiceprints.
+#[cfg(feature = "diarization")]
+pub mod memory;
 
 // Tier 1 quality optimizations
+#[cfg(any(feature = "cli", feature = "server"))]
+pub mod conversation;
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod prompts;
 #[cfg(any(feature = "cli", feature = "server"))]
@@ -55,10 +56,17 @@ pub mod capabilities;
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod system_profile;
 
+// Egress control: Ollama host resolution, offline mode, privacy ledger.
+#[cfg(any(feature = "cli", feature = "server"))]
+pub mod privacy;
+
+// HTTP + WebSocket server: REST, OpenAI-compatible endpoints, Live Talk.
+#[cfg(feature = "server")]
+pub mod server;
+
 // Public re-exports — the "prelude" surface
 pub use engine::{Vox, VoxBuilder, VoxConfig, VoxContext};
 pub use error::VoxError;
-pub use model_cache::{CacheKey, CacheStats, ModelCache};
 pub use traits::{
     StreamingSttBackend, StreamingTtsBackend, SttBackend, SttSession, TtsBackend, TtsChunk,
     TtsSession, VadBackend, VadEvent,
@@ -116,13 +124,6 @@ pub use diarization::{
     ConversationEntry, DiarizationConfig, DiarizationPipeline, DiarizationPipelineBuilder,
     EmbeddingConfig, Recognition, RecognitionConfig, Speaker, SpeakerDatabase, SpeakerEmbedding,
     SpeakerRegistry, cosine_similarity,
-};
-
-// Intelligence layer exports (opt-in feature)
-#[cfg(feature = "intelligence")]
-pub use intelligence::{
-    CacheMetrics, ConversationMetadata, PreferenceType, PrivacyDashboard, SemanticCache,
-    SemanticCacheConfig, SpeakerInfo, UserModel, UserProfile, VoiceMemory, VoiceMemoryBuilder,
 };
 
 #[cfg(any(

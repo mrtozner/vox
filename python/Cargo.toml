@@ -1,6 +1,6 @@
 [package]
 name = "vox-python"
-version = "0.2.0"
+version = "0.7.0"
 edition = "2024"
 publish = false
 
@@ -14,4 +14,4 @@ once_cell = "1"
 tokio = { version = "1", features = ["full"] }
 hound = "3.5"
 dirs = "5.0"
-vox = { path = "..", features = ["whisper", "silero", "kokoro"] }
+vox = { package = "vox-voice", path = "..", features = ["whisper", "silero", "kokoro"] }

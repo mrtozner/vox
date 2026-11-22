@@ -8,11 +8,13 @@
 //!
 //! - **Prosody breaks at boundaries**: Each sentence is synthesized independently,
 //!   so cross-sentence intonation context is lost.
-//! - **Abbreviations**: "Dr. Smith" splits at the period because it's followed by
-//!   a space. Over-splitting is acceptable — both chunks synthesize fine.
+//!
+//! Splitting and text clean-up are done by the shared segmenter in
+//! [`super::segment`], the same one the streaming LLM path uses.
 
 use std::sync::Arc;
 
+use super::segment::split_sentences;
 use crate::error::VoxError;
 use crate::traits::{StreamingTtsBackend, TtsBackend, TtsChunk, TtsSession};
 use crate::types::TtsRequest;
@@ -92,49 +94,15 @@ impl TtsSession for SentenceStreamingSession {
     }
 }
 
-/// Split text into sentences at sentence-ending punctuation followed by whitespace.
-///
-/// Splits on `.!?;` only when the next character is whitespace or end-of-string.
-/// This preserves decimals like "3.50" but will split abbreviations like "Dr. Smith"
-/// (known limitation — over-splitting is acceptable for TTS).
-fn split_sentences(text: &str) -> Vec<String> {
-    let mut sentences = Vec::new();
-    let mut current = String::new();
-    let chars: Vec<char> = text.chars().collect();
-
-    for (i, &ch) in chars.iter().enumerate() {
-        current.push(ch);
-        if matches!(ch, '.' | '!' | '?' | ';') {
-            let next_is_boundary = i + 1 >= chars.len() || chars[i + 1].is_whitespace();
-            if next_is_boundary {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    sentences.push(trimmed);
-                }
-                current.clear();
-            }
-        }
-    }
-
-    let trimmed = current.trim().to_string();
-    if !trimmed.is_empty() {
-        sentences.push(trimmed);
-    }
-
-    sentences
-}
-
 #[cfg(test)]
 mod tests {
     use super::split_sentences;
 
-    #[test]
-    fn splits_on_period() {
-        assert_eq!(split_sentences("Hello. World."), vec!["Hello.", "World."]);
-    }
+    // The splitter itself is tested in `tts::segment`; these cover what the
+    // adapter relies on.
 
     #[test]
-    fn splits_on_mixed_punctuation() {
+    fn splits_on_sentence_ends() {
         assert_eq!(
             split_sentences("Hello! How are you? Fine."),
             vec!["Hello!", "How are you?", "Fine."]
@@ -142,41 +110,28 @@ mod tests {
     }
 
     #[test]
-    fn handles_no_punctuation() {
-        assert_eq!(split_sentences("Hello world"), vec!["Hello world"]);
-    }
-
-    #[test]
-    fn handles_empty_string() {
+    fn empty_text_has_no_segments() {
         assert!(split_sentences("").is_empty());
-    }
-
-    #[test]
-    fn handles_whitespace_only() {
         assert!(split_sentences("   ").is_empty());
     }
 
     #[test]
-    fn preserves_decimals() {
-        // "3.50" — period NOT followed by whitespace, stays together
-        assert_eq!(
-            split_sentences("The price is 3.50 dollars."),
-            vec!["The price is 3.50 dollars."]
-        );
-    }
-
-    #[test]
-    fn abbreviations_followed_by_space_split() {
-        // Known limitation: "Dr. " splits because period is followed by space.
-        // Over-splitting is acceptable — both chunks synthesize fine.
+    fn abbreviations_do_not_split() {
         assert_eq!(
             split_sentences("Dr. Smith said hello."),
-            vec!["Dr.", "Smith said hello."]
+            vec!["Dr. Smith said hello."]
+        );
+        assert_eq!(
+            split_sentences("Bring fruit, e.g. apples. 1. First wash them."),
+            vec!["Bring fruit, e.g. apples.", "1. First wash them."]
         );
     }
 
     #[test]
-    fn handles_trailing_text_without_punctuation() {
-        assert_eq!(split_sentences("Hello. World"), vec!["Hello.", "World"]);
+    fn markup_is_not_synthesized() {
+        assert_eq!(
+            split_sentences("<think>plan</think>**Hi** there."),
+            vec!["Hi there."]
+        );
     }
 }

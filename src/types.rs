@@ -11,6 +11,23 @@ pub struct AudioChunk {
     pub channels: u16,
 }
 
+impl AudioChunk {
+    /// Number of sample frames (samples per channel).
+    pub fn frames(&self) -> usize {
+        self.samples.len() / usize::from(self.channels.max(1))
+    }
+
+    /// Playback duration in milliseconds, derived from the sample count.
+    ///
+    /// Returns 0 when the sample rate is 0.
+    pub fn duration_ms(&self) -> u64 {
+        if self.sample_rate == 0 {
+            return 0;
+        }
+        self.frames() as u64 * 1000 / u64::from(self.sample_rate)
+    }
+}
+
 /// A detected speech utterance segmented by VAD.
 #[derive(Debug, Clone)]
 pub struct Utterance {
@@ -60,6 +77,22 @@ pub struct TtsOutput {
     pub duration_ms: u64,
 }
 
+impl TtsOutput {
+    /// Wrap mono samples, deriving `duration_ms` from the sample count.
+    ///
+    /// Backends should build their output through this so the reported
+    /// duration is the length of the audio, not the time inference took.
+    pub fn from_mono(samples: Vec<f32>, sample_rate: u32) -> Self {
+        let audio = AudioChunk {
+            samples,
+            sample_rate,
+            channels: 1,
+        };
+        let duration_ms = audio.duration_ms();
+        Self { audio, duration_ms }
+    }
+}
+
 /// Information about a TTS voice available from a backend.
 #[derive(Debug, Clone)]
 pub struct VoiceInfo {
@@ -84,4 +117,34 @@ pub struct PipelineStats {
     pub avg_stt_latency_ms: f64,
     /// Total pipeline uptime in seconds.
     pub uptime_secs: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duration_follows_sample_count() {
+        let out = TtsOutput::from_mono(vec![0.0; 36_000], 24_000);
+        assert_eq!(out.duration_ms, 1500);
+        assert_eq!(out.audio.duration_ms(), 1500);
+        assert_eq!(out.audio.channels, 1);
+    }
+
+    #[test]
+    fn duration_counts_frames_not_interleaved_samples() {
+        let stereo = AudioChunk {
+            samples: vec![0.0; 32_000],
+            sample_rate: 16_000,
+            channels: 2,
+        };
+        assert_eq!(stereo.frames(), 16_000);
+        assert_eq!(stereo.duration_ms(), 1000);
+    }
+
+    #[test]
+    fn duration_of_degenerate_audio_is_zero() {
+        assert_eq!(TtsOutput::from_mono(Vec::new(), 24_000).duration_ms, 0);
+        assert_eq!(TtsOutput::from_mono(vec![0.0; 10], 0).duration_ms, 0);
+    }
 }

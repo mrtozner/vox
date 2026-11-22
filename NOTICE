@@ -1,0 +1,69 @@
+Vox
+Copyright (c) Mert Ozoner and the Vox contributors
+
+SOURCE CODE
+-----------
+
+The source code in this repository is licensed under either of
+
+  * MIT license (LICENSE-MIT), or
+  * Apache License, Version 2.0 (LICENSE-APACHE)
+
+at your option. The crates vendored under vendor/ keep their own licenses,
+stated in each crate's Cargo.toml and, where present, its LICENSE files.
+
+RELEASE BINARIES ARE GPL-3.0
+----------------------------
+
+The prebuilt `vox` binaries attached to GitHub releases are built with the
+`dist` feature set (cli, server, kokoro, piper). The `piper` feature links
+espeak-ng statically, through the piper-rs and espeak-rs crates, to turn text
+into phonemes. espeak-ng is licensed under the GNU General Public License,
+version 3 or later.
+
+A binary that contains espeak-ng is a combined work, so each release binary
+is distributed, as a whole, under the GNU General Public License version 3
+(LICENSE-GPL-3.0). The MIT and Apache-2.0 terms above continue to apply to
+Vox's own source code; they are compatible with GPL-3.0, which is what allows
+the combination.
+
+The same holds for any binary you build yourself with the `piper`, `kokoro` or
+`dist` feature: if you give that binary to someone else, you do so under GPL-3.0.
+
+Corresponding source for a release binary is the repository at the release
+tag (https://github.com/mrtozner/vox), including vendor/, together with the
+crates.io dependencies at the exact versions pinned in Cargo.lock. espeak-ng's
+source is part of the espeak-rs-sys crate.
+
+OTHER BUILDS
+------------
+
+A build that enables `piper`, `dist` or `kokoro` contains espeak-ng or
+material derived from it: the kokoro-tts crate compiles an English
+phonemizer derived from espeak-ng's translator and embeds an espeak
+dictionary. Treat such a binary as GPL-3.0 when you pass it on. Only a
+build without those three features is free of espeak-ng material; its
+license is determined by Vox's own MIT OR Apache-2.0 terms and by the
+licenses of the dependencies of the features you enable. Review those
+before redistributing your own build; `cargo tree --features <your
+features>` lists them.
+
+THIRD-PARTY COMPONENTS IN RELEASE BINARIES
+------------------------------------------
+
+  espeak-ng       GPL-3.0-or-later   https://github.com/espeak-ng/espeak-ng
+  piper-rs        MIT                vendor/piper-rs
+  whisper.cpp     MIT                https://github.com/ggml-org/whisper.cpp
+  ONNX Runtime    MIT                https://github.com/microsoft/onnxruntime
+  kokoro-tts      Apache-2.0 (crate); bundles espeak-ng-derived G2P code and dictionary, GPL-3.0-or-later   https://crates.io/crates/kokoro-tts
+
+Release binaries also contain the Rust crates listed in Cargo.lock, each
+under its own license.
+
+MODELS
+------
+
+Model files are not part of this repository or of the release binaries. They
+are downloaded at run time from their publishers, at the URLs listed in
+src/cli/models.rs, and each is covered by its publisher's license. Check a
+model's license before redistributing it or using it commercially.

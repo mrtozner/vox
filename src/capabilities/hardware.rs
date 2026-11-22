@@ -143,17 +143,16 @@ async fn probe_gpu_linux(profile: &SystemProfile, compiled_backends: Vec<String>
 
     if let Ok(Ok(output)) = tokio::time::timeout(Duration::from_millis(500), nvidia_probe).await
         && output.status.success()
+        && let Ok(s) = std::str::from_utf8(&output.stdout)
     {
-        if let Ok(s) = std::str::from_utf8(&output.stdout) {
-            let name = s.trim().split('\n').next().unwrap_or("").trim().to_string();
-            if !name.is_empty() {
-                return GpuFacts {
-                    present: true,
-                    kind: Some("CUDA".into()),
-                    name: Some(name),
-                    compiled_backends,
-                };
-            }
+        let name = s.trim().split('\n').next().unwrap_or("").trim().to_string();
+        if !name.is_empty() {
+            return GpuFacts {
+                present: true,
+                kind: Some("CUDA".into()),
+                name: Some(name),
+                compiled_backends,
+            };
         }
     }
 
@@ -161,20 +160,20 @@ async fn probe_gpu_linux(profile: &SystemProfile, compiled_backends: Vec<String>
     if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
         for entry in entries.flatten() {
             let uevent = entry.path().join("device").join("uevent");
-            if let Ok(contents) = std::fs::read_to_string(&uevent) {
-                if contents.contains("DRIVER=amdgpu") {
-                    let kind = if std::path::Path::new("/dev/kfd").exists() {
-                        "ROCm"
-                    } else {
-                        "amdgpu"
-                    };
-                    return GpuFacts {
-                        present: true,
-                        kind: Some(kind.into()),
-                        name: Some("AMD GPU".into()),
-                        compiled_backends,
-                    };
-                }
+            if let Ok(contents) = std::fs::read_to_string(&uevent)
+                && contents.contains("DRIVER=amdgpu")
+            {
+                let kind = if std::path::Path::new("/dev/kfd").exists() {
+                    "ROCm"
+                } else {
+                    "amdgpu"
+                };
+                return GpuFacts {
+                    present: true,
+                    kind: Some(kind.into()),
+                    name: Some("AMD GPU".into()),
+                    compiled_backends,
+                };
             }
         }
     }

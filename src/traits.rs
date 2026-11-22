@@ -19,12 +19,19 @@ use crate::types::{AudioChunk, SttResult, TtsOutput, TtsRequest, Utterance};
 #[async_trait]
 pub trait VadBackend: Send + Sync {
     /// Process a single audio frame and return VAD events.
+    ///
+    /// `frame` must be mono, at [`sample_rate`](Self::sample_rate), and hold
+    /// exactly [`frame_size`](Self::frame_size) samples; frames must be fed
+    /// in stream order without gaps, because backends keep state between
+    /// frames. Use [`crate::audio::FrameAssembler`] to cut a stream of
+    /// arbitrary chunks into frames. Backends may return an error for a
+    /// frame of the wrong length.
     async fn process_frame(&mut self, frame: &AudioChunk) -> Result<Vec<VadEvent>, VoxError>;
 
-    /// Reset the internal VAD state.
+    /// Reset the internal VAD state (model state and any buffered speech).
     fn reset(&mut self);
 
-    /// Expected frame size in samples.
+    /// Exact number of samples [`process_frame`](Self::process_frame) expects.
     fn frame_size(&self) -> usize;
 
     /// Expected sample rate in Hz.
@@ -32,6 +39,16 @@ pub trait VadBackend: Send + Sync {
 
     /// Return a copy of the current speech audio buffer (if speech is in progress).
     fn current_speech_buffer(&self) -> Option<AudioChunk> {
+        None
+    }
+
+    /// Milliseconds of frames classified as speech in the utterance in
+    /// progress (pauses not counted), or 0 when no speech is in progress.
+    ///
+    /// `None` means the backend does not report it; callers then have to
+    /// treat `SpeechStart` as confirmed speech. Live Talk uses this to tell a
+    /// cough or a keyboard click from someone starting to talk.
+    fn voiced_ms(&self) -> Option<u32> {
         None
     }
 }
@@ -75,6 +92,11 @@ pub enum VadEvent {
     /// Speech has started.
     SpeechStart,
     /// Speech has ended; contains the complete utterance.
+    ///
+    /// Also emitted when a backend cuts an utterance that reached its
+    /// maximum length (e.g. `VadConfig::max_utterance_ms`) while speech is
+    /// still going on; the following speech frame then emits a new
+    /// [`SpeechStart`](Self::SpeechStart).
     SpeechEnd(Utterance),
     /// No speech detected in this frame.
     Silence,

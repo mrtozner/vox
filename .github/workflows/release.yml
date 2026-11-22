@@ -1,38 +1,115 @@
 name: Release
 
+# Tag push (v*): build every target, smoke-test it, attest it, publish a
+# GitHub release with the archives and SHA256SUMS.
+#
+# Manual run (workflow_dispatch): a dry run. Everything is built, smoke-tested
+# and uploaded as workflow artifacts (archives + SHA256SUMS); nothing is
+# attested or published.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  # The feature set of each shipped binary is `matrix.features`: `dist`
+  # (with Piper, which links espeak-ng, GPL-3.0-or-later) everywhere but
+  # Windows. The binaries are distributed under GPL-3.0. See NOTICE.
 
 jobs:
+  # ── Version gate ─────────────────────────────────────────────────────
+  version:
+    name: Version gate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "vox-voice") | .version')"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::could not read the vox-voice version from Cargo.toml"
+            exit 1
+          fi
+          echo "Cargo.toml version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $VERSION (expected v$VERSION)"
+              exit 1
+            fi
+            if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+              echo "::error::CHANGELOG.md has no '## [$VERSION]' section"
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Dry run: no tag, nothing will be published."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Build, smoke-test and package each target ────────────────────────
   build:
     name: Build (${{ matrix.target }})
+    needs: version
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # The floor is set by ort's prebuilt ONNX Runtime, which needs glibc
+          # 2.39+ and libstdc++ 13.2+ (Ubuntu 24.04, Debian 13, Raspberry Pi OS
+          # Trixie).
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            features: dist
             artifact: vox
             archive: tar.gz
 
-          - os: macos-latest
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            features: dist
+            artifact: vox
+            archive: tar.gz
+
+          - os: macos-14
             target: aarch64-apple-darwin
+            features: dist
             artifact: vox
             archive: tar.gz
 
+          # No Piper on Windows: espeak-ng (built by espeak-rs-sys) does not
+          # compile with MSVC (its compat headers use __has_include_next).
+          # Live Talk uses Kokoro there.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            features: cli,server,kokoro
             artifact: vox.exe
             archive: zip
+
+          # x86_64-apple-darwin is not built: ort 2.0.0-rc.11 publishes no
+          # prebuilt ONNX Runtime for Intel macOS, so this target needs
+          # ONNX Runtime built from source. See README "Platform Support".
+
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      STAGING: vox-v${{ needs.version.outputs.version }}-${{ matrix.target }}
 
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +132,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev cmake clang
+          sudo apt-get install -y libasound2-dev cmake clang libclang-dev pkg-config
 
       # ── macOS ARM: pin arch to avoid ggml i8mm intrinsic errors ────
       - name: Pin ARM arch (macOS ARM64)
@@ -81,87 +158,116 @@ jobs:
         if: runner.os == 'Windows'
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
-      # ── Build ────────────────────────────────────────────────────────
-      - name: Build release binary
-        run: cargo build --features cli --release --target ${{ matrix.target }}
+      # ort-sys copies the ONNX Runtime DLLs into <dir>, <dir>/examples and
+      # <dir>/deps and panics if one is missing. With Cargo's newer build-dir
+      # layout (build/<pkg>/<hash>/out) its <dir> resolves to target/*/build,
+      # so create both layouts.
+      - name: Create target directories (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($d in 'examples','deps','build/examples','build/deps') { New-Item -ItemType Directory -Force -Path "target/${{ matrix.target }}/release/$d" | Out-Null }
 
-      # ── Strip binary (Linux / macOS) ─────────────────────────────────
-      - name: Strip binary (Unix)
-        if: runner.os != 'Windows'
-        run: strip target/${{ matrix.target }}/release/${{ matrix.artifact }}
+      # ── Build ────────────────────────────────────────────────────────
+      # [profile.release] in Cargo.toml sets thin LTO, one codegen unit and
+      # symbol stripping, so no separate strip step is needed.
+      - name: Build release binary
+        run: cargo build --release --locked --features ${{ matrix.features }} --target ${{ matrix.target }}
 
       # ── Smoke test ───────────────────────────────────────────────────
-      - name: Smoke test (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          ./target/${{ matrix.target }}/release/${{ matrix.artifact }} --version
-          ./target/${{ matrix.target }}/release/${{ matrix.artifact }} --help
-
-      - name: Smoke test (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          ./target/${{ matrix.target }}/release/${{ matrix.artifact }} --version
-          ./target/${{ matrix.target }}/release/${{ matrix.artifact }} --help
-
-      # ── Package ──────────────────────────────────────────────────────
-      - name: Determine archive name
-        id: archive
+      # --version, --help of every documented subcommand, `vox models list`,
+      # and `vox serve` answering GET /health.
+      - name: Smoke test
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          NAME="vox-${VERSION}-${{ matrix.target }}"
-          echo "name=${NAME}" >> $GITHUB_OUTPUT
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          .github/scripts/smoke-test.sh \
+            "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+            "$VERSION"
+
+      # ── Package ──────────────────────────────────────────────────────
+      - name: Stage files
+        shell: bash
+        run: |
+          mkdir -p "$STAGING"
+          cp "target/${{ matrix.target }}/release/${{ matrix.artifact }}" "$STAGING/"
+          # The binary is GPL-3.0 (it links espeak-ng); NOTICE explains it.
+          cp README.md CHANGELOG.md NOTICE LICENSE-GPL-3.0 LICENSE-MIT LICENSE-APACHE "$STAGING/"
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          STAGING="${{ steps.archive.outputs.name }}"
-          mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/${{ matrix.artifact }}" "$STAGING/"
-          cp README.md LICENSE-MIT LICENSE-APACHE 2>/dev/null "$STAGING/" || true
           tar czf "$STAGING.tar.gz" "$STAGING"
-          echo "ASSET=$STAGING.tar.gz" >> $GITHUB_ENV
+          echo "ASSET=$STAGING.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package (zip)
         if: matrix.archive == 'zip'
         shell: bash
         run: |
-          STAGING="${{ steps.archive.outputs.name }}"
-          mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/${{ matrix.artifact }}" "$STAGING/"
-          cp README.md LICENSE-MIT LICENSE-APACHE 2>/dev/null "$STAGING/" || true
           7z a "$STAGING.zip" "$STAGING"
-          echo "ASSET=$STAGING.zip" >> $GITHUB_ENV
+          echo "ASSET=$STAGING.zip" >> "$GITHUB_ENV"
+
+      - name: Attest build provenance
+        if: needs.version.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.ASSET }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.archive.outputs.name }}
+          name: ${{ env.STAGING }}
           path: ${{ env.ASSET }}
+          if-no-files-found: error
 
-  # ── Publish GitHub Release ───────────────────────────────────────────
-  release:
-    name: Publish Release
-    needs: build
+  # ── Checksums, and on a tag the GitHub release ───────────────────────
+  publish:
+    name: Checksums and release
+    needs: [version, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: List release assets
-        run: ls -lhR artifacts/
+      - name: Write SHA256SUMS
+        working-directory: artifacts
+        run: |
+          COUNT="$(ls vox-v* | wc -l)"
+          if [ "$COUNT" -ne 4 ]; then
+            echo "::error::expected 4 archives, found $COUNT"
+            ls -l
+            exit 1
+          fi
+          sha256sum vox-v* > SHA256SUMS
+          cat SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Upload SHA256SUMS
+        uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: artifacts/SHA256SUMS
+          if-no-files-found: error
 
       - name: Create GitHub Release
+        if: needs.version.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: artifacts/*
+          body: |
+            Prebuilt `vox` binaries, built with `--features dist` (CLI, server, Kokoro, Piper). The Windows build has no Piper (espeak-ng does not build with MSVC); it uses Kokoro for every voice.
+
+            **License of these binaries: GPL-3.0.** They link espeak-ng through Piper, and Kokoro's phonemizer is derived from espeak-ng. Vox's source code remains MIT OR Apache-2.0. See `NOTICE` in each archive.
+
+            Verify a download with `sha256sum --check SHA256SUMS --ignore-missing`, and its provenance with `gh attestation verify <archive> --repo ${{ github.repository }}`.
+
+            Changes: see `CHANGELOG.md`.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
