@@ -247,7 +247,7 @@ const TR_SCALES: [&str; 7] = [
 fn en_below_hundred(n: u64) -> String {
     if n < 20 {
         EN_ONES[n as usize].to_string()
-    } else if n % 10 == 0 {
+    } else if n.is_multiple_of(10) {
         EN_TENS[(n / 10) as usize].to_string()
     } else {
         format!(
@@ -369,7 +369,7 @@ fn en_ordinal(n: u64) -> String {
 /// English reading of a calendar year ("twenty twenty-six").
 fn en_year(year: u64) -> String {
     let (hi, lo) = (year / 100, year % 100);
-    if year % 1000 == 0 || (2001..=2009).contains(&year) {
+    if year.is_multiple_of(1000) || (2001..=2009).contains(&year) {
         cardinal(year, NormLang::English)
     } else if lo == 0 {
         format!("{} hundred", en_below_hundred(hi))
@@ -383,7 +383,7 @@ fn en_year(year: u64) -> String {
 /// English reading of a decade ("nineteen nineties").
 fn en_decade(year: u64) -> String {
     let (hi, lo) = (year / 100, year % 100);
-    if year % 1000 == 0 {
+    if year.is_multiple_of(1000) {
         format!("{}s", cardinal(year, NormLang::English))
     } else if lo == 0 {
         format!("{} hundreds", en_below_hundred(hi))

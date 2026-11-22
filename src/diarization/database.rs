@@ -1080,7 +1080,7 @@ fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
 
 /// Convert bytes back to an embedding vector.
 fn bytes_to_embedding(bytes: &[u8]) -> Result<Vec<f32>, VoxError> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(VoxError::Diarization(
             "invalid embedding bytes: length not divisible by 4".into(),
         ));

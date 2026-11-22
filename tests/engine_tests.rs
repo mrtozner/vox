@@ -1397,7 +1397,7 @@ impl SttSession for MockSttSession {
         }
         self.push_count += 1;
         // Return partial text every 3rd push
-        if self.push_count % 3 == 0 {
+        if self.push_count.is_multiple_of(3) {
             Ok(Some(format!(
                 "{} {}",
                 self.partial_text,

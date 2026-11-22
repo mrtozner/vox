@@ -116,7 +116,7 @@ jobs:
 
       - name: Install ALSA dev (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev clang libclang-dev
 
       - name: Cache LLVM (Windows)
         if: runner.os == 'Windows'
@@ -133,6 +133,14 @@ jobs:
       - name: Set LIBCLANG_PATH (Windows)
         if: runner.os == 'Windows'
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      # ort-sys copies the ONNX Runtime DLLs next to the binaries, examples and
+      # test executables, and fails if those directories do not exist yet.
+      - name: Create target directories (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($p in 'debug','release') { foreach ($d in 'examples','deps') { New-Item -ItemType Directory -Force -Path "target/$p/$d" | Out-Null } }
 
       - name: Clippy (default features)
         run: cargo clippy -- -D warnings
@@ -181,7 +189,7 @@ jobs:
 
       - name: Install ALSA dev (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev clang libclang-dev
 
       - name: Cache LLVM (Windows)
         if: runner.os == 'Windows'
@@ -198,6 +206,14 @@ jobs:
       - name: Set LIBCLANG_PATH (Windows)
         if: runner.os == 'Windows'
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      # ort-sys copies the ONNX Runtime DLLs next to the binaries, examples and
+      # test executables, and fails if those directories do not exist yet.
+      - name: Create target directories (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($p in 'debug','release') { foreach ($d in 'examples','deps') { New-Item -ItemType Directory -Force -Path "target/$p/$d" | Out-Null } }
 
       - name: Unit + integration tests
         run: cargo test --locked
@@ -285,7 +301,7 @@ jobs:
           key: ${{ runner.os }}-msrv-${{ steps.msrv.outputs.msrv }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install ALSA dev
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev clang libclang-dev
 
       - name: cargo check on the MSRV toolchain
         run: cargo +${{ steps.msrv.outputs.msrv }} check --locked --features cli,server,kokoro
@@ -300,7 +316,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install ALSA dev
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev clang libclang-dev
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"

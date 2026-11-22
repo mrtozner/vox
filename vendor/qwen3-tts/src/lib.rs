@@ -82,6 +82,9 @@
 //! Output audio is always 24kHz mono. Use [`audio::resample()`] if you need
 //! a different sample rate.
 
+// Vendored upstream code: keep newer clippy style lints from failing CI.
+#![allow(clippy::explicit_counter_loop)]
+
 pub mod audio;
 pub mod generation;
 #[cfg(feature = "hub")]
