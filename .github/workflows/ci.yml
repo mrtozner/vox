@@ -257,13 +257,14 @@ jobs:
       # their own features. RUSTFLAGS is cleared because the vendored
       # piper-rs does not build with -D warnings.
       - name: Build examples
-        run: cargo build --locked --examples --features cli,kokoro,piper,diarization
+        run: cargo build --locked --examples --features ${{ runner.os == 'Windows' && 'cli,kokoro,diarization' || 'cli,kokoro,piper,diarization' }}
         env:
           RUSTFLAGS: ""
 
-      # The exact feature set and profile the release workflow ships.
+      # The exact feature set and profile the release workflow ships
+      # (Windows: no Piper, see release.yml).
       - name: Build release binary (dist features)
-        run: cargo build --locked --release --features dist
+        run: cargo build --locked --release --features ${{ runner.os == 'Windows' && 'cli,server,kokoro' || 'dist' }}
         env:
           RUSTFLAGS: ""
 
