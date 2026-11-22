@@ -88,7 +88,8 @@ jobs:
             artifact: vox
             archive: tar.gz
 
-          - os: macos-14
+          # macos-14 runners are retired. ort sets the macOS 13.4 floor.
+          - os: macos-latest
             target: aarch64-apple-darwin
             features: dist
             artifact: vox
