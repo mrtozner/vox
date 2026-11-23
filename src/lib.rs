@@ -46,6 +46,8 @@ pub mod memory;
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod conversation;
 #[cfg(any(feature = "cli", feature = "server"))]
+pub mod llm;
+#[cfg(any(feature = "cli", feature = "server"))]
 pub mod prompts;
 #[cfg(any(feature = "cli", feature = "server"))]
 pub mod streaming_chat;

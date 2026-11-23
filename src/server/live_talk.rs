@@ -59,6 +59,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use axum::Extension;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
@@ -71,6 +72,7 @@ use crate::conversation::{
     ChatMessage, EvictedTurn, RecallNeed, SessionDistillation, SessionStore, SharedConversation,
     SpeakerLabel, UserMessage,
 };
+use crate::llm::LlmEndpoint;
 use crate::memory::{ExchangeRef, HeardExchange, MemoryStore};
 use crate::streaming_chat::{StopReason, StreamOptions};
 
@@ -139,9 +141,6 @@ pub fn distill_enabled_from_env() -> bool {
         "0" | "false" | "off" | "no"
     )
 }
-
-/// Model used when the client names none.
-const DEFAULT_MODEL: &str = "llama3.2";
 
 const PHASE_STT: u8 = 0;
 const PHASE_THINKING: u8 = 1;
@@ -280,6 +279,23 @@ pub async fn live_talk_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ServerState>>,
 ) -> Result<impl IntoResponse, ServerError> {
+    let endpoint = Arc::new(LlmEndpoint::ollama(state.ollama_host.clone()));
+    upgrade_live_talk(ws, state, endpoint)
+}
+
+pub(super) async fn live_talk_ws_with_llm(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<ServerState>>,
+    Extension(endpoint): Extension<Arc<LlmEndpoint>>,
+) -> Result<impl IntoResponse, ServerError> {
+    upgrade_live_talk(ws, state, endpoint)
+}
+
+fn upgrade_live_talk(
+    ws: WebSocketUpgrade,
+    state: Arc<ServerState>,
+    endpoint: Arc<LlmEndpoint>,
+) -> Result<impl IntoResponse, ServerError> {
     if state.stt.is_none() {
         return Err(ServerError::service_unavailable("STT backend not loaded"));
     }
@@ -290,7 +306,7 @@ pub async fn live_talk_ws(
         return Err(ServerError::service_unavailable("VAD model not available"));
     }
 
-    Ok(ws.on_upgrade(move |socket| handle_live_talk(socket, state)))
+    Ok(ws.on_upgrade(move |socket| handle_live_talk(socket, state, endpoint)))
 }
 
 /// Tell the client why the session cannot start, then give up.
@@ -306,7 +322,7 @@ async fn refuse(mut socket: WebSocket, message: String) {
 }
 
 #[cfg(feature = "silero")]
-async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
+async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>, endpoint: Arc<LlmEndpoint>) {
     // Counted as an open session until this function returns, so shutdown
     // can wait for it.
     let _session = state.ws_session();
@@ -350,7 +366,7 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
         } else {
             None
         };
-    run_live_talk(
+    run_live_talk_with_llm(
         sink,
         stream,
         LiveTalkDeps {
@@ -367,13 +383,18 @@ async fn handle_live_talk(socket: WebSocket, state: Arc<ServerState>) {
             identify_grace: DEFAULT_IDENTIFY_GRACE,
             distill: distill_enabled_from_env(),
         },
+        endpoint,
     )
     .await;
     let _ = relay.await;
 }
 
 #[cfg(not(feature = "silero"))]
-async fn handle_live_talk(socket: WebSocket, _state: Arc<ServerState>) {
+async fn handle_live_talk(
+    socket: WebSocket,
+    _state: Arc<ServerState>,
+    _endpoint: Arc<LlmEndpoint>,
+) {
     refuse(socket, "Live Talk requires the `silero` feature".into()).await;
 }
 
@@ -688,9 +709,9 @@ async fn distill_batch(
     // that looking like the session cancelling the work.
     let stop = cancel.child_token();
     let mut reply = String::new();
-    let stopped = crate::streaming_chat::stream_chat(
+    let stopped = crate::streaming_chat::stream_chat_with_endpoint(
         &ctx.http_client,
-        &ctx.ollama_host,
+        &ctx.endpoint,
         model,
         &messages,
         &ctx.stream_options,
@@ -782,7 +803,7 @@ struct TurnCtx {
     stt: Arc<dyn crate::traits::SttBackend>,
     tts: Arc<dyn crate::traits::TtsBackend>,
     http_client: reqwest::Client,
-    ollama_host: String,
+    endpoint: Arc<LlmEndpoint>,
     stream_options: StreamOptions,
     out: Outbox,
     conversation: SharedConversation,
@@ -1098,6 +1119,26 @@ async fn run_turn(
         return;
     }
 
+    let model = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return,
+        model = ctx.endpoint.resolve_model(&ctx.http_client, Some(&cfg.model)) => model,
+    };
+    let model = match model {
+        Ok(model) => model,
+        Err(e) => {
+            out.send_turn(
+                turn_id,
+                LiveTalkWsEvent::Error {
+                    message: e.to_string(),
+                    fatal: false,
+                    turn_id: Some(turn_id),
+                },
+            );
+            return;
+        }
+    };
+
     let recall = match &speaker {
         Some(speaker) => tokio::select! {
             biased;
@@ -1228,10 +1269,10 @@ async fn run_turn(
         }
     };
 
-    let stop = crate::streaming_chat::stream_chat(
+    let stop = crate::streaming_chat::stream_chat_with_endpoint(
         &ctx.http_client,
-        &ctx.ollama_host,
-        &cfg.model,
+        &ctx.endpoint,
+        &model,
         &messages,
         &ctx.stream_options,
         cancel.clone(),
@@ -1281,7 +1322,7 @@ async fn run_turn(
             // them. Turns trimmed by a turn that did not finish wait for
             // the next one that does.
             if trimmed && !cancel.is_cancelled() {
-                ctx.start_distill(&cfg.model, shared.generation);
+                ctx.start_distill(&model, shared.generation);
             }
         }
         Ok(StopReason::Cancelled) => {
@@ -1822,8 +1863,21 @@ fn parse_first_config(text: &str) -> Option<LiveTalkConfig> {
 
 /// Run one Live Talk session over any message transport until the client
 /// leaves.
-pub async fn run_live_talk<S, R, E>(sink: S, mut stream: R, deps: LiveTalkDeps)
+pub async fn run_live_talk<S, R, E>(sink: S, stream: R, deps: LiveTalkDeps)
 where
+    S: Sink<Message> + Send + Unpin + 'static,
+    R: Stream<Item = Result<Message, E>> + Unpin,
+{
+    let endpoint = Arc::new(LlmEndpoint::ollama(deps.ollama_host.clone()));
+    run_live_talk_with_llm(sink, stream, deps, endpoint).await;
+}
+
+async fn run_live_talk_with_llm<S, R, E>(
+    sink: S,
+    mut stream: R,
+    deps: LiveTalkDeps,
+    endpoint: Arc<LlmEndpoint>,
+) where
     S: Sink<Message> + Send + Unpin + 'static,
     R: Stream<Item = Result<Message, E>> + Unpin,
 {
@@ -1878,7 +1932,12 @@ where
         .unwrap_or_else(|| crate::build_system_prompt(crate::VoicePromptMode::Voice));
     let diarization = config.diarization && deps.speakers.is_some();
     let cfg = TurnConfig {
-        model: config.model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+        // Session controls (for example forgetting a conversation) work
+        // without contacting the language model. A turn discovers a model
+        // only if neither the operator nor the client already chose one.
+        model: endpoint
+            .preferred_model(config.model.as_deref())
+            .unwrap_or_default(),
         voice: config.voice,
         system_prompt: effective_prompt(&base_prompt, diarization),
         diarization,
@@ -1886,7 +1945,7 @@ where
 
     info!(
         model = %cfg.model,
-        host = %deps.ollama_host,
+        host = %endpoint.host,
         voice = ?cfg.voice,
         mode = ?mode,
         barge_in = config.barge_in_enabled,
@@ -1923,7 +1982,7 @@ where
             stt: deps.stt,
             tts: deps.tts,
             http_client: deps.http_client,
-            ollama_host: deps.ollama_host,
+            endpoint,
             stream_options: deps.stream_options,
             out: out.clone(),
             conversation: Arc::clone(&session_handle.conversation),

@@ -14,6 +14,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::Extension;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
@@ -21,15 +22,13 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::conversation::{Conversation, SharedConversation};
+use crate::llm::LlmEndpoint;
 use crate::streaming_chat::{StopReason, StreamOptions};
 
 use super::ServerState;
 use super::error::ServerError;
 use super::models::{ConverseConfig, ConverseWsEvent};
 use super::ws::{bytes_to_f32_samples, encode_wav_chunk};
-
-/// Model used when the client names none.
-const DEFAULT_MODEL: &str = "llama3.2";
 
 /// How long the connection waits for the first message to be a config.
 const CONFIG_WAIT: Duration = Duration::from_millis(250);
@@ -101,6 +100,23 @@ pub async fn converse_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ServerState>>,
 ) -> Result<impl IntoResponse, ServerError> {
+    let endpoint = Arc::new(LlmEndpoint::ollama(state.ollama_host.clone()));
+    upgrade_converse(ws, state, endpoint)
+}
+
+pub(super) async fn converse_ws_with_llm(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<ServerState>>,
+    Extension(endpoint): Extension<Arc<LlmEndpoint>>,
+) -> Result<impl IntoResponse, ServerError> {
+    upgrade_converse(ws, state, endpoint)
+}
+
+fn upgrade_converse(
+    ws: WebSocketUpgrade,
+    state: Arc<ServerState>,
+    endpoint: Arc<LlmEndpoint>,
+) -> Result<impl IntoResponse, ServerError> {
     if state.stt.is_none() {
         return Err(ServerError::service_unavailable("STT backend not loaded"));
     }
@@ -111,7 +127,7 @@ pub async fn converse_ws(
         return Err(ServerError::service_unavailable("VAD model not available"));
     }
 
-    Ok(ws.on_upgrade(move |socket| handle_converse_ws(socket, state)))
+    Ok(ws.on_upgrade(move |socket| handle_converse_ws(socket, state, endpoint)))
 }
 
 /// Tell the client why the session cannot start, then give up.
@@ -122,7 +138,11 @@ async fn refuse(mut socket: WebSocket, message: String) {
 }
 
 #[cfg(feature = "silero")]
-async fn handle_converse_ws(socket: WebSocket, state: Arc<ServerState>) {
+async fn handle_converse_ws(
+    socket: WebSocket,
+    state: Arc<ServerState>,
+    endpoint: Arc<LlmEndpoint>,
+) {
     // Counted as an open session until this function returns, so shutdown
     // can wait for it.
     let _session = state.ws_session();
@@ -159,7 +179,7 @@ async fn handle_converse_ws(socket: WebSocket, state: Arc<ServerState>) {
     // the 1001 close frame.
     let (sink, stream) = socket.split();
     let (sink, stream, relay) = super::ws::with_shutdown(sink, stream, state.shutdown.clone());
-    run_converse(
+    run_converse_with_llm(
         sink,
         stream,
         ConverseDeps {
@@ -171,6 +191,7 @@ async fn handle_converse_ws(socket: WebSocket, state: Arc<ServerState>) {
             stream_options: StreamOptions::default(),
             post_turn_mute: DEFAULT_POST_TURN_MUTE,
         },
+        endpoint,
     )
     .await;
     let _ = relay.await;
@@ -178,7 +199,11 @@ async fn handle_converse_ws(socket: WebSocket, state: Arc<ServerState>) {
 
 /// Fallback when the `silero` feature is disabled: immediately report an error.
 #[cfg(not(feature = "silero"))]
-async fn handle_converse_ws(socket: WebSocket, _state: Arc<ServerState>) {
+async fn handle_converse_ws(
+    socket: WebSocket,
+    _state: Arc<ServerState>,
+    _endpoint: Arc<LlmEndpoint>,
+) {
     refuse(socket, "server compiled without silero feature".into()).await;
 }
 
@@ -206,7 +231,7 @@ struct TurnCtx<S> {
     stt: Arc<dyn crate::traits::SttBackend>,
     tts: Arc<dyn crate::traits::TtsBackend>,
     http_client: reqwest::Client,
-    ollama_host: String,
+    endpoint: Arc<LlmEndpoint>,
     stream_options: StreamOptions,
     system_prompt: String,
     conversation: SharedConversation,
@@ -214,8 +239,21 @@ struct TurnCtx<S> {
 
 /// Run one converse session over any message transport until the client
 /// leaves.
-pub async fn run_converse<S, R, E>(sink: S, mut stream: R, deps: ConverseDeps)
+pub async fn run_converse<S, R, E>(sink: S, stream: R, deps: ConverseDeps)
 where
+    S: Sink<Message> + Send + Unpin + 'static,
+    R: Stream<Item = Result<Message, E>> + Unpin,
+{
+    let endpoint = Arc::new(LlmEndpoint::ollama(deps.ollama_host.clone()));
+    run_converse_with_llm(sink, stream, deps, endpoint).await;
+}
+
+async fn run_converse_with_llm<S, R, E>(
+    sink: S,
+    mut stream: R,
+    deps: ConverseDeps,
+    endpoint: Arc<LlmEndpoint>,
+) where
     S: Sink<Message> + Send + Unpin + 'static,
     R: Stream<Item = Result<Message, E>> + Unpin,
 {
@@ -225,12 +263,11 @@ where
 
     // The first message may be a config. If audio comes first, defaults are
     // used until a config arrives.
-    let mut model = DEFAULT_MODEL.to_string();
-    let mut voice: Option<String> = None;
+    let mut config = ConverseConfig::default();
     let mut pending_audio: Vec<f32> = Vec::new();
     match tokio::time::timeout(CONFIG_WAIT, stream.next()).await {
         Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<ConverseConfig>(&text) {
-            Ok(config) => apply_config(config, &mut model, &mut voice),
+            Ok(first) => config = first,
             Err(e) => tracing::warn!("converse_ws: invalid config JSON, using defaults: {e}"),
         },
         Ok(Some(Ok(Message::Binary(data)))) => pending_audio = bytes_to_f32_samples(&data),
@@ -238,9 +275,34 @@ where
         _ => {}
     }
 
+    let mut model = match endpoint
+        .resolve_model(&deps.http_client, config.model.as_deref())
+        .await
+    {
+        Ok(model) => model,
+        Err(e) => {
+            tracing::warn!(
+                backend = endpoint.label(),
+                "Converse model discovery failed: {e}"
+            );
+            send_event(
+                &sink,
+                &ConverseWsEvent::Error {
+                    message: format!(
+                        "{}: cannot select a model. Set VOX_LLM_MODEL to a served model ID",
+                        endpoint.label()
+                    ),
+                },
+            )
+            .await;
+            return;
+        }
+    };
+    let mut voice = config.voice;
+
     tracing::info!(
         model = %model,
-        host = %deps.ollama_host,
+        host = %endpoint.host,
         voice = ?voice,
         "converse_ws: client connected"
     );
@@ -262,7 +324,7 @@ where
         stt: deps.stt,
         tts: deps.tts,
         http_client: deps.http_client,
-        ollama_host: deps.ollama_host,
+        endpoint,
         stream_options: deps.stream_options,
         system_prompt: crate::build_system_prompt(crate::VoicePromptMode::Voice),
         conversation: Arc::new(std::sync::Mutex::new(Conversation::for_num_ctx(
@@ -521,9 +583,9 @@ async fn run_turn<S>(
         }
     };
 
-    let stop = crate::streaming_chat::stream_chat(
+    let stop = crate::streaming_chat::stream_chat_with_endpoint(
         &ctx.http_client,
-        &ctx.ollama_host,
+        &ctx.endpoint,
         &model,
         &messages,
         &ctx.stream_options,

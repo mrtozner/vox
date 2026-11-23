@@ -6487,7 +6487,7 @@ dependencies = [
 
 [[package]]
 name = "vox-python"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "dirs 5.0.1",
  "hound",
@@ -6499,7 +6499,7 @@ dependencies = [
 
 [[package]]
 name = "vox-voice"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",

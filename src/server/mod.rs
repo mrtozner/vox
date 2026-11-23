@@ -6,7 +6,7 @@
 //!
 //! There are three ways in, from most to least batteries-included:
 //!
-//! - [`run`] / [`run_with_config`]: what `vox serve` calls. Loads the models
+//! - [`run`] / [`run_with_config`] / [`run_with_llm_config`]: loads the models
 //!   from the models directory, binds `host:port`, prints the banner and
 //!   serves until Ctrl-C or SIGTERM.
 //! - [`serve`]: serve a [`ServerState`] you built on a listener you bound,
@@ -67,14 +67,16 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
+use axum::{Extension, Router};
 use tokio::net::TcpListener;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
+
+use crate::llm::{LlmBackend, LlmEndpoint};
 
 #[cfg(feature = "diarization")]
 use diarization_init::load_diarization;
@@ -96,32 +98,40 @@ pub const MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 /// bodies, `Host`/`Origin` enforcement, CORS for allowed origins, request
 /// timeout, body size limit.
 pub fn build_router(state: Arc<ServerState>) -> Router {
+    let endpoint = LlmEndpoint::ollama(state.ollama_host.clone());
+    build_router_with_llm(state, endpoint)
+}
+
+/// Build the application router with an explicitly configured LLM runtime.
+pub fn build_router_with_llm(state: Arc<ServerState>, endpoint: LlmEndpoint) -> Router {
     Router::new()
         .route("/", get(handlers::index))
-        .route("/v1/chat", post(handlers::chat))
+        .route("/v1/chat", post(handlers::chat_with_llm))
         .route("/v1/voices", get(handlers::voices))
-        .route("/v1/ollama-models", get(handlers::ollama_models))
-        .route("/v1/capabilities", get(handlers::capabilities))
+        .route("/v1/llm-models", get(handlers::llm_models))
+        .route("/v1/ollama-models", get(handlers::legacy_ollama_models))
+        .route("/v1/capabilities", get(handlers::capabilities_with_llm))
         .route("/v1/transcribe", post(handlers::transcribe))
         .route("/v1/synthesize", post(handlers::synthesize))
-        .route("/v1/vox/models", get(handlers::models))
+        .route("/v1/vox/models", get(handlers::models_with_llm))
         .route("/v1/stats", get(handlers::stats))
-        .route("/v1/privacy/ledger", get(privacy_api::ledger))
+        .route("/v1/privacy/ledger", get(privacy_api::ledger_with_llm))
         .route("/health", get(handlers::health))
         .route("/health/ready", get(handlers::health_ready))
         // OpenAI-compatible surface
-        .route("/v1/models", get(openai::list_models))
+        .route("/v1/models", get(openai::list_models_with_llm))
         .route("/v1/models/{id}", get(openai::retrieve_model))
         .route("/v1/audio/transcriptions", post(openai::transcriptions))
         .route("/v1/audio/speech", post(openai::speech))
         // WebSockets
         .route("/v1/listen", get(ws_listen::listen_ws))
         .route("/v1/speak", get(ws_speak::speak_ws))
-        .route("/v1/converse", get(ws_converse::converse_ws))
-        .route("/v1/live-talk", get(live_talk::live_talk_ws))
+        .route("/v1/converse", get(ws_converse::converse_ws_with_llm))
+        .route("/v1/live-talk", get(live_talk::live_talk_ws_with_llm))
         // Speaker management
         .merge(speakers_api::routes())
         .merge(memory_api::routes())
+        .layer(Extension(Arc::new(endpoint)))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
@@ -152,7 +162,19 @@ pub async fn serve(
     grace: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    let app = build_router(Arc::clone(&state));
+    let endpoint = LlmEndpoint::ollama(state.ollama_host.clone());
+    serve_with_llm(listener, state, grace, shutdown, endpoint).await
+}
+
+/// Serve a custom state and LLM runtime until `shutdown` resolves, then drain.
+pub async fn serve_with_llm(
+    listener: TcpListener,
+    state: Arc<ServerState>,
+    grace: Duration,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+    endpoint: LlmEndpoint,
+) -> std::io::Result<()> {
+    let app = build_router_with_llm(Arc::clone(&state), endpoint);
     let token = state.shutdown.clone();
 
     let server = {
@@ -293,10 +315,23 @@ pub async fn run_with_config(
     load_opts: LoadOptions,
     server_opts: ServerOptions,
 ) -> anyhow::Result<()> {
+    let endpoint = LlmEndpoint::ollama(server_opts.resolved_ollama_host());
+    run_with_llm_config(host, port, cache_models, load_opts, server_opts, endpoint).await
+}
+
+/// Like [`run_with_config`], with an explicitly selected LLM runtime.
+pub async fn run_with_llm_config(
+    host: &str,
+    port: u16,
+    cache_models: bool,
+    load_opts: LoadOptions,
+    server_opts: ServerOptions,
+    endpoint: LlmEndpoint,
+) -> anyhow::Result<()> {
     // Fail before loading any model if the bind address is not allowed.
     check_bind_host(host, server_opts.allow_remote)?;
-    // Offline mode: refuse a remote Ollama before loading any model.
-    crate::privacy::ensure_ollama_host_allowed(&server_opts.resolved_ollama_host())?;
+    // Offline mode checks the active LLM host before any model is loaded.
+    crate::privacy::ensure_ollama_host_allowed(&endpoint.host)?;
 
     // Single source of truth for model resolution, shared with the CLI:
     // `VOX_MODELS_DIR` → source checkout → per-user data directory.
@@ -375,7 +410,10 @@ pub async fn run_with_config(
     #[cfg(not(feature = "sherpa"))]
     let streaming_stt: Option<Arc<dyn crate::traits::StreamingSttBackend>> = None;
 
-    let ollama_host = server_opts.resolved_ollama_host();
+    let ollama_host = match endpoint.backend {
+        LlmBackend::Ollama => endpoint.host.clone(),
+        LlmBackend::OpenAiCompatible => server_opts.resolved_ollama_host(),
+    };
 
     #[cfg(feature = "diarization")]
     let (diarization, speaker_db) = load_diarization(&models_dir).await;
@@ -411,21 +449,18 @@ pub async fn run_with_config(
     });
 
     let capabilities = Arc::new(
-        crate::CapabilityRegistry::build(
+        crate::CapabilityRegistry::build_for_llm(
             &profile,
             stt_tuple,
             streaming_stt_tuple,
             tts_tuple,
             vad_model_path.as_deref(),
-            &ollama_host,
+            &endpoint,
             &http_client,
         )
         .await,
     );
-    info!(
-        ollama_models = capabilities.ollama_models.len(),
-        "capability registry built"
-    );
+    info!(llm = endpoint.label(), "capability registry built");
 
     let state = Arc::new(ServerState {
         stt,
@@ -455,9 +490,9 @@ pub async fn run_with_config(
     println!();
     println!("  endpoints:");
     println!("    GET  /            — web interface");
-    println!("    POST /v1/chat        — LLM chat via Ollama");
+    println!("    POST /v1/chat        — LLM chat");
     println!("    GET  /v1/voices      — list TTS voices");
-    println!("    GET  /v1/ollama-models — list Ollama models");
+    println!("    GET  /v1/llm-models  — list models from the configured LLM runtime");
     println!("    GET  /v1/capabilities — environment capability registry");
     println!("    POST /v1/transcribe  — speech-to-text (WAV body)");
     println!("    POST /v1/synthesize  — text-to-speech (JSON body)");
@@ -474,18 +509,19 @@ pub async fn run_with_config(
     println!("    GET  /v1/speakers     — speaker store (rename, forget, merge, export, consent)");
     println!("    GET  /health         — liveness (GET /health/ready — readiness)");
     println!();
-    println!("  LLM: Ollama at {}", state.ollama_host);
+    println!("  LLM: {} at {}", endpoint.label(), endpoint.host);
     if crate::privacy::offline() {
-        println!("  offline mode: only loopback Ollama, no model downloads");
+        println!("  offline mode: loopback LLM only, no model downloads");
     }
     println!();
 
     let listener = TcpListener::bind(&addr).await?;
-    serve(
+    serve_with_llm(
         listener,
         state,
         server_opts.shutdown_grace,
         shutdown_signal(),
+        endpoint,
     )
     .await?;
     info!("server stopped");

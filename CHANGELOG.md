@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-23
+
+### Added
+
+- Voice conversations can use a local OpenAI-compatible runtime, such as llama.cpp or MLX LM. Select it with `VOX_LLM_BACKEND=openai-compatible`.
+- Live Talk reports the time from the server's turn-end signal to the start of reply playback, including transcription.
+
+### Changed
+
+- The browser transfers completed microphone buffers directly from the audio worklet to the main thread.
+
 ### Fixed
 
 - Offline Ollama requests bypass proxies and refuse redirects. `localhost` resolves directly to loopback.

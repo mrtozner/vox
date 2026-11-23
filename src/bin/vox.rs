@@ -15,10 +15,10 @@ use clap::{Parser, Subcommand};
     about = "Offline voice AI runtime: speech-to-text, text-to-speech and voice chat on your machine",
     long_about = "Vox is an offline voice AI runtime in a single binary.\n\
                   Whisper STT, Kokoro/Piper TTS, Silero VAD, speaker identification and barge-in voice chat\n\
-                  with a local Ollama model. No cloud APIs, no Python."
+                  with a local language model. No cloud APIs, no Python."
 )]
 struct Cli {
-    /// Stay on this machine: refuse an Ollama host that is not loopback and
+    /// Stay on this machine: refuse a language model host that is not loopback and
     /// refuse model downloads [env: VOX_OFFLINE=1]
     #[arg(long, global = true)]
     offline: bool,
@@ -69,7 +69,8 @@ enum Commands {
         /// Default: the model picked by `vox tune`, else tiny.en
         #[arg(long)]
         model: Option<String>,
-        /// Ollama model name. Default: the model picked by `vox tune`, else llama3.2
+        /// Language model ID. Falls back to VOX_LLM_MODEL, a matching tune result,
+        /// or the selected backend's default
         #[arg(long)]
         llm: Option<String>,
         /// Ollama host:port. Default: VOX_OLLAMA_HOST, then `ollama_host` in
@@ -116,8 +117,8 @@ enum Commands {
         /// Spoken language as a Whisper code (en, tr, de, ...) or "auto"
         #[arg(long)]
         language: Option<String>,
-        /// Ollama model to measure (repeatable). Default: installed models
-        /// that fit in RAM, smallest first
+        /// Language model to measure (repeatable). Defaults to VOX_LLM_MODEL
+        /// or available models, preferring smaller ones when sizes are known
         #[arg(long)]
         llm: Vec<String>,
         /// Ollama host:port. Default: VOX_OLLAMA_HOST, then `ollama_host` in
@@ -267,19 +268,22 @@ async fn main() -> anyhow::Result<()> {
                 ollama_host.as_deref(),
                 config.ollama_host.as_deref(),
             );
-            // Offline mode: refuse a remote Ollama before loading any model.
-            vox::privacy::ensure_ollama_host_allowed(&host.host)?;
+            let endpoint = vox::llm::LlmEndpoint::from_env(&host.host)?;
+            // Validate the active runtime before loading any speech models.
+            vox::privacy::ensure_ollama_host_allowed(&endpoint.host)?;
             let tuned = config.tune.unwrap_or_default();
-            let model = model
-                .or(tuned.stt_model)
-                .unwrap_or_else(|| "tiny.en".to_string());
             let llm = llm
-                .or(tuned.llm_model)
-                .unwrap_or_else(|| "llama3.2".to_string());
+                .as_deref()
+                .or(endpoint.default_model.as_deref())
+                .or_else(|| tuned.llm_for_endpoint(&endpoint));
+            let model = model
+                .as_deref()
+                .or(tuned.stt_model.as_deref())
+                .unwrap_or("tiny.en");
             cli::chat::run(
-                &model,
-                &llm,
-                &host.host,
+                model,
+                llm,
+                &endpoint,
                 yes,
                 voice_mode,
                 diarize,

@@ -2,7 +2,7 @@
 //!
 //! vox makes two kinds of outbound connection, and nothing else:
 //!
-//! 1. requests to the Ollama server that provides the LLM, and
+//! 1. requests to the configured LLM runtime, and
 //! 2. model downloads (`vox models download`, `vox serve --download`, the
 //!    first-run prompts of the other commands).
 //!
@@ -10,7 +10,7 @@
 //!
 //! - [`resolve_ollama_host`] decides which Ollama address is used
 //!   (flag, then `VOX_OLLAMA_HOST`, then the config file, then the default).
-//! - [`ollama_http_request`] builds each Ollama request. Offline requests
+//! - The shared request builder prepares each LLM request. Offline requests
 //!   connect directly to loopback addresses and do not follow redirects.
 //! - [`download_request`] gates every model download. In offline mode it
 //!   refuses all of them.
@@ -230,7 +230,7 @@ pub fn offline() -> bool {
 /// An outbound connection refused by offline mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EgressDenied {
-    /// The Ollama address is not loopback.
+    /// The LLM address is not loopback.
     NonLoopbackHost { host: String },
     /// Model downloads are off.
     Download { target: String },
@@ -241,8 +241,8 @@ impl fmt::Display for EgressDenied {
         match self {
             EgressDenied::NonLoopbackHost { host } => write!(
                 f,
-                "offline mode: refusing to connect to Ollama at '{host}' because it is not a \
-                 loopback address. Use an Ollama on this machine (localhost:11434), or drop \
+                "offline mode: refusing to connect to the LLM at '{host}' because it is not a \
+                 loopback address. Use a runtime on this machine, or drop \
                  --offline / {OFFLINE_ENV} to allow it."
             ),
             EgressDenied::Download { target } => write!(
@@ -257,7 +257,7 @@ impl fmt::Display for EgressDenied {
 
 impl std::error::Error for EgressDenied {}
 
-/// Check an Ollama address against an explicit offline setting.
+/// Check an LLM address against an explicit offline setting.
 pub fn check_host(host: &str, offline: bool) -> Result<(), EgressDenied> {
     if offline && !is_loopback_host(host) {
         return Err(EgressDenied::NonLoopbackHost {
@@ -279,7 +279,7 @@ pub fn check_download(target: &str, offline: bool) -> Result<(), EgressDenied> {
 
 /// Fail if offline mode forbids talking to `host`. Call this at startup so a
 /// misconfiguration is reported before any model is loaded;
-/// [`ollama_http_request`] enforces the same rule on every request.
+/// the shared request builder enforces the same rule on every request.
 pub fn ensure_ollama_host_allowed(host: &str) -> Result<(), EgressDenied> {
     check_host(host, offline())
 }
@@ -550,7 +550,7 @@ pub fn json_len<T: Serialize + ?Sized>(body: &T) -> u64 {
 pub enum OllamaRequestError {
     #[error(transparent)]
     Denied(#[from] EgressDenied),
-    #[error("failed to initialize the offline Ollama client: {0}")]
+    #[error("failed to initialize the offline LLM client: {0}")]
     Client(#[source] &'static reqwest::Error),
 }
 
@@ -564,11 +564,23 @@ pub fn ollama_http_request(
     purpose: &str,
     bytes_sent: u64,
 ) -> Result<(reqwest::RequestBuilder, Connection<'static>), OllamaRequestError> {
+    llm_http_request(online_client, method, host, path, purpose, bytes_sent)
+}
+
+/// Prepare and record an LLM request with the shared offline transport.
+pub(crate) fn llm_http_request(
+    online_client: &reqwest::Client,
+    method: reqwest::Method,
+    host: &str,
+    path: &str,
+    purpose: &str,
+    bytes_sent: u64,
+) -> Result<(reqwest::RequestBuilder, Connection<'static>), OllamaRequestError> {
     let offline = offline();
     let ledger = ledger();
-    let url = checked_ollama_url(ledger, offline, host, path, purpose)?;
+    let url = checked_llm_url(ledger, offline, host, path, purpose)?;
     let client = if offline {
-        offline_ollama_client()?
+        offline_llm_client()?
     } else {
         online_client
     };
@@ -588,7 +600,10 @@ impl reqwest::dns::Resolve for LoopbackResolver {
             .eq_ignore_ascii_case("localhost");
         Box::pin(async move {
             if !is_localhost {
-                return Err(std::io::Error::other("offline Ollama only resolves localhost").into());
+                return Err(std::io::Error::other(
+                    "offline LLM connections only resolve localhost",
+                )
+                .into());
             }
             let addresses: reqwest::dns::Addrs = Box::new(
                 [
@@ -602,7 +617,7 @@ impl reqwest::dns::Resolve for LoopbackResolver {
     }
 }
 
-fn offline_ollama_client() -> Result<&'static reqwest::Client, OllamaRequestError> {
+fn offline_llm_client() -> Result<&'static reqwest::Client, OllamaRequestError> {
     static CLIENT: OnceLock<Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
@@ -642,11 +657,11 @@ pub fn ollama_request_in<'a>(
     purpose: &str,
     bytes_sent: u64,
 ) -> Result<(String, Connection<'a>), EgressDenied> {
-    let url = checked_ollama_url(ledger, offline, host, path, purpose)?;
+    let url = checked_llm_url(ledger, offline, host, path, purpose)?;
     Ok((url, ledger.begin(host, purpose, bytes_sent)))
 }
 
-fn checked_ollama_url(
+fn checked_llm_url(
     ledger: &PrivacyLedger,
     offline: bool,
     host: &str,

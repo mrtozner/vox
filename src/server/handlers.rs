@@ -5,12 +5,14 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
+use axum::{Extension, Json};
 
+use crate::conversation::ChatMessage;
+use crate::llm::{LlmBackend, LlmEndpoint};
 use crate::privacy::{OllamaRequestError, ollama_http_request};
 use crate::types::{AudioChunk, SttResult, TtsOutput, TtsRequest, Utterance};
 
@@ -351,46 +353,50 @@ pub async fn synthesize(
 /// Build the vox-shaped backend listing (shared by `/v1/vox/models` and the
 /// legacy keys of `/v1/models`).
 pub async fn vox_models_response(state: &ServerState) -> ModelsResponse {
-    // Check Ollama connectivity, bounded so a hung Ollama cannot stall the UI.
-    let ollama = {
-        let response = match ollama_http_request(
-            &state.http_client,
-            reqwest::Method::GET,
-            &state.ollama_host,
-            "/api/tags",
-            "llm status check",
-            0,
-        ) {
-            Ok((request, egress)) => request
-                .timeout(OLLAMA_TAGS_TIMEOUT)
-                .send()
-                .await
-                .ok()
-                .map(|resp| (resp, egress)),
-            // Refused by offline mode: reported as not connected.
-            Err(_) => None,
-        };
-        match response {
-            Some((resp, egress)) if resp.status().is_success() => {
-                if let Some(len) = resp.content_length() {
-                    egress.add_received(len);
-                }
-                let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                let count = body["models"].as_array().map(|a| a.len()).unwrap_or(0);
-                Some(OllamaStatus {
-                    connected: true,
-                    host: state.ollama_host.clone(),
-                    model_count: count,
-                })
-            }
-            _ => Some(OllamaStatus {
-                connected: false,
-                host: state.ollama_host.clone(),
-                model_count: 0,
-            }),
-        }
-    };
+    let ollama = ollama_status(state, &state.ollama_host).await;
+    model_response(state, Some(ollama))
+}
 
+async fn ollama_status(state: &ServerState, host: &str) -> OllamaStatus {
+    let response = match ollama_http_request(
+        &state.http_client,
+        reqwest::Method::GET,
+        host,
+        "/api/tags",
+        "llm status check",
+        0,
+    ) {
+        Ok((request, egress)) => request
+            .timeout(OLLAMA_TAGS_TIMEOUT)
+            .send()
+            .await
+            .ok()
+            .map(|resp| (resp, egress)),
+        // Refused by offline mode: reported as not connected.
+        Err(_) => None,
+    };
+    match response {
+        Some((resp, egress)) if resp.status().is_success() => {
+            if let Some(len) = resp.content_length() {
+                egress.add_received(len);
+            }
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            let count = body["models"].as_array().map(|a| a.len()).unwrap_or(0);
+            OllamaStatus {
+                connected: true,
+                host: host.to_string(),
+                model_count: count,
+            }
+        }
+        _ => OllamaStatus {
+            connected: false,
+            host: host.to_string(),
+            model_count: 0,
+        },
+    }
+}
+
+fn model_response(state: &ServerState, ollama: Option<OllamaStatus>) -> ModelsResponse {
     ModelsResponse {
         stt: state.stt.as_ref().map(|_| BackendInfo {
             name: "whisper".to_string(),
@@ -419,6 +425,55 @@ pub async fn vox_models_response(state: &ServerState) -> ModelsResponse {
 /// `GET /v1/models` is the OpenAI-shaped listing; see `openai::list_models`.
 pub async fn models(State(state): State<AppState>) -> impl IntoResponse {
     Json(vox_models_response(&state).await)
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct LlmStatus {
+    provider: &'static str,
+    connected: bool,
+    model_count: usize,
+}
+
+pub(super) async fn vox_models_for_llm(
+    state: &ServerState,
+    endpoint: &LlmEndpoint,
+) -> (ModelsResponse, LlmStatus) {
+    let (ollama, connected, model_count) = match endpoint.backend {
+        LlmBackend::Ollama => {
+            let status = ollama_status(state, &endpoint.host).await;
+            let (connected, model_count) = (status.connected, status.model_count);
+            (Some(status), connected, model_count)
+        }
+        LlmBackend::OpenAiCompatible => match endpoint
+            .list_openai_models(&state.http_client, OLLAMA_TAGS_TIMEOUT)
+            .await
+        {
+            Ok(models) => (None, true, models.len()),
+            Err(_) => (None, false, 0),
+        },
+    };
+    (
+        model_response(state, ollama),
+        LlmStatus {
+            provider: endpoint.backend.as_str(),
+            connected,
+            model_count,
+        },
+    )
+}
+
+pub(super) async fn models_with_llm(
+    State(state): State<AppState>,
+    Extension(endpoint): Extension<Arc<LlmEndpoint>>,
+) -> impl IntoResponse {
+    #[derive(serde::Serialize)]
+    struct Response {
+        #[serde(flatten)]
+        models: ModelsResponse,
+        llm: LlmStatus,
+    }
+    let (models, llm) = vox_models_for_llm(&state, &endpoint).await;
+    Json(Response { models, llm })
 }
 
 fn avg(total: u64, count: u64) -> Option<u64> {
@@ -616,29 +671,68 @@ fn log_upstream_body(context: &str, body: &str) {
     tracing::warn!(body = %snippet, "{context}");
 }
 
-/// POST /v1/chat — proxy a chat message through Ollama.
+/// POST /v1/chat with the state’s Ollama configuration.
 ///
-/// The upstream is always the operator-configured Ollama; a `host` field in
+/// The upstream is always operator-configured; a `host` field in
 /// the request is ignored.
 pub async fn chat(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<impl IntoResponse, ServerError> {
+    let endpoint = LlmEndpoint::ollama(state.ollama_host.clone());
+    chat_for_llm(&state, &endpoint, req).await
+}
+
+pub(super) async fn chat_with_llm(
+    State(state): State<AppState>,
+    Extension(endpoint): Extension<Arc<LlmEndpoint>>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<ChatResponse>, ServerError> {
+    chat_for_llm(&state, &endpoint, req).await
+}
+
+async fn chat_for_llm(
+    state: &ServerState,
+    endpoint: &LlmEndpoint,
+    req: ChatRequest,
+) -> Result<Json<ChatResponse>, ServerError> {
     if req.text.trim().is_empty() {
         return Err(ServerError::bad_request("text is empty")
             .with_code("empty_text")
             .with_param("text"));
     }
 
-    let host = &state.ollama_host;
-    let model = req.model.unwrap_or_else(|| "llama3.2".to_string());
+    let model = endpoint
+        .resolve_model(&state.http_client, req.model.as_deref())
+        .await
+        .map_err(|e| {
+            llm_gateway_error(
+                endpoint,
+                &e,
+                "cannot select a model. Set VOX_LLM_MODEL to a served model ID",
+            )
+        })?;
 
-    // Build environment-aware system prompt
-    let system_prompt = crate::prompts::build_system_prompt_with_registry(
-        crate::prompts::VoicePromptMode::Standard,
-        &state.capabilities,
+    let system_prompt = state.capabilities.inject_into_prompt_for_llm(
+        &crate::prompts::build_system_prompt(crate::prompts::VoicePromptMode::Standard),
+        endpoint,
     );
 
+    if matches!(endpoint.backend, LlmBackend::OpenAiCompatible) {
+        let started = Instant::now();
+        let messages = [
+            ChatMessage::system(system_prompt),
+            ChatMessage::user(req.text),
+        ];
+        let response = endpoint
+            .complete_openai(&state.http_client, &model, &messages, OLLAMA_CHAT_TIMEOUT)
+            .await
+            .map_err(|e| llm_gateway_error(endpoint, &e, "chat request failed"))?;
+        state.stats.record_chat(started.elapsed());
+        return Ok(Json(ChatResponse { response, model }));
+    }
+
+    let host = &endpoint.host;
     let body = OllamaRequest {
         model: model.clone(),
         prompt: req.text,
@@ -711,14 +805,71 @@ pub async fn chat(
     }))
 }
 
+fn llm_gateway_error(endpoint: &LlmEndpoint, err: &crate::VoxError, message: &str) -> ServerError {
+    tracing::warn!(backend = endpoint.label(), host = %endpoint.host, "LLM request failed: {err}");
+    match crate::privacy::ensure_ollama_host_allowed(&endpoint.host) {
+        Err(denial) => ServerError::forbidden(denial.to_string()).with_code("offline_mode"),
+        Ok(()) => ServerError::bad_gateway(format!("{}: {message}", endpoint.label())),
+    }
+}
+
 /// GET /v1/ollama-models — list locally available Ollama models.
 pub async fn ollama_models(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ServerError> {
+    list_ollama_models(&state, &state.ollama_host)
+        .await
+        .map(Json)
+}
+
+pub(super) async fn legacy_ollama_models(
+    State(state): State<AppState>,
+    Extension(endpoint): Extension<Arc<LlmEndpoint>>,
+) -> Result<Json<OllamaModelsResponse>, ServerError> {
+    match endpoint.backend {
+        LlmBackend::Ollama => list_ollama_models(&state, &endpoint.host).await.map(Json),
+        LlmBackend::OpenAiCompatible => Ok(Json(OllamaModelsResponse { models: Vec::new() })),
+    }
+}
+
+pub(super) async fn llm_models(
+    State(state): State<AppState>,
+    Extension(endpoint): Extension<Arc<LlmEndpoint>>,
+) -> Result<impl IntoResponse, ServerError> {
+    #[derive(serde::Serialize)]
+    struct Response {
+        provider: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        default_model: Option<String>,
+        models: Vec<OllamaModelInfo>,
+    }
+
+    let models = match endpoint.backend {
+        LlmBackend::Ollama => list_ollama_models(&state, &endpoint.host).await?.models,
+        LlmBackend::OpenAiCompatible => endpoint
+            .list_openai_models(&state.http_client, OLLAMA_TAGS_TIMEOUT)
+            .await
+            .map_err(|e| llm_gateway_error(&endpoint, &e, "model discovery failed"))?
+            .into_iter()
+            .map(|name| OllamaModelInfo { name, size: None })
+            .collect(),
+    };
+
+    Ok(Json(Response {
+        provider: endpoint.backend.as_str(),
+        default_model: endpoint.default_model.clone(),
+        models,
+    }))
+}
+
+async fn list_ollama_models(
+    state: &ServerState,
+    host: &str,
+) -> Result<OllamaModelsResponse, ServerError> {
     let (request, egress) = ollama_http_request(
         &state.http_client,
         reqwest::Method::GET,
-        &state.ollama_host,
+        host,
         "/api/tags",
         "llm model list",
         0,
@@ -729,7 +880,7 @@ pub async fn ollama_models(
         .timeout(OLLAMA_TAGS_TIMEOUT)
         .send()
         .await
-        .map_err(|e| ollama_send_error(&state.ollama_host, &e))?;
+        .map_err(|e| ollama_send_error(host, &e))?;
     egress.add_received(resp.content_length().unwrap_or(0));
 
     if !resp.status().is_success() {
@@ -784,7 +935,6 @@ pub async fn ollama_models(
     // Probe untrusted candidates in parallel, with a global 3s budget.
     let probes = candidates.into_iter().map(|(name, size, trusted)| {
         let client = client.clone();
-        let host = state.ollama_host.clone();
         async move {
             if trusted {
                 return Some(OllamaModelInfo { name, size });
@@ -793,7 +943,7 @@ pub async fn ollama_models(
             let (request, egress) = ollama_http_request(
                 &client,
                 reqwest::Method::POST,
-                &host,
+                host,
                 "/api/show",
                 "llm model details",
                 crate::privacy::json_len(&show_body),
@@ -846,10 +996,30 @@ pub async fn ollama_models(
         }
     };
 
-    Ok(Json(OllamaModelsResponse { models }))
+    Ok(OllamaModelsResponse { models })
 }
 
 /// GET /v1/capabilities — return the full environment capability registry.
 pub async fn capabilities(State(state): State<AppState>) -> impl IntoResponse {
     Json((*state.capabilities).clone())
+}
+
+pub(super) async fn capabilities_with_llm(
+    State(state): State<AppState>,
+    Extension(endpoint): Extension<Arc<LlmEndpoint>>,
+) -> impl IntoResponse {
+    #[derive(serde::Serialize)]
+    struct Response<'a> {
+        #[serde(flatten)]
+        registry: &'a crate::CapabilityRegistry,
+        llm: serde_json::Value,
+    }
+    Json(Response {
+        registry: &state.capabilities,
+        llm: serde_json::json!({
+            "provider": endpoint.backend.as_str(),
+            "default_model": endpoint.default_model,
+        }),
+    })
+    .into_response()
 }

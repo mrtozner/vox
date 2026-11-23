@@ -394,7 +394,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
 <header class="header">
     <div class="header-brand">
         <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><rect x="2" y="9" width="3" height="6" rx="1.5"/><rect x="7" y="5" width="3" height="14" rx="1.5"/><rect x="12" y="2" width="3" height="20" rx="1.5"/><rect x="17" y="7" width="3" height="10" rx="1.5"/></g></svg>
-        vox<span id="headerVersion">v0.7.0</span>
+        vox<span id="headerVersion">v0.8.0</span>
     </div>
     <div class="local-pill" id="localPill">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.600-1.600 8-6 8-11V5l-8-3z"/></svg>
@@ -583,7 +583,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
     <span id="statusStt">stt: --</span>
     <span id="statusStreaming">streaming: --</span>
     <span id="statusTts">tts: --</span>
-    <span id="statusOllama">ollama: --</span>
+    <span id="statusLlm">llm: --</span>
     <span id="statusUptime">uptime: --</span>
     <span id="statusVersion"></span>
 </footer>
@@ -634,7 +634,7 @@ const S = {
     // Microphone
     audioCtx: null, audioInit: null, workletNode: null, mediaStream: null, micSource: null, micAnalyser: null, micGen: 0,
     listenWs: null, chatWs: null,
-    voicesLoaded: false, voicesWarned: false, ollamaModelsLoaded: false, voices: [],
+    voicesLoaded: false, voicesWarned: false, llmModelsLoaded: false, voices: [],
     convVoices: [], convEngine: null, // engine and voices that speak in Live Talk / Converse
     version: null,
     dashPollId: null, speechActive: false, synthesizing: false, streaming: false, chatBusy: false,
@@ -850,7 +850,7 @@ function switchTab(name) {
     if (name === 'speak' && !S.voicesLoaded) loadVoices();
     if (name === 'chat') {
         if (!S.voicesLoaded) loadVoices();
-        loadOllamaModels();
+        loadLlmModels();
     }
     if (name === 'livetalk') {
         // Fire-and-forget: never await inside switchTab or the tab stays
@@ -895,8 +895,10 @@ class VoxProcessor extends AudioWorkletProcessor {
         for (let i = 0; i < input.length; i++) {
             this.buffer[this.offset++] = input[i];
             if (this.offset >= ${CHUNK_SIZE}) {
-                this.port.postMessage(this.buffer.slice(0));
+                const frame = this.buffer;
+                this.buffer = new Float32Array(${CHUNK_SIZE});
                 this.offset = 0;
+                this.port.postMessage(frame, [frame.buffer]);
             }
         }
         return true;
@@ -2005,32 +2007,34 @@ function streamSpeak() {
     };
 }
 
-// ─── 9b. OLLAMA MODELS ──────────────────────────────────────
-async function loadOllamaModels() {
-    if (S.ollamaModelsLoaded) return;
+// ─── 9b. LANGUAGE MODELS ────────────────────────────────────
+async function loadLlmModels() {
+    if (S.llmModelsLoaded) return;
     const select = $('chatModel');
-    const fallback = () => {
+    const setDefault = (name) => {
         select.textContent = '';
-        const opt = el('option', null, 'llama3.2 (default)');
-        opt.value = 'llama3.2';
+        const opt = el('option', null, name ? 'Server default (' + name + ')' : 'Server default');
+        opt.value = '';
         select.appendChild(opt);
     };
     try {
-        const res = await fetch('/v1/ollama-models');
+        let res = await fetch('/v1/llm-models');
+        if (res.status === 404) res = await fetch('/v1/ollama-models');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        if (!data.models || data.models.length === 0) { fallback(); return; }
+        const models = Array.isArray(data.models) ? data.models.filter((m) => m && m.name) : [];
         const prev = select.value;
-        select.textContent = '';
-        data.models.forEach((m) => {
+        setDefault(data.default_model);
+        models.forEach((m) => {
             const opt = el('option', null, m.name + (m.size ? ' (' + (m.size / 1e9).toFixed(1) + 'GB)' : ''));
             opt.value = m.name;
             select.appendChild(opt);
         });
-        if (prev && data.models.some((m) => m.name === prev)) select.value = prev;
-        S.ollamaModelsLoaded = true;
+        if (prev && models.some((m) => m.name === prev)) select.value = prev;
+        else if (!data.default_model && models.length) select.value = models[0].name;
+        S.llmModelsLoaded = models.length > 0;
     } catch (e) {
-        fallback();
+        setDefault();
     }
 }
 
@@ -2039,7 +2043,7 @@ async function sendChat(text, retryMsgEl) {
     if (!text || S.chatBusy) return;
     S.chatBusy = true;
 
-    const model = $('chatModel').value || 'llama3.2';
+    const model = $('chatModel').value || undefined;
     const voice = $('chatVoice').value;
     if (voice) Player.claim('chat'); // created inside the click so playback is allowed later
 
@@ -2133,7 +2137,7 @@ function startChatMic() {
 
     const btn = $('chatMicBtn');
     const input = $('chatInput');
-    const model = $('chatModel').value || 'llama3.2';
+    const model = $('chatModel').value || undefined;
     const voice = conversationVoice($('chatVoice').value);
     btn.classList.add('recording');
     btn.setAttribute('aria-pressed', 'true');
@@ -2271,12 +2275,13 @@ const LT = {
     pttHeld: false,        // PTT button currently pressed
     pttDownAt: 0,          // performance.now() of the press
     pendingHeader: null,   // last 'audio_chunk' header awaiting its binary frame; {drop:true} for a dead turn
+    pendingSpeechEndAt: null, // when the server's 'speech_end' arrived, until the transcript arrives
     turnId: 0,             // id of the turn on screen (0 = none on this connection)
     deadUpto: 0,           // turns up to this id are cancelled: their events and audio are dropped
     currentAssistantEl: null,
     turnActive: false,     // the server is still producing this turn
     turnCancelled: false,  // the turn on screen was cut; nothing more of it is shown or played
-    turn: null,            // { id, t0, tThinking, stt, llm, tts, audio, heard, received, cancelled, final, reported, draft, metaEl }
+    turn: null,            // the turn on screen, with timings and playback progress
     metrics: [],           // the turn objects of this page, for the dashboard medians
     sessionId: null,       // server memory to continue; from 'ready', kept in sessionStorage
     memory: null,          // last 'memory' event
@@ -2452,15 +2457,24 @@ function syncLiveDiarize() {
 //                arrives, the browser's own measurement from 'thinking' to the first 'token'
 //   first tts    server: synthesis time of the first sentence (turn_metrics.tts_first_audio_ms)
 //   first audio  browser: from the transcript arriving until reply audio actually starts playing
+//   turn end to audio  browser: from 'speech_end' arriving until reply playback starts, including STT
 // turn_metrics is sent when a turn ends by itself; a cancelled turn keeps the browser values.
-const CHIP_DEF = [['stt', 'stt', 300, 700], ['llm', 'first token', 500, 1500], ['tts', 'first tts', 300, 800], ['audio', 'first audio', 900, 2000]];
+const CHIP_DEF = [
+    ['stt', 'stt', 300, 700],
+    ['llm', 'first token', 500, 1500],
+    ['tts', 'first tts', 300, 800],
+    ['audio', 'first audio', 900, 2000],
+    ['turnEndAudio', 'turn end to audio', null, null, 'From receiving the server’s turn-end signal to reply playback. Includes transcription.'],
+];
 function renderChips(turn) {
     if (!turn || !turn.metaEl) return;
     const meta = turn.metaEl;
     meta.textContent = '';
-    CHIP_DEF.forEach(([key, label, ok, warn]) => {
+    CHIP_DEF.forEach(([key, label, ok, warn, description]) => {
         const v = turn[key];
-        const chip = el('span', 'chip' + (v == null ? '' : v <= ok ? ' ok' : v <= warn ? ' warn' : ' slow'));
+        const chip = el('span', 'chip');
+        if (v != null && ok != null) chip.classList.add(v <= ok ? 'ok' : v <= warn ? 'warn' : 'slow');
+        if (description) chip.title = description;
         chip.appendChild(el('span', 'chip-k', label));
         chip.appendChild(document.createTextNode(v == null ? (turn.final ? '--' : '…') : Math.round(v) + ' ms'));
         meta.appendChild(chip);
@@ -2475,10 +2489,11 @@ function beginTurnMeta(id, stt) {
     const meta = el('div', 'turn-meta');
     $('liveTalkMessages').appendChild(meta);
     LT.turn = {
-        id, t0: performance.now(), tThinking: null,
-        stt: typeof stt === 'number' ? stt : null, llm: null, tts: null, audio: null,
+        id, t0: performance.now(), tThinking: null, speechEndAt: LT.pendingSpeechEndAt,
+        stt: typeof stt === 'number' ? stt : null, llm: null, tts: null, audio: null, turnEndAudio: null,
         heard: 0, received: 0, cancelled: false, final: false, reported: false, draft: '', metaEl: meta,
     };
+    LT.pendingSpeechEndAt = null;
     LT.metrics.push(LT.turn);
     if (LT.metrics.length > 200) LT.metrics.shift();
     renderChips(LT.turn);
@@ -2696,7 +2711,11 @@ function decodeAndEnqueue(arrayBuffer, headerInfo) {
             setLiveState('speaking');
             if (turn) {
                 if (index >= 0) turn.heard = Math.max(turn.heard, index + 1);
-                if (turn.audio == null) turn.audio = performance.now() - turn.t0;
+                if (turn.audio == null) {
+                    const startedAt = performance.now();
+                    turn.audio = startedAt - turn.t0;
+                    if (turn.speechEndAt !== null) turn.turnEndAudio = startedAt - turn.speechEndAt;
+                }
                 renderChips(turn);
             }
             markSentence(index, 'playing');
@@ -2738,6 +2757,7 @@ function handleLiveEvent(data) {
             if (LT.active) setLiveState('listening');
             break;
         case 'speech_start':
+            LT.pendingSpeechEndAt = null;
             // The server heard speech. It only listens while no reply audio should be
             // playing, so if this browser is still playing one, that reply is cut.
             if (LT.state === 'speaking' || LT.state === 'thinking') {
@@ -2747,6 +2767,7 @@ function handleLiveEvent(data) {
             }
             break;
         case 'speech_end':
+            LT.pendingSpeechEndAt = performance.now();
             // The utterance is complete and is being transcribed. In push-to-talk the
             // button release shows this step itself (see pttEnd).
             if (LT.active && LT.mode === 'vad' && (LT.state === 'listening' || LT.state === 'cancelled')) {
@@ -2822,6 +2843,7 @@ function handleLiveEvent(data) {
         case 'turn_done':
             if (tid !== null && tid !== LT.turnId) {
                 // A turn in which nothing was transcribed: it never reached the screen.
+                LT.pendingSpeechEndAt = null;
                 if (LT.active && LT.state === 'transcribing') setLiveState('listening');
                 break;
             }
@@ -2833,6 +2855,7 @@ function handleLiveEvent(data) {
             if (tid > LT.turnId) {
                 // Cut before its transcript arrived: the user kept talking. Nothing of
                 // it is on screen; make sure nothing of it gets there.
+                LT.pendingSpeechEndAt = null;
                 LT.deadUpto = Math.max(LT.deadUpto, tid);
                 if (LT.active && LT.state === 'transcribing') setLiveState('listening');
                 break;
@@ -2885,7 +2908,10 @@ function handleLiveEvent(data) {
             if (tid === null && LT.enroll) enrollFailed();
             if (tid === null) break;
             if (tid === LT.turnId) endLiveTurn();
-            else if (LT.active && LT.state === 'transcribing') setLiveState('listening');
+            else {
+                LT.pendingSpeechEndAt = null;
+                if (LT.active && LT.state === 'transcribing') setLiveState('listening');
+            }
             break;
         case 'partial':
             // Defined on the wire but not emitted by the server; ignore.
@@ -2931,6 +2957,7 @@ function startLiveTalk() {
     LT.turnId = 0;
     LT.deadUpto = 0;
     LT.pendingHeader = null;
+    LT.pendingSpeechEndAt = null;
 
     // Created inside the click so the browser allows playback, and early so
     // the first TTS chunk does not pay context start-up latency.
@@ -3012,6 +3039,7 @@ function stopLiveTalk() {
     LT.turnCancelled = false;
     LT.turnId = 0;
     LT.deadUpto = 0;
+    LT.pendingSpeechEndAt = null;
     LT.turn = null;
     LT.currentAssistantEl = null;
     LT.forgetPending = false;
@@ -3080,7 +3108,7 @@ async function loadLiveTalkSelectors() {
     // Models come from the same catalogue as the Chat tab. Whatever the user
     // picked here (this visit or an earlier one) is kept across reloads of the lists.
     if (!S.voicesLoaded) await loadVoices();
-    if (!S.ollamaModelsLoaded) await loadOllamaModels();
+    await loadLlmModels();
     const model = $('liveTalkModel');
     const voice = $('liveTalkVoice');
     mirrorOptions($('chatModel'), model);
@@ -3282,7 +3310,7 @@ async function fetchStats() {
 }
 
 // GET /v1/privacy/ledger: every outbound connection the server process made
-// (requests to Ollama, model downloads). null on a server without the endpoint.
+// (requests to the language model backend, model downloads). null on a server without the endpoint.
 async function fetchLedger() {
     try {
         const res = await fetch('/v1/privacy/ledger');
@@ -3314,8 +3342,10 @@ function renderLedger(data, failed) {
     const box = $('dashPrivacy');
     box.textContent = '';
     box.appendChild(dashRow('offline mode', data.offline ? 'on' : 'off'));
-    if (data.ollama_host) {
-        box.appendChild(dashRow('language model at', data.ollama_host + (data.ollama_host_loopback ? ' (same machine)' : ' (another machine)')));
+    const llmHost = data.llm_host ?? data.ollama_host;
+    const llmLoopback = data.llm_host_loopback ?? data.ollama_host_loopback;
+    if (llmHost) {
+        box.appendChild(dashRow('language model at', llmHost + (llmLoopback ? ' (same machine)' : ' (another machine)')));
     }
     box.appendChild(dashRow('connections', fmtInt(t.connections)));
     if (blocked) box.appendChild(dashRow('refused by offline mode', fmtInt(blocked)));
@@ -3372,10 +3402,12 @@ async function refreshDashboard() {
         renderBackend('stt', models.stt);
         renderBackend('streaming', models.streaming_stt);
         renderBackend('tts', models.tts);
-        if (models.ollama) {
-            const cls = models.ollama.connected ? 'loaded' : 'not-loaded';
-            const status = models.ollama.connected ? fmtInt(models.ollama.model_count) + ' models' : 'offline';
-            html += '<div class="dash-row"><span class="label">ollama</span><span><span class="dash-indicator ' + cls + '"></span>' + status + '</span></div>';
+        const llm = models.llm ?? models.ollama;
+        if (llm) {
+            const cls = llm.connected ? 'loaded' : 'not-loaded';
+            const status = llm.connected ? fmtInt(llm.model_count) + ' models' : 'offline';
+            const provider = llm.provider === 'openai-compatible' ? 'OpenAI-compatible' : 'Ollama';
+            html += '<div class="dash-row"><span class="label">llm (' + provider + ')</span><span><span class="dash-indicator ' + cls + '"></span>' + status + '</span></div>';
         }
         $('dashModels').innerHTML = html;
         updateStatusBar(models, null);
@@ -3418,11 +3450,10 @@ function updateStatusBar(modelsData, statsData) {
         const hasStreaming = !!modelsData.streaming_stt;
         $('statusStreaming').textContent = 'streaming: ' + (hasStreaming ? 'on' : 'off');
         $('statusStreaming').classList.toggle('on', hasStreaming);
-        if (modelsData.ollama) {
-            const ollamaLabel = modelsData.ollama.connected
-                ? modelsData.ollama.model_count + ' models'
-                : 'offline';
-            $('statusOllama').textContent = 'ollama: ' + ollamaLabel;
+        const llm = modelsData.llm ?? modelsData.ollama;
+        if (llm) {
+            const llmLabel = llm.connected ? llm.model_count + ' models' : 'offline';
+            $('statusLlm').textContent = 'llm: ' + llmLabel;
         }
     }
     if (statsData) {

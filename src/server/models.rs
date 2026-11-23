@@ -115,9 +115,9 @@ pub struct ReadyResponse {
     pub missing: Vec<String>,
 }
 
-/// Request body for the chat endpoint (Ollama proxy).
+/// Request body for the chat endpoint.
 ///
-/// The Ollama address is fixed by the operator (`vox serve --ollama-host`).
+/// The LLM address is fixed by the server operator.
 /// A `host` field sent by older clients is ignored: letting a request pick
 /// the upstream turned the server into an open proxy.
 #[derive(Debug, Deserialize)]
@@ -199,11 +199,10 @@ pub enum TtsWsEvent {
 /// and applies from the next turn on; a turn that is already running keeps
 /// the values it started with.
 ///
-/// The Ollama host is server configuration (`VOX_OLLAMA_HOST`) and cannot be
-/// chosen by the client; a `host` field is ignored.
+/// The LLM host is fixed by the server operator. A `host` field is ignored.
 #[derive(Debug, Default, Deserialize)]
 pub struct ConverseConfig {
-    /// Ollama model name. Defaults to `llama3.2`.
+    /// Optional model ID for the configured LLM runtime.
     pub model: Option<String>,
     /// TTS voice id. Defaults to backend's default voice.
     pub voice: Option<String>,
@@ -411,8 +410,7 @@ pub enum CancelReason {
 
 /// Client config for `/v1/live-talk` session.
 ///
-/// The Ollama host is server configuration (`VOX_OLLAMA_HOST`) and cannot be
-/// chosen by the client; a `host` field is ignored.
+/// The LLM host is fixed by the server operator. A `host` field is ignored.
 #[derive(Debug, serde::Deserialize)]
 pub struct LiveTalkConfig {
     pub model: Option<String>,

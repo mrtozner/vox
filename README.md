@@ -12,12 +12,30 @@
 
 ---
 
-Vox is a voice AI runtime available as a CLI and a Rust library. It provides voice activity detection, speech-to-text, speaker identification, text-to-speech, and full-duplex voice chat with a local LLM through [Ollama](https://ollama.com). It recognizes the people it has been introduced to and, if they opt in, remembers what they said across sessions. No API keys, no cloud APIs, and an `--offline` switch that refuses a remote LLM host and every download.
+Vox is a voice AI runtime available as a CLI and a Rust library. It provides voice activity detection, speech-to-text, speaker identification, text-to-speech, and full-duplex voice chat with a local LLM. It recognizes the people it has been introduced to and, if they opt in, remembers what they said across sessions. No API keys, no cloud APIs, and an `--offline` switch that refuses a remote LLM host and every download.
 
-```
-Mic --> VAD (Silero) --> STT (Whisper/Sherpa) --> Speaker ID --> LLM (Ollama) or your code --> TTS (Kokoro/Piper/Qwen3) --> Speaker
-                                                      |
-                                              per-person memory (SQLite, local)
+```mermaid
+---
+config:
+  flowchart:
+    rankSpacing: 28
+    nodeSpacing: 28
+    padding: 11
+---
+flowchart TB
+    accTitle: Vox voice pipeline
+    accDescr: Vox detects and transcribes microphone audio, then produces a spoken response. Speaker identification and local per-person memory are optional.
+
+    listen["Microphone → text<br/>Silero VAD<br/>Whisper · Sherpa STT"] --> respond["Response<br/>Local LLM or your code"]
+    respond --> speak["Text → speaker<br/>Kokoro · Piper · Qwen3"]
+    listen -.-> identity["Speaker ID<br/>Optional"] -.-> respond
+    respond <-.-> memory[("Per-person memory<br/>Local SQLite · opt-in")]
+
+    classDef stage fill:#182b45,stroke:#567eaa,color:#eff6ff
+    classDef optional fill:#312743,stroke:#8c72ac,color:#f8f1ff
+    class listen,respond,speak stage
+    class identity,memory optional
+    linkStyle default stroke:#778698,stroke-width:2px
 ```
 
 <br>
@@ -26,8 +44,8 @@ Mic --> VAD (Silero) --> STT (Whisper/Sherpa) --> Speaker ID --> LLM (Ollama) or
 
 Most voice-agent frameworks are Python orchestration layers built around cloud speech and LLM APIs. Vox takes the other route:
 
-- **One binary, no Python.** `vox serve` is the whole stack: speech models run in-process, the web UI is embedded, there is no separate frontend or worker to deploy. Two things live outside the binary: the model files, which are downloaded once, and the LLM, which is an Ollama server you run.
-- **Offline you can check.** In the release feature set Vox makes two kinds of outbound connection: requests to Ollama and model downloads. `--offline` refuses remote Ollama hosts and model downloads. Ollama requests connect directly to loopback with proxies and redirects disabled. `GET /v1/privacy/ledger` shows the connections the server process made, with destination, purpose and body bytes. (The optional `pocket`, `chatterbox` and `qwen3` backends fetch their own weights and are outside this control.)
+- **Local voice runtime.** `vox serve` runs speech models in-process and serves the embedded browser UI. For text generation, connect Ollama or a local server that implements the OpenAI chat API.
+- **Offline you can check.** In the release feature set Vox makes requests to the language model runtime and downloads models. `--offline` refuses remote LLM hosts and model downloads. LLM requests connect directly to loopback with proxies and redirects disabled. `GET /v1/privacy/ledger` shows the connections the server process made, with destination, purpose and body bytes. (The optional `pocket`, `chatterbox` and `qwen3` backends fetch their own weights and are outside this control.)
 - **It knows who is speaking.** Speaker identification runs inside the conversation loop. No voiceprint is stored before you record consent, and in Live Talk a voice is enrolled only by an explicit command. Long-term memory is opt-in per person and deleted with the speaker.
 - **Embeddable.** The engine and the HTTP/WebSocket server are library APIs (`vox::server`, `VoxBuilder::build_with_channel`), so you can feed it your own audio and mount its router in your own application.
 - **OpenAI-shaped where it helps.** `/v1/audio/transcriptions`, `/v1/audio/speech` and `/v1/models` follow the OpenAI shape, so OpenAI SDK clients can use a Vox server for transcription and speech.
@@ -40,11 +58,11 @@ What Vox is not: it has no telephony or WebRTC transport, no cloud-provider plug
 
 - **Live Talk** *(experimental)* &mdash; Full-duplex voice chat with barge-in in every phase of a turn. While a reply is being transcribed or generated, a cough or a click does not cancel it: speech has to last 250 ms. The conversation records only the sentences you actually heard, sessions survive a reconnect, and every turn reports latency metrics
 - **Speaker-aware conversations** *(experimental)* &mdash; Known speakers are identified while they talk and named to the model. Voiceprints are stored only after you give consent. In Live Talk, talking never enrolls or changes a voiceprint; enrollment is an explicit command
-- **Per-person long-term memory** &mdash; Opt-in for each speaker, stored in the local SQLite speaker database, recalled at the start of their next session. Turns that fall out of the context window are distilled into facts by the conversation's Ollama model. Forgetting a speaker deletes their memory
-- **Offline mode and privacy ledger** &mdash; `--offline` (or `VOX_OFFLINE=1`) blocks remote Ollama hosts and model downloads; `/v1/privacy/ledger` shows the server's outbound connections
+- **Per-person long-term memory** &mdash; Opt-in for each speaker, stored in the local SQLite speaker database, recalled at the start of their next session. Turns that fall out of the context window are distilled into facts by the conversation's language model. Forgetting a speaker deletes their memory
+- **Offline mode and privacy ledger** &mdash; `--offline` (or `VOX_OFFLINE=1`) blocks remote LLM hosts and model downloads. `/v1/privacy/ledger` shows the server's outbound connections
 - **Speech-to-Text** &mdash; Whisper (including multilingual and large-v3-turbo models), Distil-Whisper, Sherpa-ONNX (streaming + multilingual)
 - **Text-to-Speech** &mdash; Kokoro (57 voices, 9 languages), Piper (multilingual), Qwen3, Pocket (pure Rust), Chatterbox (voice cloning)
-- **`vox tune`** &mdash; Measures the STT, TTS and Ollama models installed on your machine with a spoken sample and saves the best combination as the defaults of `vox chat`
+- **`vox tune`** &mdash; Measures local speech and language models with a spoken sample and saves the combination as defaults for `vox chat`
 - **HTTP + WebSocket API** &mdash; OpenAI-compatible `/v1/audio/*` and `/v1/models`, a speaker and memory REST API, and 4 WebSocket channels for real-time streaming
 - **Web Interface** &mdash; 5-tab browser UI served by the binary: Listen, Speak, Chat, Live Talk, Dashboard. It opens on Live Talk
 - **Verified downloads and releases** &mdash; Model downloads are pinned to a revision and checked by size and SHA-256; release archives carry `SHA256SUMS` and build provenance attestations
@@ -67,7 +85,7 @@ gh attestation verify vox-v*.tar.gz --repo mrtozner/vox
 - On Windows, install the Microsoft Visual C++ x64 Redistributable before running `vox.exe`. [Microsoft downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)
 - For Piper on Linux and macOS, keep the archive's `espeak-ng-data` directory next to `vox`, or set `PIPER_ESPEAKNG_DATA_DIRECTORY` to the directory that contains it. For v0.7.0 archives, supply compatible eSpeak NG data separately.
 
-**v0.7.0 Linux archives:** Whisper was built with AVX-512 extensions on x86_64 and SVE and i8mm on ARM64. If your CPU lacks these features, build Vox from source on that machine. This includes Raspberry Pi 4 and 5 and x86-64-v3 CPUs such as Haswell and Zen 1.
+**Linux on baseline CPUs:** Use v0.8.0 or later on Raspberry Pi 4 and 5 and on x86-64-v3 CPUs such as Haswell and Zen 1. The v0.7.0 Linux archives require newer CPU instructions in Whisper.
 
 All release binaries include the CLI, server and Kokoro. The Linux and macOS binaries also include Piper. The phonemizers contain code derived from espeak-ng, so **the release binaries are GPL-3.0**. See [License](#license).
 
@@ -85,9 +103,9 @@ cargo install --locked --git https://github.com/mrtozner/vox vox-voice --feature
 ```bash
 # Start the web server, downloading the default models it needs
 vox serve --download
-# Open http://localhost:3000 (Chat and Live Talk need a running Ollama)
+# Open http://localhost:3000 (Chat and Live Talk need a running LLM server)
 
-# Once the models are there: no downloads, loopback Ollama only
+# Once the models are there: no downloads, loopback LLM only
 vox serve --offline
 
 # Transcribe speech from your microphone
@@ -110,6 +128,26 @@ vox doctor
 
 For local-only inference in Ollama itself, start Ollama with `OLLAMA_NO_CLOUD=1` and select a downloaded Ollama model. [Ollama local mode](https://docs.ollama.com/faq#how-do-i-disable-ollamas-cloud-features)
 
+### Choose a local LLM runtime
+
+Ollama is the default runtime. Vox also speaks the OpenAI-compatible chat protocol used by [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/master/tools/server) on macOS, Linux and Windows and by [MLX LM](https://github.com/ml-explore/mlx-lm) on Apple Silicon. Start one runtime with a model you have locally.
+
+```bash
+# llama.cpp with a local GGUF
+llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
+
+# MLX LM on Apple Silicon with a local model directory
+mlx_lm.server --model /path/to/mlx-model --host 127.0.0.1 --port 8080
+```
+
+Then point Vox at the runtime you started:
+
+```bash
+VOX_LLM_BACKEND=openai-compatible VOX_LLM_HOST=127.0.0.1:8080 vox serve --offline
+```
+
+Vox lists the models the runtime exposes. Set `VOX_LLM_MODEL` to choose a default model ID. Use the same environment variables with `vox chat` or `vox tune`.
+
 <br>
 
 ## Web Interface
@@ -122,10 +160,10 @@ vox serve --port 3000
 
 | Tab | What it does |
 |-----|-------------|
-| **Live Talk** | The default tab. Experimental barge-in voice chat: full-duplex, so you can interrupt the LLM mid-sentence by speaking. Needs a running [Ollama](https://ollama.com). |
+| **Live Talk** | The default tab. Experimental full-duplex voice chat with the configured LLM runtime. Speak to interrupt a reply mid-sentence. |
 | **Listen** | Real-time mic transcription with optional speaker diarization *(experimental)*. Turn on "Identify speakers" to see who is talking, with color-coded transcript entries and a sidebar for renaming and forgetting speakers. |
 | **Speak** | Text-to-speech synthesis. Pick a voice, type text, and hear it. |
-| **Chat** | Voice chat with any Ollama LLM. Speak a question, get a spoken answer. |
+| **Chat** | Voice chat with the configured LLM runtime. Speak a question and get a spoken answer. |
 | **Dashboard** | Server stats, loaded backends, model info, and environment capabilities. |
 
 No separate frontend build. The UI is a single embedded HTML file served by the Rust binary.
@@ -137,10 +175,13 @@ The server has no authentication. It binds to `127.0.0.1` and refuses a non-loop
 | `VOX_MODELS_DIR` | Where models are read from and downloaded to |
 | `VOX_LANGUAGE`, `VOX_STT_MODEL`, `VOX_PIPER_VOICE` | Defaults for `--language`, `--stt-model`, `--piper-voice` |
 | `VOX_OLLAMA_HOST` | Ollama address (default `localhost:11434`) |
+| `VOX_LLM_BACKEND` | `ollama` (default) or `openai-compatible` |
+| `VOX_LLM_HOST` | HTTP address for the OpenAI-compatible runtime (default `127.0.0.1:8080`) |
+| `VOX_LLM_MODEL` | Default model ID for the selected runtime |
 | `VOX_ALLOW_REMOTE` | `1` permits a non-loopback bind |
 | `VOX_ALLOWED_HOSTS`, `VOX_ALLOWED_ORIGINS` | Comma-separated extra `Host` / `Origin` values to accept |
 | `VOX_SPEAKER_DB` | Path of the speaker database |
-| `VOX_OFFLINE` | `1` is the same as `--offline`: no remote Ollama, no model downloads |
+| `VOX_OFFLINE` | `1` is the same as `--offline`: loopback LLM only, no model downloads |
 | `VOX_MEMORY_DISTILL` | `0` stops distilling trimmed Live Talk turns into long-term facts (on by default) |
 | `VOX_SESSION_TTL_SECS` | How long an idle Live Talk session is kept (default 1800) |
 
@@ -163,7 +204,7 @@ vox speak "A long text." --stream          # start playing sentence by sentence
 vox chat --llm llama3.2                    # voice chat with Ollama
 vox serve --port 3000                      # start web + API server
 vox serve --download --language tr         # fetch default models for Turkish first
-vox serve --offline                        # loopback Ollama only, no downloads
+vox serve --offline                        # loopback LLM only, no downloads
 vox tune                                   # measure installed models, save the best for vox chat
 vox tune --dry-run                         # recommend only: loads, connects and writes nothing
 vox doctor                                 # check models directory and installed models
@@ -218,8 +259,8 @@ curl http://localhost:3000/v1/speakers/speaker_1/memory
 # Outbound connections this server process made (destination, purpose, body bytes)
 curl http://localhost:3000/v1/privacy/ledger
 
-# List Ollama models
-curl http://localhost:3000/v1/ollama-models
+# List models from the configured LLM runtime
+curl http://localhost:3000/v1/llm-models
 
 # Environment capabilities
 curl http://localhost:3000/v1/capabilities
@@ -263,7 +304,7 @@ Combines VAD + STT + LLM + TTS in a single WebSocket. Speak, get a spoken LLM re
 
 **`/v1/live-talk`** &mdash; Barge-in voice chat (experimental)
 
-Full-duplex conversation. You can interrupt the LLM mid-response by speaking. Requires an Ollama instance. The server's `ready` message carries `protocol_version: 2` and a `session_id`; turn-scoped events carry a `turn_id`. With `diarization` on and the `speaker-encoder` model installed, known speakers are named in `transcript`; `enroll_speaker` stores the voice of the newest turn (consent required), and `memory_distilled` reports facts saved to long-term memory.
+Full-duplex conversation with the configured LLM runtime. You can interrupt a response by speaking. The server's `ready` message carries `protocol_version: 2` and a `session_id`. Turn-scoped events include a `turn_id`. With `diarization` on and the `speaker-encoder` model installed, known speakers are named in `transcript`. The `enroll_speaker` command stores the voice of the newest turn after consent. The `memory_distilled` event reports facts saved to long-term memory.
 
 <br>
 

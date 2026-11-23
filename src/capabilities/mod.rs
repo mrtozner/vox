@@ -95,10 +95,9 @@ impl CapabilityRegistry {
         ollama_host: &str,
         http: &reqwest::Client,
     ) -> Self {
-        let hardware = hardware::HardwareFacts::detect(profile).await;
-        let models = models::ModelInventory::from_parts(stt, streaming_stt, tts, vad);
+        let mut registry = Self::local_snapshot(profile, stt, streaming_stt, tts, vad).await;
         // Ollama probe is the only network-crossing op. 1.5s cap.
-        let ollama_models = tokio::time::timeout(
+        registry.ollama_models = tokio::time::timeout(
             std::time::Duration::from_millis(1500),
             ollama::probe(http, ollama_host),
         )
@@ -106,11 +105,40 @@ impl CapabilityRegistry {
         .ok()
         .and_then(|r| r.ok())
         .unwrap_or_default();
+        registry
+    }
 
+    #[cfg(feature = "server")]
+    pub(crate) async fn build_for_llm(
+        profile: &crate::system_profile::SystemProfile,
+        stt: Option<(&str, &str, Option<u64>)>,
+        streaming_stt: Option<(&str, &str, Option<u64>)>,
+        tts: Option<(&str, &str, Option<u64>)>,
+        vad: Option<&std::path::Path>,
+        endpoint: &crate::llm::LlmEndpoint,
+        http: &reqwest::Client,
+    ) -> Self {
+        match endpoint.backend {
+            crate::llm::LlmBackend::Ollama => {
+                Self::build(profile, stt, streaming_stt, tts, vad, &endpoint.host, http).await
+            }
+            crate::llm::LlmBackend::OpenAiCompatible => {
+                Self::local_snapshot(profile, stt, streaming_stt, tts, vad).await
+            }
+        }
+    }
+
+    async fn local_snapshot(
+        profile: &crate::system_profile::SystemProfile,
+        stt: Option<(&str, &str, Option<u64>)>,
+        streaming_stt: Option<(&str, &str, Option<u64>)>,
+        tts: Option<(&str, &str, Option<u64>)>,
+        vad: Option<&std::path::Path>,
+    ) -> Self {
         Self {
-            hardware,
-            models,
-            ollama_models,
+            hardware: hardware::HardwareFacts::detect(profile).await,
+            models: models::ModelInventory::from_parts(stt, streaming_stt, tts, vad),
+            ollama_models: Vec::new(),
             features: FeatureFlags::detect(),
             generated_at_unix: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -122,6 +150,24 @@ impl CapabilityRegistry {
     /// Append a compact, LLM-friendly facts block onto a base system prompt.
     /// Ollama model list is capped at 12 entries to protect the context budget.
     pub fn inject_into_prompt(&self, base: &str) -> String {
+        self.inject_with_runtime(base, None)
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn inject_into_prompt_for_llm(
+        &self,
+        base: &str,
+        endpoint: &crate::llm::LlmEndpoint,
+    ) -> String {
+        match endpoint.backend {
+            crate::llm::LlmBackend::Ollama => self.inject_into_prompt(base),
+            crate::llm::LlmBackend::OpenAiCompatible => {
+                self.inject_with_runtime(base, Some(endpoint.label()))
+            }
+        }
+    }
+
+    fn inject_with_runtime(&self, base: &str, runtime: Option<&str>) -> String {
         // Build a deterministic, short facts block. Order matters for
         // prompt-cache stability: host, backends, ollama, limits.
         let mut out = String::with_capacity(base.len() + 1024);
@@ -191,7 +237,9 @@ impl CapabilityRegistry {
         }
 
         // Ollama models — cap at 12 to stay within the context budget.
-        if self.ollama_models.is_empty() {
+        if let Some(runtime) = runtime {
+            out.push_str(&format!("- Local LLM runtime: {runtime}\n"));
+        } else if self.ollama_models.is_empty() {
             out.push_str("- Local LLM runtime: none reachable\n");
         } else {
             let names: Vec<String> = self

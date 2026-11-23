@@ -40,6 +40,9 @@ fn vox(scratch: &Scratch) -> Command {
         .env("VOX_CONFIG_DIR", scratch.config())
         .env_remove("VOX_OFFLINE")
         .env_remove("VOX_OLLAMA_HOST")
+        .env_remove("VOX_LLM_BACKEND")
+        .env_remove("VOX_LLM_HOST")
+        .env_remove("VOX_LLM_MODEL")
         .env_remove("RUST_LOG")
         .stdin(std::process::Stdio::null());
     cmd
@@ -118,6 +121,28 @@ fn offline_refuses_a_remote_ollama_for_chat() {
 }
 
 #[test]
+fn offline_checks_the_active_llm_endpoint_before_loading_speech_models() {
+    for subcommand in [
+        "chat",
+        #[cfg(feature = "server")]
+        "serve",
+    ] {
+        let scratch = Scratch::new(&format!("active-llm-{subcommand}"));
+        let output = vox(&scratch)
+            .env("VOX_LLM_BACKEND", "openai-compatible")
+            .env("VOX_LLM_HOST", "llm-box.invalid:8080")
+            .args(["--offline", subcommand, "--ollama-host", "localhost:11434"])
+            .output()
+            .unwrap();
+        let text = text(&output);
+        assert!(!output.status.success(), "{text}");
+        assert!(text.contains("offline mode"), "{text}");
+        assert!(text.contains("llm-box.invalid:8080"), "{text}");
+        assert!(is_empty_dir(&scratch.models()), "{text}");
+    }
+}
+
+#[test]
 fn offline_refuses_a_remote_ollama_from_the_environment_and_the_config_file() {
     let scratch = Scratch::new("chat-env");
     let output = vox(&scratch)
@@ -185,6 +210,25 @@ fn tune_dry_run_prints_a_recommendation_and_changes_nothing() {
         is_empty_dir(&scratch.config()),
         "no config.toml on a dry run"
     );
+}
+
+#[test]
+fn tune_dry_run_reports_the_configured_llm_without_discovery() {
+    let scratch = Scratch::new("tune-compatible");
+    let output = vox(&scratch)
+        .env("VOX_LLM_BACKEND", "openai-compatible")
+        .env("VOX_LLM_HOST", "llm-box.invalid:8080")
+        .env("VOX_LLM_MODEL", "custom-model")
+        .args(["--offline", "tune", "--dry-run"])
+        .output()
+        .unwrap();
+    let text = text(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("llm-box.invalid:8080"), "{text}");
+    assert!(text.contains("refused in offline mode"), "{text}");
+    assert!(text.contains("custom-model"), "{text}");
+    assert!(is_empty_dir(&scratch.models()), "{text}");
+    assert!(is_empty_dir(&scratch.config()), "{text}");
 }
 
 #[test]

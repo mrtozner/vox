@@ -51,13 +51,36 @@ pub struct TuneConfig {
     pub tts_backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tts_rtf: Option<f64>,
-    /// Ollama model tag.
+    /// Model ID at the endpoint used for the measurement.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_host: Option<String>,
+    /// Present when the runtime's stream yields individual tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_tokens_per_sec: Option<f64>,
+    /// Time to first output token or, for other protocols, first visible text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_first_token_ms: Option<u64>,
+}
+
+impl TuneConfig {
+    /// A legacy tune file has no endpoint metadata and describes Ollama.
+    pub fn llm_for_endpoint(&self, endpoint: &vox::llm::LlmEndpoint) -> Option<&str> {
+        match (self.llm_backend.as_deref(), self.llm_host.as_deref()) {
+            (None, None) if endpoint.backend == vox::llm::LlmBackend::Ollama => {
+                self.llm_model.as_deref()
+            }
+            (Some(backend), Some(host))
+                if backend == endpoint.backend.as_str() && host == endpoint.host =>
+            {
+                self.llm_model.as_deref()
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Default for VoxConfig {
@@ -339,6 +362,8 @@ mod tests {
                 tts_backend: Some("piper".into()),
                 tts_rtf: Some(0.05),
                 llm_model: Some("llama3.2:3b".into()),
+                llm_backend: Some("ollama".into()),
+                llm_host: Some("localhost:11434".into()),
                 llm_tokens_per_sec: Some(42.5),
                 llm_first_token_ms: Some(180),
             }),
@@ -350,6 +375,19 @@ mod tests {
         assert!(text.contains("llm_model = \"llama3.2:3b\""), "{text}");
         assert_eq!(load_from(&path).unwrap(), config);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_tune_uses_its_model_only_with_ollama() {
+        let tuned: TuneConfig = toml::from_str("llm_model = \"llama3.2:3b\"").unwrap();
+        let ollama = vox::llm::LlmEndpoint::ollama("localhost:11434");
+        let compatible = vox::llm::LlmEndpoint {
+            backend: vox::llm::LlmBackend::OpenAiCompatible,
+            host: "127.0.0.1:8080".into(),
+            default_model: None,
+        };
+        assert_eq!(tuned.llm_for_endpoint(&ollama), Some("llama3.2:3b"));
+        assert_eq!(tuned.llm_for_endpoint(&compatible), None);
     }
 
     #[test]

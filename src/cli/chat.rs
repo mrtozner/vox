@@ -1,7 +1,7 @@
-//! Handler for `vox chat` -- voice conversation with an LLM via Ollama.
+//! Handler for `vox chat` — voice conversation with a local LLM.
 //!
 //! Each utterance becomes one turn of a [`vox::streaming_chat::ChatSession`]:
-//! the reply is streamed from Ollama's `/api/chat`, printed token by token,
+//! the reply is streamed from the selected backend, printed token by token,
 //! and spoken segment by segment while the rest is still being generated. The
 //! session keeps the conversation, so later turns see earlier ones.
 //!
@@ -77,8 +77,8 @@ async fn load_tts(language: Option<&str>, yes: bool) -> anyhow::Result<vox::Koko
 #[cfg(any(feature = "piper", feature = "kokoro"))]
 pub async fn run(
     whisper_model: &str,
-    ollama_model: &str,
-    ollama_host: &str,
+    model: Option<&str>,
+    endpoint: &vox::llm::LlmEndpoint,
     yes: bool,
     voice_mode: bool,
     diarize: bool,
@@ -86,7 +86,12 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     use std::io::Write;
     use std::sync::Arc;
+    use vox::llm::LlmBackend;
     use vox::streaming_chat::{ChatSession, StopReason};
+
+    let client = reqwest::Client::new();
+    let llm_model = endpoint.resolve_model(&client, model).await?;
+    let llm_backend = endpoint.label();
 
     if diarize {
         println!("⚠ --diarize is not supported in `vox chat` yet and is ignored.");
@@ -129,33 +134,33 @@ pub async fn run(
     };
     let system_prompt = vox::prompts::build_system_prompt_for_language(mode, language.as_deref());
 
-    // Verify Ollama is reachable
-    let client = reqwest::Client::new();
-
-    println!("Checking Ollama at {ollama_host}...");
-    let (request, _egress) = vox::privacy::ollama_http_request(
-        &client,
-        reqwest::Method::GET,
-        ollama_host,
-        "/api/tags",
-        "llm status check",
-        0,
-    )?;
-    match request.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            println!("✓ Ollama connected.");
-        }
-        _ => {
-            println!("⚠ Warning: could not reach Ollama at {ollama_host}. Chat may fail.");
-            println!("  Start Ollama with: ollama serve\n");
+    // Keep the Ollama startup check. Other backends use model discovery only
+    // when an explicit or tuned model was not selected.
+    if matches!(endpoint.backend, LlmBackend::Ollama) {
+        let host = &endpoint.host;
+        println!("Checking Ollama at {host}...");
+        let (request, _egress) = vox::privacy::ollama_http_request(
+            &client,
+            reqwest::Method::GET,
+            host,
+            "/api/tags",
+            "llm status check",
+            0,
+        )?;
+        match request.send().await {
+            Ok(resp) if resp.status().is_success() => println!("✓ Ollama connected."),
+            _ => {
+                println!("⚠ Warning: could not reach Ollama at {host}. Chat may fail.");
+                println!("  Start Ollama with: ollama serve\n");
+            }
         }
     }
 
     // One session for the whole run: it carries the conversation memory.
-    let session = Arc::new(tokio::sync::Mutex::new(ChatSession::new(
+    let session = Arc::new(tokio::sync::Mutex::new(ChatSession::new_with_endpoint(
         client,
-        ollama_host,
-        ollama_model,
+        endpoint.clone(),
+        llm_model.as_str(),
         Some(system_prompt),
     )));
 
@@ -204,7 +209,7 @@ pub async fn run(
                         Ok(StopReason::Finished) | Ok(StopReason::Cancelled) => {}
                         Err(e) => {
                             eprintln!("[Error] {e}");
-                            eprintln!("  Is Ollama running? Start it with: ollama serve\n");
+                            eprintln!("  Check that {llm_backend} is running.\n");
                         }
                     }
                 });
@@ -214,7 +219,7 @@ pub async fn run(
 
     println!("\n═══════════════════════════════════════════════════════════");
     println!("🎙  Chat ready! Speak into your microphone");
-    println!("🤖 AI: {ollama_model} via Ollama");
+    println!("🤖 AI: {llm_model} via {llm_backend}");
     match &language {
         Some(lang) => println!("🌐 Language: {lang}"),
         None => println!("🌐 Language: auto-detect"),
@@ -231,8 +236,8 @@ pub async fn run(
 #[cfg(not(any(feature = "piper", feature = "kokoro")))]
 pub async fn run(
     _whisper_model: &str,
-    _ollama_model: &str,
-    _ollama_host: &str,
+    _model: Option<&str>,
+    _endpoint: &vox::llm::LlmEndpoint,
     _yes: bool,
     _voice_mode: bool,
     _diarize: bool,

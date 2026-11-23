@@ -24,20 +24,21 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Multipart, Path, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 
+use crate::llm::LlmEndpoint;
 use crate::types::{AudioChunk, TtsRequest};
 
 use super::ServerState;
 use super::error::ServerError;
 use super::handlers::{
-    audio_response, encode_pcm16, encode_wav_pcm16, run_synthesis, run_transcription,
-    vox_models_response,
+    LlmStatus, audio_response, encode_pcm16, encode_wav_pcm16, run_synthesis, run_transcription,
+    vox_models_for_llm, vox_models_response,
 };
 use super::models::ModelsResponse;
 
@@ -134,6 +135,27 @@ pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
         object: "list",
         data: model_objects(&state),
         legacy: vox_models_response(&state).await,
+    })
+}
+
+pub(super) async fn list_models_with_llm(
+    State(state): State<AppState>,
+    Extension(endpoint): Extension<Arc<LlmEndpoint>>,
+) -> impl IntoResponse {
+    #[derive(Serialize)]
+    struct Response {
+        #[serde(flatten)]
+        models: ModelList,
+        llm: LlmStatus,
+    }
+    let (legacy, llm) = vox_models_for_llm(&state, &endpoint).await;
+    Json(Response {
+        models: ModelList {
+            object: "list",
+            data: model_objects(&state),
+            legacy,
+        },
+        llm,
     })
 }
 

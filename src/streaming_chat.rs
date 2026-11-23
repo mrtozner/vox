@@ -1,7 +1,6 @@
 //! Streaming LLM→TTS integration.
 //!
-//! Streams an Ollama `/api/chat` reply and hands it to the caller in two
-//! forms:
+//! Streams a local LLM reply and hands it to the caller in two forms:
 //!
 //! - `on_token`: every raw token as it arrives, for display. Nothing in this
 //!   module writes to stdout.
@@ -24,8 +23,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::conversation::{ChatMessage, Conversation};
 use crate::error::VoxError;
+use crate::llm::{LlmBackend, LlmEndpoint, read_response};
 use crate::traits::TtsBackend;
 use crate::tts::segment::Segmenter;
+
+const MAX_STREAM_RECORD_BYTES: usize = 1024 * 1024;
 
 /// Ollama `/api/chat` streaming response chunk.
 #[derive(Deserialize)]
@@ -48,6 +50,106 @@ struct OllamaChatChunk {
 struct OllamaChatDelta {
     #[serde(default)]
     content: String,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChatChunk {
+    #[serde(default)]
+    choices: Vec<OpenAiChatChoice>,
+    error: Option<OpenAiChatError>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChatChoice {
+    #[serde(default)]
+    index: usize,
+    delta: Option<OpenAiChatDelta>,
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChatDelta {
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OpenAiChatError {
+    Message { message: String },
+    Text(String),
+}
+
+/// Buffer the data fields of one SSE event. A blank line ends the event.
+#[derive(Default)]
+struct SseEvent {
+    data: Vec<u8>,
+}
+
+impl SseEvent {
+    fn push_line(&mut self, line: &[u8]) -> Result<Option<Delta>, VoxError> {
+        let line = line.trim_ascii_end();
+        if line.is_empty() {
+            let delta = Self::parse_event(self.data.trim_ascii());
+            self.data.clear();
+            return delta;
+        }
+        if let Some(data) = line.strip_prefix(b"data:") {
+            let data = data.strip_prefix(b" ").unwrap_or(data);
+            if self.data.len() + data.len() + 1 > MAX_STREAM_RECORD_BYTES {
+                return Err(VoxError::Pipeline("LLM stream event is too large".into()));
+            }
+            self.data.extend_from_slice(data);
+            self.data.push(b'\n');
+        }
+        Ok(None)
+    }
+
+    fn parse_event(data: &[u8]) -> Result<Option<Delta>, VoxError> {
+        if data.is_empty() {
+            return Ok(None);
+        }
+        if data == b"[DONE]" {
+            return Ok(Some(Delta {
+                content: String::new(),
+                done: true,
+            }));
+        }
+        let chunk: OpenAiChatChunk = serde_json::from_slice(data)
+            .map_err(|error| VoxError::Pipeline(format!("Invalid LLM stream event: {error}")))?;
+        if let Some(error) = chunk.error {
+            let detail = match error {
+                OpenAiChatError::Message { message } | OpenAiChatError::Text(message) => message,
+            };
+            return Err(VoxError::Pipeline(format!("LLM error: {detail}")));
+        }
+        Ok(chunk
+            .choices
+            .into_iter()
+            .find(|choice| choice.index == 0)
+            .map(|choice| Delta {
+                content: choice
+                    .delta
+                    .and_then(|delta| delta.content)
+                    .unwrap_or_default(),
+                done: choice.finish_reason.is_some(),
+            }))
+    }
+}
+
+fn stream_line_len(buffer: &[u8], sse: bool, eof: bool) -> Option<usize> {
+    let position = buffer
+        .iter()
+        .position(|&byte| byte == b'\n' || (sse && byte == b'\r'));
+    match position {
+        Some(pos) if sse && buffer[pos] == b'\r' => match buffer.get(pos + 1) {
+            Some(b'\n') => Some(pos + 2),
+            None if !eof => None,
+            _ => Some(pos + 1),
+        },
+        Some(pos) => Some(pos + 1),
+        None if eof && !buffer.is_empty() => Some(buffer.len()),
+        None => None,
+    }
 }
 
 /// Why streaming stopped (normal completion or cancellation).
@@ -162,7 +264,7 @@ where
     .await
 }
 
-/// One parsed NDJSON line of the Ollama stream.
+/// One parsed content delta or completion marker.
 struct Delta {
     content: String,
     done: bool,
@@ -254,6 +356,38 @@ pub async fn stream_chat<T, F, Fut>(
     messages: &[ChatMessage],
     options: &StreamOptions,
     cancel: CancellationToken,
+    on_token: T,
+    on_sentence: F,
+) -> Result<StopReason, VoxError>
+where
+    T: FnMut(&str) + Send,
+    F: FnMut(&str) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<(), VoxError>> + Send,
+{
+    stream_chat_with_endpoint(
+        client,
+        &LlmEndpoint::ollama(host),
+        model,
+        messages,
+        options,
+        cancel,
+        on_token,
+        on_sentence,
+    )
+    .await
+}
+
+/// Stream content tokens and speakable segments from the configured runtime.
+/// Compatible SSE streams time out before their first content token. Role
+/// markers and keepalive events cannot extend that deadline.
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_chat_with_endpoint<T, F, Fut>(
+    client: &reqwest::Client,
+    endpoint: &LlmEndpoint,
+    model: &str,
+    messages: &[ChatMessage],
+    options: &StreamOptions,
+    cancel: CancellationToken,
     mut on_token: T,
     mut on_sentence: F,
 ) -> Result<StopReason, VoxError>
@@ -262,29 +396,34 @@ where
     F: FnMut(&str) -> Fut + Send,
     Fut: std::future::Future<Output = Result<(), VoxError>> + Send,
 {
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": messages,
         "stream": true,
-        "keep_alive": crate::conversation::OLLAMA_KEEP_ALIVE,
-        "options": crate::conversation::ollama_options(),
     });
-    let (request, egress) = crate::privacy::ollama_http_request(
+    let sse = endpoint.backend == LlmBackend::OpenAiCompatible;
+    let path = if sse {
+        "/v1/chat/completions"
+    } else {
+        body["keep_alive"] = crate::conversation::OLLAMA_KEEP_ALIVE.into();
+        body["options"] = crate::conversation::ollama_options();
+        "/api/chat"
+    };
+    let (request, egress) = endpoint.request(
         client,
         reqwest::Method::POST,
-        host,
-        "/api/chat",
+        path,
         "llm chat",
         crate::privacy::json_len(&body),
-    )
-    .map_err(|e| VoxError::Pipeline(e.to_string()))?;
+    )?;
 
+    let runtime = endpoint.label();
     let first_token_timeout = options.first_token_timeout;
     let idle_timeout = options.idle_timeout;
     let first_deadline = tokio::time::Instant::now() + first_token_timeout;
     let no_start = move || {
         VoxError::Pipeline(format!(
-            "Ollama did not start responding within {:.1}s",
+            "{runtime} did not start responding within {:.1}s",
             first_token_timeout.as_secs_f32()
         ))
     };
@@ -293,24 +432,31 @@ where
         _ = cancel.cancelled() => return Ok(StopReason::Cancelled),
         r = tokio::time::timeout_at(first_deadline, request.json(&body).send()) => {
             r.map_err(|_| no_start())?
-                .map_err(|e| VoxError::Pipeline(format!("Ollama request failed: {e}")))?
+                .map_err(|e| VoxError::Pipeline(format!("{runtime} request failed: {e}")))?
         }
     };
 
     if !response.status().is_success() {
         let status = response.status();
-        let detail = response.text().await.unwrap_or_default();
+        let detail = tokio::select! {
+            _ = cancel.cancelled() => return Ok(StopReason::Cancelled),
+            result = tokio::time::timeout_at(first_deadline, read_response(response, &egress)) => {
+                result.ok().and_then(Result::ok).unwrap_or_default()
+            }
+        };
+        let detail = String::from_utf8_lossy(&detail);
         let detail = detail.trim();
         return Err(VoxError::Pipeline(if detail.is_empty() {
-            format!("Ollama returned HTTP {status}")
+            format!("{runtime} returned HTTP {status}")
         } else {
-            format!("Ollama returned HTTP {status}: {detail}")
+            format!("{runtime} returned HTTP {status}: {detail}")
         }));
     }
 
     let mut stream = response.bytes_stream();
     let mut segmenter = Segmenter::new();
     let mut line_buffer: Vec<u8> = Vec::new();
+    let mut sse_event = SseEvent::default();
     let mut started = false;
     let mut eof = false;
     let mut finished = false;
@@ -331,16 +477,23 @@ where
                 Some(chunk) => {
                     let chunk =
                         chunk.map_err(|e| VoxError::Pipeline(format!("Stream error: {e}")))?;
-                    started |= !chunk.is_empty();
+                    started |= !sse && !chunk.is_empty();
                     egress.add_received(chunk.len() as u64);
                     line_buffer.extend_from_slice(&chunk);
                 }
-                None => eof = true,
+                None => {
+                    eof = true;
+                    if sse {
+                        // Process a final event even if the server closed its
+                        // connection without the trailing blank line.
+                        line_buffer.extend_from_slice(b"\n\n");
+                    }
+                }
             },
             _ = tokio::time::sleep_until(deadline) => {
                 return Err(if started {
                     VoxError::Pipeline(format!(
-                        "Ollama stream stalled: no data for {:.1}s",
+                        "{runtime} stream stalled: no data for {:.1}s",
                         idle_timeout.as_secs_f32()
                     ))
                 } else {
@@ -349,17 +502,28 @@ where
             }
         }
 
+        let mut consumed = 0;
         loop {
-            let line: Vec<u8> = match line_buffer.iter().position(|&b| b == b'\n') {
-                Some(pos) => line_buffer.drain(..=pos).collect(),
-                // A final line without a trailing newline.
-                None if eof && !line_buffer.is_empty() => std::mem::take(&mut line_buffer),
-                None => break,
+            let remaining = &line_buffer[consumed..];
+            let line_len = stream_line_len(remaining, sse, eof);
+            if line_len.unwrap_or(remaining.len()) > MAX_STREAM_RECORD_BYTES {
+                return Err(VoxError::Pipeline("LLM stream line is too large".into()));
+            }
+            let Some(line_len) = line_len else {
+                break;
             };
-            let Some(delta) = parse_line(&line, model, messages.len())? else {
+            let line = &remaining[..line_len];
+            let delta = if sse {
+                sse_event.push_line(line)?
+            } else {
+                parse_line(line, model, messages.len())?
+            };
+            consumed += line_len;
+            let Some(delta) = delta else {
                 continue;
             };
             if !delta.content.is_empty() {
+                started = true;
                 on_token(&delta.content);
                 let segments = segmenter.push(&delta.content);
                 if deliver(segments, &cancel, &mut on_sentence).await? {
@@ -371,6 +535,16 @@ where
                 break;
             }
         }
+        drop(line_buffer.drain(..consumed));
+        if sse && !started && !finished && tokio::time::Instant::now() >= first_deadline {
+            return Err(no_start());
+        }
+    }
+
+    if sse && !finished {
+        return Err(VoxError::Pipeline(
+            "LLM stream ended before its completion marker".into(),
+        ));
     }
 
     if deliver(segmenter.flush(), &cancel, &mut on_sentence).await? {
@@ -380,11 +554,11 @@ where
     Ok(StopReason::Finished)
 }
 
-/// A multi-turn chat with one Ollama model: keeps the [`Conversation`] and
+/// A multi-turn chat with one configured LLM: keeps the [`Conversation`] and
 /// records each turn after it was spoken.
 pub struct ChatSession {
     client: reqwest::Client,
-    host: String,
+    endpoint: LlmEndpoint,
     model: String,
     system_prompt: Option<String>,
     conversation: Conversation,
@@ -400,9 +574,19 @@ impl ChatSession {
         model: impl Into<String>,
         system_prompt: Option<String>,
     ) -> Self {
+        Self::new_with_endpoint(client, LlmEndpoint::ollama(host), model, system_prompt)
+    }
+
+    /// Start a chat session against the supplied local runtime endpoint.
+    pub fn new_with_endpoint(
+        client: reqwest::Client,
+        endpoint: LlmEndpoint,
+        model: impl Into<String>,
+        system_prompt: Option<String>,
+    ) -> Self {
         Self {
             client,
-            host: host.into(),
+            endpoint,
             model: model.into(),
             system_prompt,
             conversation: Conversation::for_num_ctx(crate::conversation::ollama_num_ctx()),
@@ -448,9 +632,9 @@ impl ChatSession {
         let delivered: Mutex<Vec<String>> = Mutex::new(Vec::new());
         let delivered_ref = &delivered;
 
-        let result = stream_chat(
+        let result = stream_chat_with_endpoint(
             &self.client,
-            &self.host,
+            &self.endpoint,
             &self.model,
             &messages,
             &self.options,
@@ -594,6 +778,70 @@ mod tests {
             first_token_timeout: Duration::from_millis(300),
             idle_timeout: Duration::from_millis(300),
         }
+    }
+
+    #[tokio::test]
+    async fn compatible_stream_handles_fragmented_sse_and_role_only_fields() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = LlmEndpoint {
+            backend: LlmBackend::OpenAiCompatible,
+            host: listener.local_addr().unwrap().to_string(),
+            default_model: None,
+        };
+        let peer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n").await.unwrap();
+            for frame in [
+                ": connected\r\n\r\nda",
+                "ta: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":null}}]}\r",
+                "\n\r\ndata: {\"choices\":[\r\ndata: {\"delta\":{\"content\":\"Hello.\"}}]}\r\n\r\n",
+                "data: [DONE]\n\n",
+            ] {
+                socket.write_all(frame.as_bytes()).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            request
+        });
+        let mut tokens = Vec::new();
+        let mut sentences = Vec::new();
+        let outcome = stream_chat_with_endpoint(
+            &reqwest::Client::new(),
+            &endpoint,
+            "selected-model",
+            &[ChatMessage::user("hello")],
+            &StreamOptions {
+                first_token_timeout: Duration::from_secs(3),
+                idle_timeout: Duration::from_secs(3),
+            },
+            CancellationToken::new(),
+            |token| tokens.push(token.to_owned()),
+            |sentence| {
+                sentences.push(sentence.to_owned());
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(StopReason::Finished, outcome);
+        assert_eq!(tokens, ["Hello."]);
+        assert_eq!(sentences, ["Hello."]);
+        let request = peer.await.unwrap();
+        assert_eq!(request["model"], "selected-model");
+        assert_eq!(request["stream"], true);
+        assert!(!request.as_object().unwrap().contains_key("keep_alive"));
+    }
+
+    #[test]
+    fn compatible_event_reports_provider_error_and_finish_reason() {
+        let error = SseEvent::parse_event(br#"{"error":{"message":"generation failed"}}"#)
+            .err()
+            .expect("an SSE error event must fail");
+        assert!(error.to_string().contains("generation failed"));
+        let done = SseEvent::parse_event(br#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#)
+            .unwrap()
+            .unwrap();
+        assert!(done.done && done.content.is_empty());
     }
 
     /// Run `stream_chat` against `host`, returning the result, the tokens and

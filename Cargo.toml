@@ -8,7 +8,7 @@ exclude = ["vendor/sherpa-sys"]
 # (see [lib] and [[bin]] below), so `use vox::...` and the `vox` command do
 # not change.
 name = "vox-voice"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 authors = ["Mert Ozoner"]
 description = "Offline voice AI runtime: Whisper STT, Kokoro/Piper TTS, Silero VAD, speaker ID and barge-in voice chat with opt-in per-person memory. Embeddable, no cloud APIs."

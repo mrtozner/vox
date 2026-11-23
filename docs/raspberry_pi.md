@@ -6,8 +6,8 @@ supported by the release binaries.
 
 ## Install the release binary
 
-The v0.7.0 ARM64 archive uses SVE and i8mm in Whisper. On Raspberry Pi 4 and 5,
-[build on the Pi](#build-on-the-pi) to get a binary for its CPU.
+Use the v0.8.0 or later ARM64 archive on Raspberry Pi 4 and 5. The v0.7.0
+ARM64 archive uses SVE and i8mm in Whisper.
 
 The `aarch64-unknown-linux-gnu` archive on the
 [releases page](https://github.com/mrtozner/vox/releases/latest) is built on

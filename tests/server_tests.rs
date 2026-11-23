@@ -1383,6 +1383,88 @@ async fn chat_ignores_a_client_supplied_host() {
 }
 
 #[tokio::test]
+async fn configured_openai_runtime_serves_chat_and_discovery() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    let upstream = Router::new()
+        .route(
+            "/v1/models",
+            get(|| async { axum::Json(serde_json::json!({"data": [{"id": "local-model"}]})) }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    seen.lock().unwrap().push(body);
+                    axum::Json(serde_json::json!({
+                        "choices": [{"message": {"content": "Hello from a local model."}}]
+                    }))
+                }
+            }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    let runtime = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let app = server::build_router_with_llm(
+        Arc::new(empty_state()),
+        vox::llm::LlmEndpoint {
+            backend: vox::llm::LlmBackend::OpenAiCompatible,
+            host: host.clone(),
+            default_model: None,
+        },
+    );
+
+    let list = body_json(
+        app.clone()
+            .oneshot(get_req("/v1/llm-models"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(list["provider"], "openai-compatible");
+    assert_eq!(list["models"][0]["name"], "local-model");
+    let response = app
+        .clone()
+        .oneshot(post_json(
+            "/v1/chat",
+            serde_json::json!({"text": "hello", "host": "127.0.0.1:1"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let chat = body_json(response).await;
+    assert_eq!(chat["model"], "local-model");
+    assert_eq!(chat["response"], "Hello from a local model.");
+    let status = body_json(
+        app.clone()
+            .oneshot(get_req("/v1/vox/models"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status["llm"]["model_count"], 1);
+    assert_eq!(status["llm"]["connected"], true);
+    assert!(status["ollama"].is_null());
+    let ledger = body_json(app.oneshot(get_req("/v1/privacy/ledger")).await.unwrap()).await;
+    assert_eq!(ledger["llm_host"], host);
+    assert_eq!(ledger["llm_host_loopback"], true);
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["model"], "local-model");
+    assert_eq!(requests[0]["stream"], false);
+    assert_eq!(requests[0]["messages"][1]["content"], "hello");
+    assert!(
+        requests[0]["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("OpenAI-compatible LLM")
+    );
+    runtime.abort();
+}
+
+#[tokio::test]
 async fn chat_maps_upstream_failures_without_echoing_the_body() {
     const SECRET: &str = "SECRET-UPSTREAM-DETAIL /internal/path";
     let chat = |ollama: String| async move {

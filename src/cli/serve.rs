@@ -61,8 +61,9 @@ pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
 
     // Refuse an exposed bind address before downloading or loading anything.
     vox::server::check_bind_host(&args.host, server_opts.allow_remote)?;
-    // Offline mode: refuse a remote Ollama before downloading or loading anything.
-    vox::privacy::ensure_ollama_host_allowed(&server_opts.resolved_ollama_host())?;
+    let endpoint = vox::llm::LlmEndpoint::from_env(&server_opts.resolved_ollama_host())?;
+    // Validate the active runtime before downloading or loading anything.
+    vox::privacy::ensure_ollama_host_allowed(&endpoint.host)?;
 
     // Reject an unknown language up front instead of starting a server
     // whose STT silently failed to load.
@@ -97,7 +98,15 @@ pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
-    vox::server::run_with_config(&args.host, args.port, args.cache_models, opts, server_opts).await
+    vox::server::run_with_llm_config(
+        &args.host,
+        args.port,
+        args.cache_models,
+        opts,
+        server_opts,
+        endpoint,
+    )
+    .await
 }
 
 #[cfg(test)]

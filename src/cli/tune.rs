@@ -10,8 +10,8 @@
 //! 2. transcribes it with every installed Whisper model that suits the
 //!    language, recording speed and how many words came out right,
 //! 3. times every installed TTS backend on the same sentence,
-//! 4. streams a short reply from the installed Ollama models, recording time
-//!    to first token and tokens per second,
+//! 4. streams a short reply from the configured LLM backend, recording time
+//!    to first text and Ollama token throughput,
 //! 5. picks one of each and writes the result to the `[tune]` table of
 //!    `config.toml`, which `vox chat` reads for its defaults.
 //!
@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use super::config::{self, TuneConfig};
 use super::models::{self, models_dir};
+use vox::llm::{LlmBackend, LlmEndpoint};
 use vox::system_profile::SystemProfile;
 use vox::traits::{SttBackend, TtsBackend};
 use vox::types::{AudioChunk, TtsRequest, Utterance};
@@ -42,7 +43,7 @@ pub const LLM_MIN_TOKENS_PER_SEC: f64 = 12.0;
 pub const LLM_MAX_FIRST_TOKEN_MS: u64 = 1500;
 /// How many Whisper models are measured at most (in preference order).
 pub const MAX_STT_CANDIDATES: usize = 4;
-/// How many Ollama models are measured at most when `--llm` is not given.
+/// How many LLM models are measured at most when `--llm` is not given.
 pub const MAX_LLM_CANDIDATES: usize = 4;
 
 const LLM_PROMPT: &str = "In two short sentences, explain why the sky is blue.";
@@ -60,7 +61,7 @@ pub struct TuneArgs {
     pub reference: Option<String>,
     /// Spoken language (`en`, `tr`, ..., `auto`).
     pub language: Option<String>,
-    /// Ollama models to measure; all installed ones (up to a cap) if empty.
+    /// LLM models to measure, or the configured default or discovery results.
     pub llm: Vec<String>,
     /// `--ollama-host`.
     pub ollama_host: Option<String>,
@@ -271,7 +272,7 @@ impl Pick {
     }
 }
 
-/// The models to use: a Whisper model name, a TTS backend, an Ollama tag.
+/// The models to use: a Whisper model name, a TTS backend, an LLM model ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recommendation {
     pub stt: Pick,
@@ -325,6 +326,21 @@ pub fn recommend_static(profile: &SystemProfile, inv: &Inventory) -> Recommendat
     Recommendation { stt, tts, llm }
 }
 
+fn recommend_for_endpoint(
+    profile: &SystemProfile,
+    inv: &Inventory,
+    endpoint: &LlmEndpoint,
+) -> Recommendation {
+    let mut rec = recommend_static(profile, inv);
+    if let Some(model) = &endpoint.default_model {
+        rec.llm = Pick::new(model, "configured by VOX_LLM_MODEL");
+    } else if matches!(endpoint.backend, LlmBackend::OpenAiCompatible) {
+        rec.llm =
+            Pick::none("choose a model with VOX_LLM_MODEL or let the runtime list its models");
+    }
+    rec
+}
+
 // ---------------------------------------------------------------------------
 // Measurements and the measured recommendation
 // ---------------------------------------------------------------------------
@@ -357,11 +373,12 @@ pub struct TtsMeasurement {
 pub struct LlmMeasurement {
     pub model: String,
     pub size_mb: Option<u64>,
-    /// Time for the first reply, which includes loading the model.
+    /// Time to first text on the first request, including any model loading.
     pub cold_first_token_ms: u64,
-    /// Time to first token once the model is loaded.
+    /// Time to first text on the following request.
     pub first_token_ms: u64,
-    pub tokens_per_sec: f64,
+    /// Ollama token rate. OpenAI-compatible text deltas may contain several tokens.
+    pub tokens_per_sec: Option<f64>,
 }
 
 /// Index of the Whisper model to use. `measurements` is in preference order.
@@ -401,16 +418,27 @@ pub fn pick_tts(measurements: &[TtsMeasurement]) -> Option<usize> {
 
 /// Whether an LLM is fast enough to hold a spoken conversation.
 pub fn llm_is_conversational(m: &LlmMeasurement) -> bool {
-    m.tokens_per_sec >= LLM_MIN_TOKENS_PER_SEC && m.first_token_ms <= LLM_MAX_FIRST_TOKEN_MS
+    m.tokens_per_sec
+        .is_some_and(|rate| rate >= LLM_MIN_TOKENS_PER_SEC)
+        && m.first_token_ms <= LLM_MAX_FIRST_TOKEN_MS
 }
 
-/// Index of the Ollama model to use: the largest one that is fast enough
-/// (size stands in for quality), or the fastest if none is.
+/// Pick among measurements from one runtime. With token rates, choose the
+/// largest conversational model or the fastest overall. Otherwise compare
+/// time to first text, breaking ties with first-run time.
 pub fn pick_llm(measurements: &[LlmMeasurement]) -> Option<usize> {
+    if measurements.first()?.tokens_per_sec.is_none() {
+        return (0..measurements.len()).min_by_key(|i| {
+            let m = &measurements[*i];
+            (m.first_token_ms, m.cold_first_token_ms)
+        });
+    }
+
     let by_speed = |a: &usize, b: &usize| {
         measurements[*a]
             .tokens_per_sec
-            .total_cmp(&measurements[*b].tokens_per_sec)
+            .unwrap_or_default()
+            .total_cmp(&measurements[*b].tokens_per_sec.unwrap_or_default())
     };
     let usable: Vec<usize> = (0..measurements.len())
         .filter(|i| llm_is_conversational(&measurements[*i]))
@@ -473,18 +501,24 @@ pub fn recommend_measured(
     let llm_pick = match pick_llm(llm) {
         Some(i) => {
             let m = &llm[i];
-            let caveat = if llm_is_conversational(m) {
-                ""
-            } else {
-                "; too slow for a fluent conversation, but the fastest installed"
-            };
-            Pick::new(
-                m.model.clone(),
-                format!(
-                    "{:.1} tokens/s, first token after {} ms{caveat}",
-                    m.tokens_per_sec, m.first_token_ms
+            let reason = match m.tokens_per_sec {
+                Some(rate) => {
+                    let caveat = if llm_is_conversational(m) {
+                        ""
+                    } else {
+                        "; too slow for a fluent conversation, but the fastest installed"
+                    };
+                    format!(
+                        "{rate:.1} tokens/s, first token after {} ms{caveat}",
+                        m.first_token_ms
+                    )
+                }
+                None => format!(
+                    "first text after {} ms (first run {} ms)",
+                    m.first_token_ms, m.cold_first_token_ms
                 ),
-            )
+            };
+            Pick::new(m.model.clone(), reason)
         }
         None => not_measured(&fallback.llm),
     };
@@ -504,6 +538,7 @@ pub fn tune_config(
     stt: &[SttMeasurement],
     tts: &[TtsMeasurement],
     llm: &[LlmMeasurement],
+    endpoint: &LlmEndpoint,
 ) -> TuneConfig {
     let stt_m = pick_stt(stt).map(|i| &stt[i]);
     let tts_m = pick_tts(tts).map(|i| &tts[i]);
@@ -523,7 +558,9 @@ pub fn tune_config(
         tts_backend: tts_m.and(rec.tts.choice.clone()),
         tts_rtf: tts_m.map(|m| round(m.rtf)),
         llm_model: llm_m.and(rec.llm.choice.clone()),
-        llm_tokens_per_sec: llm_m.map(|m| round(m.tokens_per_sec)),
+        llm_backend: llm_m.map(|_| endpoint.backend.as_str().to_string()),
+        llm_host: llm_m.map(|_| endpoint.host.clone()),
+        llm_tokens_per_sec: llm_m.and_then(|m| m.tokens_per_sec).map(round),
         llm_first_token_ms: llm_m.map(|m| m.first_token_ms),
     }
 }
@@ -786,12 +823,12 @@ async fn measure_tts(tts: &LoadedTts, text: &str, runs: usize) -> anyhow::Result
     })
 }
 
-/// One streamed reply: (time to first token, tokens per second).
+/// One streamed reply: time to first text and an optional token rate.
 async fn time_reply(
     client: &reqwest::Client,
-    host: &str,
+    endpoint: &LlmEndpoint,
     model: &str,
-) -> anyhow::Result<(Duration, f64)> {
+) -> anyhow::Result<(Duration, Option<f64>)> {
     use vox::conversation::ChatMessage;
 
     let messages = [
@@ -802,43 +839,50 @@ async fn time_reply(
     let mut first: Option<Duration> = None;
     let mut last = Duration::ZERO;
     let mut tokens = 0u32;
+    let measure_rate = matches!(endpoint.backend, LlmBackend::Ollama);
     // The same streaming path Live Talk uses, so the figures are the ones a
     // conversation would see (and the request shows up in the privacy ledger).
-    vox::streaming_chat::stream_chat(
+    vox::streaming_chat::stream_chat_with_endpoint(
         client,
-        host,
+        endpoint,
         model,
         &messages,
         &vox::streaming_chat::StreamOptions::default(),
         tokio_util::sync::CancellationToken::new(),
-        |_token| {
-            let now = started.elapsed();
-            first.get_or_insert(now);
-            last = now;
-            tokens += 1;
+        |text| {
+            if measure_rate {
+                let now = started.elapsed();
+                first.get_or_insert(now);
+                last = now;
+                tokens += 1;
+            } else if first.is_none() && !text.trim().is_empty() {
+                first = Some(started.elapsed());
+            }
         },
         |_sentence| async { Ok(()) },
     )
     .await?;
 
     let first = first.ok_or_else(|| anyhow::anyhow!("'{model}' produced no output"))?;
-    let generating = last.saturating_sub(first).as_secs_f64();
-    let tokens_per_sec = if tokens > 1 && generating > 0.0 {
-        f64::from(tokens - 1) / generating
-    } else {
-        0.0
-    };
+    let tokens_per_sec = measure_rate.then(|| {
+        let generating = last.saturating_sub(first).as_secs_f64();
+        if tokens > 1 && generating > 0.0 {
+            f64::from(tokens - 1) / generating
+        } else {
+            0.0
+        }
+    });
     Ok((first, tokens_per_sec))
 }
 
 async fn measure_llm(
     client: &reqwest::Client,
-    host: &str,
+    endpoint: &LlmEndpoint,
     model: &str,
     size_mb: Option<u64>,
 ) -> anyhow::Result<LlmMeasurement> {
-    let (cold, _) = time_reply(client, host, model).await?;
-    let (first, tokens_per_sec) = time_reply(client, host, model).await?;
+    let (cold, _) = time_reply(client, endpoint, model).await?;
+    let (first, tokens_per_sec) = time_reply(client, endpoint, model).await?;
     Ok(LlmMeasurement {
         model: model.to_string(),
         size_mb,
@@ -848,11 +892,11 @@ async fn measure_llm(
     })
 }
 
-/// Which Ollama models to measure: the requested ones, or the installed
+/// Which LLM models to measure: the requested ones, or the installed
 /// ones that fit in RAM, smallest first, up to [`MAX_LLM_CANDIDATES`].
 pub fn llm_candidates(
     requested: &[String],
-    installed: &[vox::OllamaModelSummary],
+    installed: &[(String, Option<u64>)],
     total_ram_mb: u64,
 ) -> Vec<(String, Option<u64>)> {
     if !requested.is_empty() {
@@ -861,8 +905,8 @@ pub fn llm_candidates(
             .map(|name| {
                 let size = installed
                     .iter()
-                    .find(|m| m.name == *name || m.name == format!("{name}:latest"))
-                    .and_then(|m| m.size_mb);
+                    .find(|(id, _)| id == name || *id == format!("{name}:latest"))
+                    .and_then(|(_, size)| *size);
                 (name.clone(), size)
             })
             .collect();
@@ -870,15 +914,15 @@ pub fn llm_candidates(
     // A model needs its file size in RAM plus context; leave room for the
     // OS, STT and TTS.
     let budget_mb = total_ram_mb * 6 / 10;
-    let mut fitting: Vec<&vox::OllamaModelSummary> = installed
+    let mut fitting: Vec<_> = installed
         .iter()
-        .filter(|m| m.size_mb.is_none_or(|s| s <= budget_mb))
+        .filter(|(_, size)| size.is_none_or(|s| s <= budget_mb))
         .collect();
-    fitting.sort_by_key(|m| m.size_mb.unwrap_or(0));
+    fitting.sort_by_key(|(_, size)| size.unwrap_or(0));
     fitting
         .into_iter()
         .take(MAX_LLM_CANDIDATES)
-        .map(|m| (m.name.clone(), m.size_mb))
+        .cloned()
         .collect()
 }
 
@@ -907,7 +951,7 @@ pub fn render_dry_run(
     profile: &SystemProfile,
     dir: &Path,
     inv: &Inventory,
-    ollama_host: &str,
+    endpoint: &LlmEndpoint,
     offline: bool,
 ) -> String {
     let list = |items: Vec<String>| {
@@ -934,8 +978,10 @@ pub fn render_dry_run(
         list(inv.tts_installed.iter().map(|b| b.to_string()).collect())
     ));
     out.push_str(&format!(
-        "Ollama: {ollama_host}{}\n\n",
-        if offline && !vox::privacy::is_loopback_host(ollama_host) {
+        "{}: {}{}\n\n",
+        endpoint.label(),
+        endpoint.host,
+        if offline && !vox::privacy::is_loopback_host(&endpoint.host) {
             " (refused in offline mode: not a loopback address)"
         } else if offline {
             " (offline mode)"
@@ -943,7 +989,9 @@ pub fn render_dry_run(
             ""
         }
     ));
-    out.push_str(&render_recommendation(&recommend_static(profile, inv)));
+    out.push_str(&render_recommendation(&recommend_for_endpoint(
+        profile, inv, endpoint,
+    )));
     out.push_str(
         "\nDry run: nothing was loaded, measured, downloaded or written.\n\
          Run `vox tune` to measure this machine and save the result.\n",
@@ -995,6 +1043,8 @@ pub async fn run(args: TuneArgs) -> anyhow::Result<()> {
         args.ollama_host.as_deref(),
         config.ollama_host.as_deref(),
     );
+    let endpoint = LlmEndpoint::from_env(&host.host)?;
+    let llm_allowed = vox::privacy::ensure_ollama_host_allowed(&endpoint.host);
     let offline = vox::privacy::offline();
     let runs = args.runs.clamp(1, 20);
 
@@ -1004,14 +1054,14 @@ pub async fn run(args: TuneArgs) -> anyhow::Result<()> {
     if args.dry_run {
         print!(
             "{}",
-            render_dry_run(&profile, &dir, &inv, &host.host, offline)
+            render_dry_run(&profile, &dir, &inv, &endpoint, offline)
         );
         return Ok(());
     }
 
     println!("Machine: {}", profile.summary());
     println!("Models directory: {}\n", dir.display());
-    let fallback = recommend_static(&profile, &inv);
+    let fallback = recommend_for_endpoint(&profile, &inv, &endpoint);
 
     // --- TTS backends and the speech sample -------------------------------
     println!("Loading TTS backends...");
@@ -1128,35 +1178,60 @@ pub async fn run(args: TuneArgs) -> anyhow::Result<()> {
     let mut llm_results = Vec::new();
     if args.no_llm {
         println!("LLM: skipped (--no-llm).");
-    } else if let Err(denied) = vox::privacy::ensure_ollama_host_allowed(&host.host) {
+    } else if let Err(denied) = llm_allowed {
         println!("LLM: skipped. {denied}");
     } else {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
-        let installed = vox::capabilities::ollama::probe(&client, &host.host)
-            .await
-            .unwrap_or_default();
-        let candidates = llm_candidates(&args.llm, &installed, profile.total_ram_mb);
+        let requested = if args.llm.is_empty() {
+            endpoint.default_model.as_slice()
+        } else {
+            &args.llm
+        };
+        let installed = match endpoint.backend {
+            LlmBackend::Ollama => vox::capabilities::ollama::probe(&client, &endpoint.host)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|model| (model.name, model.size_mb))
+                .collect(),
+            LlmBackend::OpenAiCompatible if !requested.is_empty() => Vec::new(),
+            LlmBackend::OpenAiCompatible => endpoint
+                .list_openai_models(&client, Duration::from_secs(5))
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|id| (id, None))
+                .collect::<Vec<_>>(),
+        };
+        let candidates = llm_candidates(requested, &installed, profile.total_ram_mb);
         if candidates.is_empty() {
             println!(
-                "LLM: skipped. No Ollama models found at {} (from {}). Is Ollama running?",
-                host.host, host.source
+                "LLM: skipped. No models found on {} at {}.",
+                endpoint.label(),
+                endpoint.host
             );
         } else {
             println!(
                 "LLM: streaming a short reply from {} model(s) at {}",
                 candidates.len(),
-                host.host
+                endpoint.host
             );
             for (model, size_mb) in candidates {
-                match measure_llm(&client, &host.host, &model, size_mb).await {
+                match measure_llm(&client, &endpoint, &model, size_mb).await {
                     Ok(m) => {
-                        println!(
-                            "  {:<22} first token {:>5} ms (cold {:>6} ms)  {:>6.1} tokens/s",
-                            m.model, m.first_token_ms, m.cold_first_token_ms, m.tokens_per_sec
-                        );
+                        match m.tokens_per_sec {
+                            Some(rate) => println!(
+                                "  {:<22} first token {:>5} ms (cold {:>6} ms)  {rate:>6.1} tokens/s",
+                                m.model, m.first_token_ms, m.cold_first_token_ms
+                            ),
+                            None => println!(
+                                "  {:<22} first text {:>6} ms (first run {:>6} ms)",
+                                m.model, m.first_token_ms, m.cold_first_token_ms
+                            ),
+                        }
                         llm_results.push(m);
                     }
                     Err(e) => eprintln!("  {model}: failed: {e}"),
@@ -1187,10 +1262,11 @@ pub async fn run(args: TuneArgs) -> anyhow::Result<()> {
             &stt_results,
             &tts_results,
             &llm_results,
+            &endpoint,
         ));
         config::save_to(&config, &path)?;
         println!("Saved to the [tune] table of {}", path.display());
-        println!("`vox chat` uses the tuned Whisper and Ollama models unless told otherwise.");
+        println!("`vox chat` uses the tuned Whisper model and a matching LLM endpoint result.");
     }
     println!();
     print_network_summary();
@@ -1238,7 +1314,7 @@ mod tests {
             size_mb: Some(size_mb),
             cold_first_token_ms: first_token_ms * 10,
             first_token_ms,
-            tokens_per_sec: tps,
+            tokens_per_sec: Some(tps),
         }
     }
 
@@ -1313,7 +1389,13 @@ mod tests {
         assert_eq!(rec.llm.choice.as_deref(), Some("llama3.2:3b"));
         assert!(rec.llm.reason.contains("ollama pull llama3.2:3b"));
 
-        let report = render_dry_run(&p, &dir, &inv, "localhost:11434", false);
+        let report = render_dry_run(
+            &p,
+            &dir,
+            &inv,
+            &LlmEndpoint::ollama("localhost:11434"),
+            false,
+        );
         assert!(report.contains("Recommendation"), "{report}");
         assert!(report.contains("small.en"), "{report}");
         assert!(report.contains("llama3.2:3b"), "{report}");
@@ -1380,9 +1462,15 @@ mod tests {
         let p = profile(HardwareClass::Large, 32_000);
         let dir = PathBuf::from("/nonexistent");
         let inv = Inventory::default();
-        let report = render_dry_run(&p, &dir, &inv, "gpu-box:11434", true);
+        let report = render_dry_run(&p, &dir, &inv, &LlmEndpoint::ollama("gpu-box:11434"), true);
         assert!(report.contains("refused in offline mode"), "{report}");
-        let report = render_dry_run(&p, &dir, &inv, "localhost:11434", true);
+        let report = render_dry_run(
+            &p,
+            &dir,
+            &inv,
+            &LlmEndpoint::ollama("localhost:11434"),
+            true,
+        );
         assert!(!report.contains("refused"), "{report}");
         assert!(report.contains("(offline mode)"), "{report}");
     }
@@ -1457,7 +1545,7 @@ mod tests {
 
     #[test]
     fn llm_candidates_are_the_requested_ones_or_the_small_installed_ones() {
-        let installed: Vec<vox::OllamaModelSummary> = [
+        let installed: Vec<_> = [
             ("huge:70b", 40_000),
             ("b:3b", 2000),
             ("a:1b", 800),
@@ -1466,11 +1554,7 @@ mod tests {
             ("e:9b", 4800),
         ]
         .into_iter()
-        .map(|(name, size)| vox::OllamaModelSummary {
-            name: name.into(),
-            size_mb: Some(size),
-            family: None,
-        })
+        .map(|(name, size)| (name.to_string(), Some(size)))
         .collect();
 
         let auto = llm_candidates(&[], &installed, 16_000);
@@ -1516,17 +1600,62 @@ mod tests {
         );
 
         // Only what was measured reaches the config file.
-        let cfg = tune_config(&p, Some("en"), &rec, &stt_ms, &[], &llm_ms);
+        let endpoint = LlmEndpoint::ollama("localhost:11434");
+        let cfg = tune_config(&p, Some("en"), &rec, &stt_ms, &[], &llm_ms, &endpoint);
         assert_eq!(cfg.stt_model.as_deref(), Some("base.en"));
         assert_eq!(cfg.stt_rtf, Some(0.08));
         assert_eq!(cfg.stt_word_accuracy, Some(0.95));
         assert_eq!(cfg.tts_backend, None);
         assert_eq!(cfg.tts_rtf, None);
         assert_eq!(cfg.llm_model.as_deref(), Some("llama3.2:3b"));
+        assert_eq!(cfg.llm_for_endpoint(&endpoint), Some("llama3.2:3b"));
+        assert_eq!(
+            cfg.llm_for_endpoint(&LlmEndpoint::ollama("localhost:1234")),
+            None
+        );
         assert_eq!(cfg.llm_first_token_ms, Some(250));
         assert_eq!(cfg.language.as_deref(), Some("en"));
         assert!(cfg.measured_unix > 0);
         assert!(!cfg.machine.is_empty());
+    }
+
+    #[test]
+    fn compatible_runtime_picks_first_text_latency_without_reporting_token_rate() {
+        let p = profile(HardwareClass::Small, 4_000);
+        let inv = Inventory::default();
+        let endpoint = LlmEndpoint {
+            backend: LlmBackend::OpenAiCompatible,
+            host: "127.0.0.1:8080".into(),
+            default_model: None,
+        };
+        let fallback = recommend_for_endpoint(&p, &inv, &endpoint);
+        let measurement = |name: &str, first, cold| LlmMeasurement {
+            model: name.into(),
+            size_mb: None,
+            first_token_ms: first,
+            cold_first_token_ms: cold,
+            tokens_per_sec: None,
+        };
+        let results = [
+            measurement("fast-startup", 250, 400),
+            measurement("fast-first-text", 180, 600),
+            measurement("slower-startup", 180, 750),
+        ];
+
+        let rec = recommend_measured(&fallback, &[], &[], &results);
+        assert_eq!(rec.llm.choice.as_deref(), Some("fast-first-text"));
+        assert!(rec.llm.reason.contains("first text after 180 ms"));
+        assert!(rec.llm.reason.contains("first run 600 ms"));
+        assert!(!rec.llm.reason.contains("tokens/s"));
+
+        let cfg = tune_config(&p, None, &rec, &[], &[], &results, &endpoint);
+        assert_eq!(cfg.llm_first_token_ms, Some(180));
+        assert_eq!(cfg.llm_tokens_per_sec, None);
+        assert!(
+            !toml::to_string(&cfg)
+                .unwrap()
+                .contains("llm_tokens_per_sec")
+        );
     }
 
     #[test]
@@ -1784,9 +1913,14 @@ mod tests {
     async fn llm_timing_measures_first_token_and_rate_from_the_stream() {
         let host = fake_ollama_chat(11, 20).await;
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let m = measure_llm(&client, &host, "stand-in:1b", Some(800))
-            .await
-            .unwrap();
+        let m = measure_llm(
+            &client,
+            &LlmEndpoint::ollama(&host),
+            "stand-in:1b",
+            Some(800),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(m.model, "stand-in:1b");
         assert_eq!(m.size_mb, Some(800));
@@ -1798,11 +1932,8 @@ mod tests {
         );
         assert!(m.cold_first_token_ms >= 15, "{}", m.cold_first_token_ms);
         // 10 intervals of at least 20 ms each: at most 50 tokens per second.
-        assert!(
-            m.tokens_per_sec > 5.0 && m.tokens_per_sec <= 50.5,
-            "{}",
-            m.tokens_per_sec
-        );
+        let rate = m.tokens_per_sec.expect("Ollama token rate");
+        assert!(rate > 5.0 && rate <= 50.5, "{rate}");
 
         // Both replies went through the egress choke point.
         let snapshot = vox::privacy::ledger().snapshot();
@@ -1820,7 +1951,7 @@ mod tests {
     async fn llm_timing_fails_for_a_model_that_says_nothing() {
         let host = fake_ollama_chat(0, 0).await;
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let err = measure_llm(&client, &host, "mute", None)
+        let err = measure_llm(&client, &LlmEndpoint::ollama(host), "mute", None)
             .await
             .unwrap_err()
             .to_string();
